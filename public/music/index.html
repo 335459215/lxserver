@@ -17,6 +17,11 @@
         })();
     </script>
     <script src="/js/config.js"></script>
+    <!-- 清理残留的非 ASCII 用户名（localStorage）。旧中文用户名放进 HTTP header 会
+         触发浏览器的 ISO-8859-1 限制，所有 fetch 直接失败、页面卡死。必须在 app.js 前执行。 -->
+    <script src="/js/fix-storage.js"></script>
+    <!-- 运行时性能优化：switchTab 元素集合缓存、API 响应缓存、renderQueue 防抖 -->
+    <script src="/js/perf-optimizer.js"></script>
     <!-- PostHog Analytics -->
     <script>
         if (!window.CONFIG || !window.CONFIG.disableTelemetry) {
@@ -27,12 +32,12 @@
     <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
     <link rel="manifest" href="manifest.json">
     <link rel="stylesheet" href="css/theme_variables.css">
-    <script src="assets/tailwindcss.js"></script>
-    <script src="js/tailwind_setup.js"></script>
+    <script defer src="assets/tailwindcss.js"></script>
+    <script defer src="js/tailwind_setup.js"></script>
     <link rel="stylesheet" href="assets/fontawesome/css/all.min.css">
-    <script src="js/crypto-js.min.js"></script>
-    <script src="js/marked.min.js"></script>
-    <script src="js/Sortable.min.js"></script>
+    <script defer src="js/crypto-js.min.js"></script>
+    <script defer src="js/marked.min.js"></script>
+    <script defer src="js/Sortable.min.js"></script>
     <script src="/js/notification-engine.js"></script>
     <link rel="stylesheet" href="css/app.css">
 </head>
@@ -5590,33 +5595,33 @@
     <audio id="audio-player" crossorigin="anonymous"></audio>
 
     <!-- External Scripts Section (Placed at the end for performance) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-    <script src="js/NoSleep.min.js"></script>
-    <script src="js/log_viewer.js"></script>
-    <script src="js/lyric-utils.js"></script>
-    <script src="js/lyric-parser.js"></script>
-    <script src="js/quality.js"></script>
-    <script src="js/idb_store.js"></script>
-    <script src="js/user_sync.js"></script>
-    <script src="js/batch_pagination.js"></script>
-    <script src="js/single_song_ops.js"></script>
-    <script src="js/theme_manager.js"></script>
-    <script src="js/list_search.js"></script>
-    <script src="js/songlist_manager.js"></script>
-    <script src="js/leaderboard_manager.js"></script>
-    <script src="js/dislike_manager.js"></script>
-    <script src="js/wave.js"></script>
-    <script src="js/visualizer.js"></script>
-    <script src="js/pwa.js"></script>
-    <script src="js/lyric-card.js"></script>
-    <script src="js/ios-background-audio.js"></script>
-    <script src="js/sound-effects.js"></script>
-    <script src="js/download_manager.js"></script>
-    <script src="js/local_music.js"></script>
-    <script src="js/customDir.js"></script>
-    <script src="js/common_ui.js"></script>
-    <script src="js/sync_download.js"></script>
-    <script src="app.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+    <script defer src="js/NoSleep.min.js"></script>
+    <script defer src="js/log_viewer.js"></script>
+    <script defer src="js/lyric-utils.js"></script>
+    <script defer src="js/lyric-parser.js"></script>
+    <script defer src="js/quality.js"></script>
+    <script defer src="js/idb_store.js"></script>
+    <script defer src="js/user_sync.js"></script>
+    <script defer src="js/batch_pagination.js"></script>
+    <script defer src="js/single_song_ops.js"></script>
+    <script defer src="js/theme_manager.js"></script>
+    <script defer src="js/list_search.js"></script>
+    <script defer src="js/songlist_manager.js"></script>
+    <script defer src="js/leaderboard_manager.js"></script>
+    <script defer src="js/dislike_manager.js"></script>
+    <script defer src="js/wave.js"></script>
+    <script defer src="js/visualizer.js"></script>
+    <script defer src="js/pwa.js"></script>
+    <script defer src="js/lyric-card.js"></script>
+    <script defer src="js/ios-background-audio.js"></script>
+    <script defer src="js/sound-effects.js"></script>
+    <script defer src="js/download_manager.js"></script>
+    <script defer src="js/local_music.js"></script>
+    <script defer src="js/customDir.js"></script>
+    <script defer src="js/common_ui.js"></script>
+    <script defer src="js/sync_download.js"></script>
+    <script defer src="app.js"></script>
 </body>
 
 <!-- 同步下载面板 Modal -->

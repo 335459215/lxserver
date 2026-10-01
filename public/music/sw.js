@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lx-music-web-v26';
+const CACHE_NAME = 'lx-music-web-v27';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
@@ -23,6 +23,9 @@ const ASSETS_TO_CACHE = [
     './js/local_music.js',
     './js/download_manager.js',
     './js/common_ui.js',
+    // 下面两个在 index.html 里被引用，原先漏在预缓存外，首屏总要等一次网络
+    './js/customDir.js',
+    './js/sync_download.js',
     './js/pwa.js',
     './js/theme_manager.js',
     './js/tailwind_setup.js',
@@ -65,6 +68,8 @@ self.addEventListener('fetch', (event) => {
     // 拦截下载会导致大文件占用 Cache 且单个失败可能引起 SW state 不良
     const isApiOrAudio = url.pathname.includes('/api/') ||
         url.pathname === '/js/config.js' ||
+        url.pathname === '/js/fix-storage.js' ||
+        url.pathname === '/js/perf-optimizer.js' ||
         url.pathname.endsWith('/manifest.json') ||
         url.href.match(/\.(mp3|flac|m4a|ogg|aac)(\?.*)?$/i);
 
@@ -72,27 +77,31 @@ self.addEventListener('fetch', (event) => {
         return; // 直接 return 就不走 event.respondWith，相当于不拦截
     }
 
-    // 3. 常规静态资源采用 Network First 策略
     if (event.request.method !== 'GET') return;
 
+    // 3. 静态资源改为 Stale-While-Revalidate。
+    //    原来的 Network First 对局域网服务也不划算：每次打开页面都要为每个
+    //    资源付一次网络往返（首屏约 30 个 JS/CSS）。这里先返回缓存立即渲染，
+    //    同时后台静默更新；只有首次访问才真的走网络。
     event.respondWith(
-        fetch(event.request)
-            .then((response) => {
-                // 如果请求成功，更新缓存并返回
-                if (response && response.status === 200 && response.type === 'basic') {
-                    const responseToCache = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(event.request, responseToCache).catch(err => {
-                            console.error('[SW] Cache put error:', err);
-                        });
-                    });
-                }
-                return response;
+        caches.open(CACHE_NAME).then((cache) =>
+            cache.match(event.request).then((cached) => {
+                const network = fetch(event.request)
+                    .then((response) => {
+                        if (response && response.status === 200 && response.type === 'basic') {
+                            const toCache = response.clone();
+                            cache.put(event.request, toCache).catch(err => {
+                                console.error('[SW] Cache put error:', err);
+                            });
+                        }
+                        return response;
+                    })
+                    .catch(() => cached || Response.error());
+
+                // 有缓存就用缓存立刻返回，网络在后台更新；没有则等待网络
+                return cached || network;
             })
-            .catch(() => {
-                // 网络不可用时，尝试从缓存获取
-                return caches.match(event.request);
-            })
+        )
     );
 });
 

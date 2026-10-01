@@ -1034,6 +1034,12 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
     return
   }
   const contentType = getMime(filePath)
+  // HTML 必须每次回源，否则前端更新后用户拿到的还是旧页面；
+  // 其余静态资源（JS/CSS/字体/图片）走长缓存，浏览器不再重复校验。
+  const isHtml = /\.html?$/i.test(filePath)
+  const cacheControl = isHtml
+    ? 'no-cache'
+    : 'public, max-age=604800, must-revalidate'
 
   try {
     // Use async stat to avoid blocking the event loop on slow NAS disks
@@ -1071,7 +1077,7 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
                 'Content-Type': contentType,
                 'ETag': etag,
                 'Last-Modified': lastModified,
-                'Cache-Control': 'public, max-age=86400',
+                'Cache-Control': cacheControl,
                 'Vary': 'Accept-Encoding',
               })
               res.end(content, 'utf-8')
@@ -1080,7 +1086,7 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
                 'Content-Type': contentType,
                 'ETag': etag,
                 'Last-Modified': lastModified,
-                'Cache-Control': 'public, max-age=86400',
+                'Cache-Control': cacheControl,
                 'Content-Encoding': 'gzip',
                 'Content-Length': gzipped.length,
                 'Vary': 'Accept-Encoding',
@@ -1093,7 +1099,7 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
             'Content-Type': contentType,
             'ETag': etag,
             'Last-Modified': lastModified,
-            'Cache-Control': 'public, max-age=86400',
+            'Cache-Control': cacheControl,
             'Vary': 'Accept-Encoding',
           })
           res.end(content, 'utf-8')
