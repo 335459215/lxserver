@@ -78,6 +78,11 @@ export async function getProxyAgent(url, category) {
     if (address) return buildAgent(url, address)
 
     // 环境变量兜底（容器部署常用）
+    // 跳过已显式禁用（enabled === false）的分类，否则用户无法单独关闭某一类代理
+    const cfg = (global.lx && global.lx.config) || {}
+    const keys = PROXY_CATEGORIES[category]
+    if (keys && cfg[keys.enabled] === false) return undefined
+
     const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy
     if (envProxy) return buildAgent(url, envProxy)
 
