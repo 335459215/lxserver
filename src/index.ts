@@ -446,14 +446,30 @@ if (envParams.SUBSONIC_ENABLE !== undefined) {
 // "未设置该变量" 与 "显式设为 false" 可以区分开：
 // 未设置 -> 保持 config.js/defaultConfig 的 undefined（沿用 proxy.all.*）
 // 设为 false -> 该分类明确直连，env 变量兜底逻辑也会跳过
-for (const category of ['music', 'customSource', 'app'] as const) {
-  const enabledKey = `PROXY_${category.toUpperCase()}_ENABLED`
-  const addressKey = `PROXY_${category.toUpperCase()}_ADDRESS`
-  if (envParams[enabledKey] !== undefined) {
-    setBoolConfig(`proxy.${category}.enabled` as keyof LX.Config, envParams[enabledKey])
-  }
-  if (envParams[addressKey]) {
-    global.lx.config[`proxy.${category}.address` as keyof LX.Config] = envParams[addressKey]
+//
+// key 用字面量显式列出而非模板字符串拼接：ENV_PARAMS_Value_Type 是
+// 字符串字面量的联合类型，动态拼接出来的 string 无法索引它，tsc 报 TS7053。
+type ProxyCategory = 'music' | 'customSource' | 'app'
+const proxyCategoryEnvKeys: Array<[ProxyCategory, 'ENABLED' | 'ADDRESS']> = [
+  ['music', 'ENABLED'],
+  ['music', 'ADDRESS'],
+  ['customSource', 'ENABLED'],
+  ['customSource', 'ADDRESS'],
+  ['app', 'ENABLED'],
+  ['app', 'ADDRESS'],
+]
+for (const [category, suffix] of proxyCategoryEnvKeys) {
+  // customSource -> PROXY_CUSTOMSOURCE_*（与 ENV_PARAMS 中的注册名一致）
+  const envName = `PROXY_${category.toUpperCase()}_${suffix}` as ENV_PARAMS_Value_Type
+  // envParams 的键类型排除了 'LX_USER_'，而 ENV_PARAMS_Value_Type 含它，
+  // 因此这里要显式排除该成员后才能索引。
+  if (envName === 'LX_USER_') continue
+  const value = envParams[envName]
+  if (value === undefined) continue
+  if (suffix === 'ENABLED') {
+    setBoolConfig(`proxy.${category}.enabled` as keyof LX.Config, value)
+  } else if (value) {
+    global.lx.config[`proxy.${category}.address` as keyof LX.Config] = value as never
   }
 }
 if (envParams.SUBSONIC_PATH !== undefined) {
