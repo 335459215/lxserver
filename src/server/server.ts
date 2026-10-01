@@ -1,5 +1,6 @@
 import http, { type IncomingMessage } from 'node:http'
 import fs from 'node:fs'
+import zlib from 'node:zlib'
 import os from 'node:os'
 import path from 'node:path'
 import url from 'node:url'
@@ -1025,7 +1026,7 @@ const isPathInside = (child: string, parent: string): boolean => {
   return resolvedChild.startsWith(withSep)
 }
 
-const serveStatic = (req: IncomingMessage, res: http.ServerResponse, filePath: string) => {
+const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, filePath: string) => {
   // Prevent path traversal: ensure the resolved file path stays within staticPath
   if (!isPathInside(filePath, global.lx.staticPath)) {
     res.writeHead(403)
@@ -1035,7 +1036,8 @@ const serveStatic = (req: IncomingMessage, res: http.ServerResponse, filePath: s
   const contentType = getMime(filePath)
 
   try {
-    const stats = fs.statSync(filePath)
+    // Use async stat to avoid blocking the event loop on slow NAS disks
+    const stats = await fs.promises.stat(filePath)
     const mtime = stats.mtime.getTime()
     const etag = `W/"${stats.size}-${mtime}"`
     const lastModified = stats.mtime.toUTCString()
@@ -1057,15 +1059,45 @@ const serveStatic = (req: IncomingMessage, res: http.ServerResponse, filePath: s
           res.end('Server Error')
         }
       } else {
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'ETag': etag,
-          'Last-Modified': lastModified,
-          'Cache-Control': 'no-cache, must-revalidate', // Force browser to revalidate every time
-          'Pragma': 'no-cache',
-          'Expires': '0',
-        })
-        res.end(content, 'utf-8')
+        // Gzip text-based responses > 1KB when client accepts gzip
+        const acceptEncoding = req.headers['accept-encoding'] || ''
+        const isText = /^(text\/|application\/javascript|application\/json|.*css|.*xml|.*svg|.*html)/.test(contentType)
+        const shouldGzip = acceptEncoding.includes('gzip') && isText && content.length > 1024
+
+        if (shouldGzip) {
+          zlib.gzip(content, { level: 6 }, (gzipErr, gzipped) => {
+            if (gzipErr) {
+              res.writeHead(200, {
+                'Content-Type': contentType,
+                'ETag': etag,
+                'Last-Modified': lastModified,
+                'Cache-Control': 'public, max-age=86400',
+                'Vary': 'Accept-Encoding',
+              })
+              res.end(content, 'utf-8')
+            } else {
+              res.writeHead(200, {
+                'Content-Type': contentType,
+                'ETag': etag,
+                'Last-Modified': lastModified,
+                'Cache-Control': 'public, max-age=86400',
+                'Content-Encoding': 'gzip',
+                'Content-Length': gzipped.length,
+                'Vary': 'Accept-Encoding',
+              })
+              res.end(gzipped)
+            }
+          })
+        } else {
+          res.writeHead(200, {
+            'Content-Type': contentType,
+            'ETag': etag,
+            'Last-Modified': lastModified,
+            'Cache-Control': 'public, max-age=86400',
+            'Vary': 'Accept-Encoding',
+          })
+          res.end(content, 'utf-8')
+        }
       }
     })
   } catch (err: any) {

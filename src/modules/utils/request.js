@@ -5,12 +5,23 @@ import { bHh } from './musicSdk/options'
 import { deflateRaw } from 'zlib'
 import * as tunnel from 'tunnel'
 import { getProxyAgent } from './proxy.js'
+import http from 'http'
+import https from 'https'
 
 
 const httpsRxp = /^https:/
 
+// Keep-alive agents for direct connections (no proxy) — reuses TCP/TLS connections
+const keepAliveHttp = new http.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
+const keepAliveHttps = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
+
 // 内置音乐平台 SDK 的请求一律归到 music 分类（细分开关见 ./proxy.js）
-const getRequestAgent = async url => getProxyAgent(url, 'music')
+// 无代理时返回 keep-alive agent 以复用连接
+const getRequestAgent = async url => {
+    const proxyAgent = await getProxyAgent(url, 'music')
+    if (proxyAgent) return proxyAgent
+    return httpsRxp.test(url) ? keepAliveHttps : keepAliveHttp
+}
 
 
 const request = (url, options, callback) => {
