@@ -37,7 +37,7 @@ import { setSongResolver, getSyncDownloadData, saveSyncDownloadData, getUserSync
 import { getDownloadQualityCandidates } from './downloadQuality'
 import crypto from 'node:crypto'
 import needle from 'needle'
-import { getProxyAgent } from '../modules/utils/proxy.js'
+import { getProxyAgent, resolveProxyAddress } from '../modules/utils/proxy.js'
 const { MusicTagger, MetaPicture } = require('music-tag-native')
 
 /** 当前生效的 dislike 匹配选项，下发给前端保证前后端判定一致 */
@@ -7572,6 +7572,38 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       // Test Proxy API
+      // 返回三个分类当前实际生效的代理（设置项是"意图"，这里给运行时"结果"）。
+      // 复用 resolveProxyAddress，与运行时请求走的完全是同一套判断，
+      // 避免 UI 显示与实际行为不一致。
+      if (pathname === '/api/config/proxy-status' && req.method === 'GET') {
+        const auth = req.headers['x-frontend-auth']
+        if (auth !== global.lx.config['frontend.password']) {
+          res.writeHead(401)
+          res.end('Unauthorized')
+          return
+        }
+        const describe = (category: 'music' | 'customSource' | 'app') => {
+          const configured = global.lx.config[`proxy.${category}.enabled` as keyof LX.Config]
+          const address = resolveProxyAddress(category)
+          return {
+            category,
+            // undefined = 该分类未单独配置，沿用 proxy.all.*
+            configured: configured === undefined ? null : configured,
+            effectiveAddress: address,
+            direct: !address,
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          all: {
+            enabled: !!global.lx.config['proxy.all.enabled'],
+            address: global.lx.config['proxy.all.address'] || '',
+          },
+          categories: [describe('music'), describe('customSource'), describe('app')],
+        }))
+        return
+      }
+
       if (pathname === '/api/config/test-proxy' && req.method === 'POST') {
         const auth = req.headers['x-frontend-auth']
         if (auth !== global.lx.config['frontend.password']) {
@@ -8692,10 +8724,19 @@ export const startServer = async (port: number, ip: string) => {
   // if (status.status) await handleStopServer()
 
   startupLog.info(`starting sync server in ${process.env.NODE_ENV == 'production' ? 'production' : 'development'}`)
-  const proxyEnabled = global.lx.config['proxy.all.enabled']
-  const proxyAddress = global.lx.config['proxy.all.address']
-  console.log(`[网络代理] 音乐 SDK 代理状态: ${proxyEnabled ? `已启用 (${proxyAddress})` : '未启用'}`)
-  startupLog.info(`Music SDK Proxy: ${proxyEnabled ? `Enabled (${proxyAddress})` : 'Disabled'}`)
+  // 代理状态日志必须逐分类打印。只看 proxy.all.enabled 会误报：
+  // 内置音乐 SDK 实际走的是 resolveProxyAddress('music')，若该分类被显式禁用
+  // （国内平台直连），即便总开关开启也不会走代理 —— 日志却显示"已启用"。
+  {
+    const describe = (category: 'music' | 'customSource' | 'app'): string => {
+      const address = resolveProxyAddress(category)
+      return address ? `已启用 (${address})` : '直连'
+    }
+    const fmt = (category: 'music' | 'customSource' | 'app') =>
+      `${category}: ${describe(category)}`
+    console.log(`[网络代理] 分流状态 -> ${fmt('music')} | ${fmt('customSource')} | ${fmt('app')}`)
+    startupLog.info(`Proxy routing -> ${fmt('music')} | ${fmt('customSource')} | ${fmt('app')}`)
+  }
   try {
     await musicSdk.init()
     startupLog.info('musicSdk initialized')

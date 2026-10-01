@@ -442,6 +442,20 @@ if (envParams.PLAYER_PATH !== undefined) {
 if (envParams.SUBSONIC_ENABLE !== undefined) {
   setBoolConfig('subsonic.enable', envParams.SUBSONIC_ENABLE)
 }
+// 代理分类开关。setBoolConfig 只在值能解析成布尔时才写入，因此
+// "未设置该变量" 与 "显式设为 false" 可以区分开：
+// 未设置 -> 保持 config.js/defaultConfig 的 undefined（沿用 proxy.all.*）
+// 设为 false -> 该分类明确直连，env 变量兜底逻辑也会跳过
+for (const category of ['music', 'customSource', 'app'] as const) {
+  const enabledKey = `PROXY_${category.toUpperCase()}_ENABLED`
+  const addressKey = `PROXY_${category.toUpperCase()}_ADDRESS`
+  if (envParams[enabledKey] !== undefined) {
+    setBoolConfig(`proxy.${category}.enabled` as keyof LX.Config, envParams[enabledKey])
+  }
+  if (envParams[addressKey]) {
+    global.lx.config[`proxy.${category}.address` as keyof LX.Config] = envParams[addressKey]
+  }
+}
 if (envParams.SUBSONIC_PATH !== undefined) {
   global.lx.config['subsonic.path'] = envParams.SUBSONIC_PATH
 }

@@ -36,6 +36,15 @@ export const ENV_PARAMS = [
   'CACHE_SIZE_LIMIT',
   'PROXY_ALL_ENABLED',
   'PROXY_ALL_ADDRESS',
+  // 代理分类开关：未设置则该分类「沿用」PROXY_ALL_*，显式设为 false 则强制直连。
+  // 国内音乐平台（music）与自定义源运行时请求（customSource）通常需要直连 ——
+  // needle 3.5.0 + tunnel 库的 TLS-over-HTTP-CONNECT 不兼容，走代理会 ECONNRESET。
+  'PROXY_MUSIC_ENABLED',
+  'PROXY_MUSIC_ADDRESS',
+  'PROXY_CUSTOMSOURCE_ENABLED',
+  'PROXY_CUSTOMSOURCE_ADDRESS',
+  'PROXY_APP_ENABLED',
+  'PROXY_APP_ADDRESS',
   'ADMIN_PATH',
   'PLAYER_PATH',
   'SUBSONIC_ENABLE',

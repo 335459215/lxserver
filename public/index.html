@@ -786,12 +786,25 @@
                                 <div class="config-field" id="proxy-app-address-field">
                                     <label class="config-label">代理地址</label>
                                     <div class="config-input-group">
-                                        <input type="text" name="proxy.app.address" class="form-input config-input"
-                                            placeholder="http://127.0.0.1:7890" />
+                                        <input type="text" name="proxy.app.address"
+                                            class="form-input config-input" placeholder="http://127.0.0.1:7890" />
                                         <button type="button" class="btn-secondary config-inline-btn test-proxy-btn-cat"
                                             data-target="proxy.app.address">测试</button>
                                     </div>
                                     <small class="config-hint">未单独配置时，三类都沿用上面的统一代理</small>
+                                </div>
+
+                                <!-- 当前实际生效的分流：设置项是"意图"，这里是运行时"结果"。
+                                     两者可能不一致（例如某分类沿用统一代理，但该分类的请求
+                                     并不经过 getProxyAgent），排查问题时先看这里。 -->
+                                <div class="config-divider"></div>
+                                <div class="config-field">
+                                    <label class="config-label">当前实际生效</label>
+                                    <div id="proxy-effective-status" class="config-hint"
+                                        style="line-height:1.9;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;">
+                                        加载中…
+                                    </div>
+                                    <small class="config-hint">「沿用」表示跟随统一代理开关；「直连」表示该类请求不经过代理</small>
                                 </div>
                             </div>
                         </div>

@@ -2384,6 +2384,7 @@ class App {
                 if (addrEl) addrEl.value = config[`proxy.${cat}.address`] || '';
             });
             this.updateProxyFieldsVisibility();
+            this.refreshProxyEffectiveStatus();
             if (form.elements['user.enablePath']) {
                 form.elements['user.enablePath'].checked = config['user.enablePath'] !== false;
             }
@@ -3135,6 +3136,10 @@ class App {
             // 保存成功后同步「已加载配置」，供下次保存对比
             this.loadedConfig = config;
 
+            // 代理分流可能已变，刷新「当前实际生效」回显
+            this.updateProxyFieldsVisibility();
+            this.refreshProxyEffectiveStatus();
+
             if (!silent) {
                 if (res.warning) {
                     showInfo('配置保存成功！\n\n⚠️ 警告：' + res.warning);
@@ -3320,6 +3325,48 @@ class App {
             if (!field) return;
             field.style.display = form.elements[`proxy.${cat}.mode`]?.value === 'on' ? '' : 'none';
         });
+        // 统一开关关闭时，各分类的独立地址即使填了也不会生效，提示一下
+        const allOn = !!form.elements['proxy.all.enabled']?.checked;
+        ['music', 'customSource', 'app'].forEach(cat => {
+            const field = document.getElementById(`proxy-${cat}-address-field`);
+            if (!field) return;
+            const mode = form.elements[`proxy.${cat}.mode`]?.value;
+            if (mode === 'on' && !allOn) {
+                field.style.display = 'none';
+            }
+        });
+    }
+
+    // 拉取并渲染"当前实际生效"的代理分流。
+    // 之所以要单独展示：设置项只表达意图，而运行时是否走代理由
+    // resolveProxyAddress 决定（分类可能被显式禁用，也可能压根不走 getProxyAgent）。
+    // 排查"配了代理但没生效"时，先看这里。
+    async refreshProxyEffectiveStatus() {
+        const box = document.getElementById('proxy-effective-status');
+        if (!box) return;
+        try {
+            const res = await fetch('/api/config/proxy-status', {
+                headers: { 'x-frontend-auth': localStorage.getItem('lx_auth') || '' },
+                cache: 'no-store'
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            const labels = { music: '音乐平台', customSource: '自定义音源', app: '应用功能' };
+            const lines = data.categories.map(c => {
+                const name = labels[c.category] || c.category;
+                if (c.direct) return `${name}: 直连`;
+                return `${name}: 走代理 → ${c.effectiveAddress}`;
+            });
+            const allLine = data.all.enabled
+                ? `统一代理: 已启用 → ${data.all.address}`
+                : '统一代理: 未启用';
+            box.innerHTML = `<div>${allLine}</div>` + lines.map(l => `<div>${l}</div>`).join('');
+            box.style.color = '';
+        } catch (e) {
+            box.textContent = `状态获取失败: ${e.message}`;
+            box.style.color = '#ef4444';
+        }
     }
 
     async testProxy(addressOverride) {
