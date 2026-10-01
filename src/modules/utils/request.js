@@ -5,15 +5,19 @@ import { bHh } from './musicSdk/options'
 import { deflateRaw } from 'zlib'
 import * as tunnel from 'tunnel'
 import { getProxyAgent } from './proxy.js'
-import http from 'http'
-import https from 'https'
+// 用具名导入而非默认导入：本模块同时 `export { request }`，默认导入的 http
+// 会被 tsc 编译成 `exports.http.Agent`（http 未定义），运行时直接
+// "Cannot read properties of undefined (reading 'Agent')"。
+import { Agent as HttpAgent } from 'http'
+import { Agent as HttpsAgent } from 'https'
 
 
 const httpsRxp = /^https:/
 
-// Keep-alive agents for direct connections (no proxy) — reuses TCP/TLS connections
-const keepAliveHttp = new http.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
-const keepAliveHttps = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
+// 直连场景复���连接：默认 agent 每次请求都要新建 TCP/TLS 握手，
+// 歌单/榜单/封面等连续请求时开销明显。
+const keepAliveHttp = new HttpAgent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
+const keepAliveHttps = new HttpsAgent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 50 })
 
 // 内置音乐平台 SDK 的请求一律归到 music 分类（细分开关见 ./proxy.js）
 // 无代理时返回 keep-alive agent 以复用连接
