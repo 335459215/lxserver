@@ -2045,6 +2045,41 @@ window.handleSearchTypeChange = handleSearchTypeChange;
 const SOURCES = ['kw', 'kg', 'tx', 'wy', 'mg'];
 
 
+// ========== 搜索结果缓存 ==========
+// 切换搜索源时 doSearch 会无条件丢弃旧结果并重新请求全部平台；在 NAS 上单源搜索
+// 也要数秒，来回拨动下拉框非常卡。这里按 (类型|源|页|关键词) 缓存最近结果，
+// 短期切回直接命中，切源不再打网络。
+const SEARCH_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+const SEARCH_CACHE_MAX = 30;
+const searchResultCache = new Map();
+
+function searchCacheKey(type, source, page, name) {
+    return `${type}|${source}|${page}|${name}`;
+}
+
+function getSearchCache(key) {
+    const hit = searchResultCache.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.ts > SEARCH_CACHE_TTL) {
+        searchResultCache.delete(key);
+        return null;
+    }
+    return hit.list;
+}
+
+function setSearchCache(key, list) {
+    if (!Array.isArray(list) || list.length === 0) return;
+    // 重新插入以刷新插入序，配合下面的 FIFO 淘汰
+    searchResultCache.delete(key);
+    searchResultCache.set(key, { list, ts: Date.now() });
+    while (searchResultCache.size > SEARCH_CACHE_MAX) {
+        const oldest = searchResultCache.keys().next().value;
+        searchResultCache.delete(oldest);
+    }
+}
+window.getSearchCache = getSearchCache;
+window.setSearchCache = setSearchCache;
+
 //搜索歌曲
 async function doSearch(page = 1, append = false, prefetch = false) {
     const typeEl = document.getElementById('search-type');
@@ -2134,6 +2169,16 @@ async function doSearch(page = 1, append = false, prefetch = false) {
         currentSearch = { name: input, source };
         currentPage = 1;
         window.currentNetworkPage = page;
+
+        // 切回刚搜过的源时直接复用缓存，避免整页 spinner + 重新请求
+        const cached = append ? null : getSearchCache(searchCacheKey(type, source, page, input));
+        if (cached) {
+            if (type === 'singer') renderSingerResults(cached);
+            else if (type === 'album') renderAlbumResults(cached);
+            else renderResults(cached);
+            return;
+        }
+
         resultsContainer.innerHTML = '<div class="flex items-center justify-center h-full"><i class="fas fa-spinner fa-spin text-4xl text-emerald-500"></i></div>';
     } else {
         window.currentNetworkPage = page;
@@ -2178,6 +2223,11 @@ async function doSearch(page = 1, append = false, prefetch = false) {
             }
 
             list = data.map(item => ({ ...item, source }));
+        }
+
+        // 仅缓存非追加的第一页，聚合搜索(全部源)变化快不缓存
+        if (!append && source !== 'all') {
+            setSearchCache(searchCacheKey(type, source, page, input), list);
         }
 
         // song/singer/album 统一支持 append 追加翻页

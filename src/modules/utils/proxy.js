@@ -44,10 +44,20 @@ export function resolveProxyAddress(category) {
     return allEnabled ? allAddress : ''
 }
 
+// tunnel agent 内部维护连接池，按「地址+协议」复用同一个实例即可复用连接；
+// 每次请求新建 agent 会让已建立的隧道失去意义（还叠加 socks 场景的
+// await import 开销）。
+const agentCache = new Map()
+
 async function buildAgent(url, address) {
     if (!address) return undefined
+    const isHttps = httpsRxp.test(url)
+    const cacheKey = `${isHttps ? 'https' : 'http'}|${address}`
+    const cached = agentCache.get(cacheKey)
+    if (cached !== undefined) return cached
     try {
         const proxyUrl = new URL(address)
+        let agent
         if (proxyUrl.protocol === 'http:' || proxyUrl.protocol === 'https:') {
             const tunnelOptions = {
                 proxy: {
@@ -56,12 +66,14 @@ async function buildAgent(url, address) {
                     proxyAuth: proxyUrl.username ? `${proxyUrl.username}:${proxyUrl.password}` : undefined,
                 },
             }
-            return (httpsRxp.test(url) ? tunnel.httpsOverHttp : tunnel.httpOverHttp)(tunnelOptions)
+            agent = (isHttps ? tunnel.httpsOverHttp : tunnel.httpOverHttp)(tunnelOptions)
         }
-        if (proxyUrl.protocol.startsWith('socks')) {
+        else if (proxyUrl.protocol.startsWith('socks')) {
             const { SocksProxyAgent } = await import('socks-proxy-agent')
-            return new SocksProxyAgent(address)
+            agent = new SocksProxyAgent(address)
         }
+        agentCache.set(cacheKey, agent)
+        return agent
     } catch (e) {
         // 地址非法：忽略代理，直连
     }

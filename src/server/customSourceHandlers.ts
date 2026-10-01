@@ -42,6 +42,8 @@ export async function handleValidate(req: IncomingMessage, res: ServerResponse) 
         const metadata = extractMetadata(script)
 
         // 尝试加载验证
+        // persist:false —— 校验用的临时实例不登记进 loadedApis，否则每次上传
+        // 都会留下一个永不回收的 VM
         const result = await loadUserApi({
             id: 'temp_validation',
             script,
@@ -49,7 +51,7 @@ export async function handleValidate(req: IncomingMessage, res: ServerResponse) 
             allowUnsafeVM: !!allowUnsafeVM,
             ...metadata,
             owner: 'temp' // 临时验证 owner
-        } as any)
+        } as any, { persist: false })
 
         if (result.success) {
             // 检查是否注册了任何源
@@ -99,7 +101,7 @@ async function getScriptInfo(scriptContent: string, allowUnsafeVM: boolean = fal
             allowUnsafeVM,
             ...metadata,
             owner: 'temp'
-        } as any)
+        } as any, { persist: false })
 
         if (result.success && result.apiInstance?.info?.sources) {
             supportedSources = Object.keys(result.apiInstance.info.sources)

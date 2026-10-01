@@ -227,7 +227,11 @@ async function createLxRequest(isUnsafe: boolean = false, onSniffUpdate?: (alert
 }
 
 // 加载自定义源脚本
-export async function loadUserApi(apiInfo: UserApiInfo): Promise<any> {
+// opts.persist=false 时不把实例登记进 loadedApis（校验/试运行等一次性用途），
+// 否则这些临时 VM 会永久驻留：initUserApi 的清理只匹配 owner===targetUser，
+// 而校验用的是 owner:'temp'，永远匹配不上，VM 与上下文会随每次上传/导入无限累积。
+export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boolean }): Promise<any> {
+    const persist = opts?.persist !== false
     // 从脚本中提取元数据
     const metadata = extractMetadata(apiInfo.script)
     const fullApiInfo = { ...apiInfo, ...metadata }
@@ -446,8 +450,8 @@ export async function loadUserApi(apiInfo: UserApiInfo): Promise<any> {
             }
         }
 
-        loadedApis.set(`${fullApiInfo.owner}_${apiInfo.id}`, apiInstance)
-        console.log(`[自定义源] ✓ 成功加载: ${fullApiInfo.name} v${fullApiInfo.version} (所属: ${fullApiInfo.owner})`)
+        if (persist) loadedApis.set(`${fullApiInfo.owner}_${apiInfo.id}`, apiInstance)
+        console.log(`[自定义源] ✓ 成功加载: ${fullApiInfo.name} v${fullApiInfo.version} (所属: ${fullApiInfo.owner}${persist ? '' : '，临时实例不驻留'})`)
         console.log(`[自定义源]   支持平台: ${Object.keys(registeredSources).join(', ')}`)
         return { success: true, apiInstance, error: null }
     } catch (error: any) {
@@ -465,7 +469,7 @@ export async function loadUserApi(apiInfo: UserApiInfo): Promise<any> {
                     ...apiInfo,
                     id: `${apiInfo.id}_test_vm`,
                     allowUnsafeVM: true
-                })
+                }, { persist: false })
                 if (testUnsafeRes.success) {
                     console.log(`[自定义源] ${fullApiInfo.name} 在 VM2 模式下失败，但在原生 VM 模式下成功，标记 requireUnsafe = true`)
                     isRequireUnsafe = true

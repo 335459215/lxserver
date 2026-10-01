@@ -5254,9 +5254,12 @@ class SubsonicHandler {
             for (const s of srcPriority) if (s !== source && !sourcesToTry.includes(s)) sourcesToTry.push(s)
         }
 
-        for (const trySource of sourcesToTry) {
-            const excludeApiSources: string[] = []
+        // 已确认失败的自定义源。必须声明在平台循环之外：原先放在 for 体内，
+        // 切换到下一个平台时会被重置，已失效的源会在每个平台各被重新调用一次
+        // （叠加 userApi 单候选路径的 3 次重试，一次流播放最多重复调用十几次）。
+        const excludeApiSources: string[] = []
 
+        for (const trySource of sourcesToTry) {
             // 跨平台时按歌名+歌手搜索替身；同源直接用原 songmid
             let candidates: { music: any }[]
             if (trySource === source) {
