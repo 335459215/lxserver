@@ -475,6 +475,23 @@ const sseClients = new Set<http.ServerResponse>()
 // 音乐解析进度 SSE 专属通道: requestId -> response
 const musicProgressClients = new Map<string, http.ServerResponse>()
 
+/**
+ * 搜索调试日志。必须吞掉所有异常：进程不一定对 cwd 有写权限
+ * （compose 里配了 user: "1026:100" 时 /server 属 root，写不进去）。
+ * 原来这里是裸的 appendFileSync，一旦抛错就会跳过 res.end，
+ * 表现为搜索接口永远不返回、客户端一直等到超时——一条调试日志把搜索整个打挂。
+ */
+let searchDebugDisabled = false
+const appendSearchDebug = (line: string): void => {
+  if (searchDebugDisabled) return
+  try {
+    fs.appendFileSync(path.join(process.cwd(), 'debug.txt'), `${line}\n`)
+  } catch (e: any) {
+    searchDebugDisabled = true
+    console.warn(`[搜索调试日志] 写入 ${path.join(process.cwd(), 'debug.txt')} 失败(${e.code || e.message})，本次运行起停用该调试日志`)
+  }
+}
+
 // const codeTools: {
 //   timeout: NodeJS.Timer | null
 //   start: () => void
@@ -5735,11 +5752,11 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             throw new Error(`Invalid search type: ${type}`)
           }
 
-          fs.appendFileSync(path.join(process.cwd(), 'debug.txt'), `[Search] Source: ${source}, Type: ${type}, Query: ${name}, StartPage: ${page}, Pages: ${fetchPages}, Result Count: ${result.length}\n`)
+          appendSearchDebug(`[Search] Source: ${source}, Type: ${type}, Query: ${name}, StartPage: ${page}, Pages: ${fetchPages}, Result Count: ${result.length}`)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(result))
         } catch (err: any) {
-          fs.appendFileSync(path.join(process.cwd(), 'debug.txt'), `[Search Error] ${err.message}\n${err.stack}\n`)
+          appendSearchDebug(`[Search Error] ${err.message}\n${err.stack}`)
           console.error(err)
           res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: err.message, code: 500 }))
