@@ -134,15 +134,27 @@ const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?:
  */
 export const resolveAndValidateUrl = async (
     url: string
-): Promise<{ url: string, ok: boolean, reason?: string }> => {
+): Promise<{ url: string, ok: boolean, reason?: string, probeError?: boolean }> => {
     if (!url || !url.startsWith('http')) return { url, ok: true }
     let current = url
     for (let depth = 0; depth <= 3; depth++) {
         let probe = await probeUrl(current, 'head')
-        // 405/501: 服务器不接受 HEAD，换 Range GET 再确认一次
-        if (!probe || probe.status === 405 || probe.status === 501) {
-            probe = await probeUrl(current, 'get')
-            if (!probe) return { url: current, ok: false, reason: '链接探测失败(超时或网络错误)' }
+        // HEAD 不可靠：不少 CDN/网关对 HEAD 直接给 4xx 甚至直接 RST。
+        // 用 Range GET 再确认一次，只有两种探法都明确报错才判死。
+        if (!probe || probe.status === 400 || probe.status === 403 || probe.status === 405 || probe.status === 501) {
+            const viaGet = await probeUrl(current, 'get')
+            if (!viaGet) {
+                if (!probe) {
+                    // 探测本身失败（超时 / 连接被重置 / 站点只认浏览器 TLS 指纹）。
+                    // 自定义源大量返回 PHP 网关地址而非 CDN 直链，这类地址对服务端
+                    // 探测常直接 RST，对浏览器却完全可播——把「探测不到」判成死链
+                    // 会把能播的歌全部误杀（改造前这里只告警并放行）。保持放行，
+                    // 只在拿到明确的 HTTP 错误码时才判死。
+                    return { url: current, ok: true, probeError: true }
+                }
+                return { url: current, ok: false, reason: `音源返回的链接不可用(HTTP ${probe.status})` }
+            }
+            probe = viaGet
         }
         const status = probe.status ?? 0
         if ([301, 302, 303, 307, 308].includes(status) && probe.location) {
@@ -300,7 +312,9 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 changed()
                 return
             }
-            if (!v.ok) console.warn(`[音源解析] 链接探测异常且校验已关闭，按解析出的链接返回: ${c.platform}/${r.sourceName || '未知源'}`)
+            if (v.probeError) {
+                console.warn(`[音源解析] 链接探测被拒绝(超时/连接重置)，但这类网关地址浏览器通常仍可播，放行: ${c.platform}/${r.sourceName || '未知源'}`)
+            }
             if (accepted) return
             reportSourceResult(String(r.sourceId ?? ''), true)
             slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
