@@ -110,8 +110,10 @@ const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?:
     try {
         const resp = await needle(method, url, null, {
             follow_max: 0,
-            response_timeout: 3500,
-            read_timeout: 3500,
+            // 校验是优化手段不是闸门：探不通就放行，所以超时必须给得起。
+            // 3.5s 时一次解析会被拖到 7s+，2s 足够区分「直链很快返回」与「网关挂掉」。
+            response_timeout: 2000,
+            read_timeout: 2000,
             // 探测的是音乐平台链接，归 music 分类（NAS 上该分类不走代理）
             agent: await getProxyAgent(url, 'music'),
             headers: {
@@ -139,21 +141,19 @@ export const resolveAndValidateUrl = async (
     let current = url
     for (let depth = 0; depth <= 3; depth++) {
         let probe = await probeUrl(current, 'head')
-        // HEAD 不可靠：不少 CDN/网关对 HEAD 直接给 4xx 甚至直接 RST。
-        // 用 Range GET 再确认一次，只有两种探法都明确报错才判死。
-        if (!probe || probe.status === 400 || probe.status === 403 || probe.status === 405 || probe.status === 501) {
+        if (!probe) {
+            // 探测本身失败（超时 / 连接被重置 / 站点只认浏览器 TLS 指纹）。
+            // 自定义源大量返回 PHP 网关地址而非 CDN 直链，这类地址对服务端探测
+            // 常直接 RST，对浏览器却完全可播——把「探测不到」判成死链会把能播的
+            // 歌全部误杀（改造前这里只告警并放行）。这里直接放行，不再补一次 GET：
+            // HEAD 已经拿不到任何信息，再等一轮 GET 只是把延迟翻倍。
+            return { url: current, ok: true, probeError: true }
+        }
+        // HEAD 不可靠：不少 CDN/网关对 HEAD 直接给 4xx，但 GET 正常。
+        // 这类情况用 Range GET 再确认一次，两种探法都确认失败才判死。
+        if (probe.status === 400 || probe.status === 403 || probe.status === 405 || probe.status === 501) {
             const viaGet = await probeUrl(current, 'get')
-            if (!viaGet) {
-                if (!probe) {
-                    // 探测本身失败（超时 / 连接被重置 / 站点只认浏览器 TLS 指纹）。
-                    // 自定义源大量返回 PHP 网关地址而非 CDN 直链，这类地址对服务端
-                    // 探测常直接 RST，对浏览器却完全可播——把「探测不到」判成死链
-                    // 会把能播的歌全部误杀（改造前这里只告警并放行）。保持放行，
-                    // 只在拿到明确的 HTTP 错误码时才判死。
-                    return { url: current, ok: true, probeError: true }
-                }
-                return { url: current, ok: false, reason: `音源返回的链接不可用(HTTP ${probe.status})` }
-            }
+            if (!viaGet) return { url: current, ok: false, reason: `音源返回的链接不可用(HTTP ${probe.status})` }
             probe = viaGet
         }
         const status = probe.status ?? 0
