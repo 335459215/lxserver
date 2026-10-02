@@ -1849,7 +1849,8 @@
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">熔断冷却时长 (秒)</label>
-                                        <input type="number" name="music.url.breakerCooldown" class="form-input config-input" min="5" step="10" />
+                                        <!-- step=5：默认值 300 需落在 (min=5) 的步长网格上，否则浏览器原生校验会拦截整个配置表单提交 -->
+                                        <input type="number" name="music.url.breakerCooldown" class="form-input config-input" min="5" step="5" />
                                         <small class="config-hint"></small>
                                     </div>
                             </div>
