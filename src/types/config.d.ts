@@ -276,6 +276,15 @@ declare namespace LX {
     /** 应用自身功能请求的代理地址 */
     'proxy.app.address'?: string
 
+    /** 下载文件属主同步：文件写盘后 chown 到 ownerUid/ownerGid 并设为 664，供外部工具(如 Music Tag Web)编辑 */
+    'download.syncOwnership'?: boolean
+
+    /** 下载文件属主 UID（<=0 表示不 chown，退化为 666 权限） */
+    'download.ownerUid'?: number
+
+    /** 下载文件属主 GID（<=0 表示不 chown，退化为 666 权限） */
+    'download.ownerGid'?: number
+
     /**
      * 是否禁用数据收集
      */

@@ -6849,12 +6849,14 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
               // 下载文件属主同步
               if (newConfig['download.syncOwnership'] !== undefined) global.lx.config['download.syncOwnership'] = !!newConfig['download.syncOwnership']
-              ;(['ownerUid', 'ownerGid'] as const).forEach(k => {
-                const key = `download.${k}`
-                if (newConfig[key] === undefined) return
-                const n = parseInt(newConfig[key])
-                if (Number.isFinite(n) && n >= 0) global.lx.config[key] = n
-              })
+              if (newConfig['download.ownerUid'] !== undefined) {
+                const ownerUid = parseInt(newConfig['download.ownerUid'])
+                if (Number.isFinite(ownerUid) && ownerUid >= 0) global.lx.config['download.ownerUid'] = ownerUid
+              }
+              if (newConfig['download.ownerGid'] !== undefined) {
+                const ownerGid = parseInt(newConfig['download.ownerGid'])
+                if (Number.isFinite(ownerGid) && ownerGid >= 0) global.lx.config['download.ownerGid'] = ownerGid
+              }
 
               if (newConfig['admin.path'] !== undefined || newConfig['player.path'] !== undefined) {
                 const adminPath = (newConfig['admin.path'] !== undefined ? newConfig['admin.path'] : (global.lx.config['admin.path'] ?? '/admin'))
