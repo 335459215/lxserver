@@ -121,13 +121,16 @@ export const findServerSourceMatches = async (songInfo: any, username: string) =
   // 结果就不能进缓存——否则一次网络抖动会被当成「这首歌在别的平台不存在」，
   // 整整 TTL 内都不再重试，正好把偶发故障放大成持续故障。
   let hadError = false
+  const perSource: Record<string, number> = {}
   const promise = Promise.all(searchSources.map(async source => {
     try {
       const searchData = await musicSdk[source].musicSearch.search(query, 1, 20)
       const list = Array.isArray(searchData?.list) ? searchData.list : []
+      perSource[source] = list.length
       return list.map((item: any) => ({ ...item, source }))
     } catch (err: any) {
       hadError = true
+      perSource[source] = -1
       console.warn(`[自动换源] 搜索 ${source} 失败: ${err?.message || err}`)
       return []
     }
@@ -136,6 +139,12 @@ export const findServerSourceMatches = async (songInfo: any, username: string) =
     .filter(item => item.score >= 0)
     .sort((a, b) => b.score - a.score)
     .map(item => item.candidate))
+    .then(matches => {
+      // 跨平台是可选路径，而且会静默失效。把「搜了哪些平台、各搜到几条、
+      // 最终几条通过相似度校验」打出来，「为什么这首歌没换源」才看得见。
+      console.log(`[自动换源] ${songInfo.name} ${songInfo.singer} | 搜索平台: ${searchSources.join(',') || '(无)'} | 命中: ${JSON.stringify(perSource)} | 通过相似度校验: ${matches.length}`)
+      return matches
+    })
 
   const entry = { expiresAt: now + SOURCE_MATCH_CACHE_TTL, promise }
   sourceMatchCache.set(cacheKey, entry)
