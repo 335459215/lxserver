@@ -675,6 +675,45 @@
                             </div>
                         </div>
 
+                        <!-- 下载文件属主卡片 -->
+                        <div class="config-card glass">
+                            <div class="config-card-header">
+                                <div class="config-card-icon"
+                                    style="background: linear-gradient(135deg, #10b981, #059669);">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                        <polyline points="14 2 14 8 20 8" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="config-card-title">下载文件属主</h3>
+                                    <p class="config-card-desc">供 Music Tag Web 等外部工具编辑下载文件</p>
+                                </div>
+                            </div>
+                            <div class="config-card-body">
+                                <div class="config-toggle-row">
+                                    <div class="config-toggle-info">
+                                        <span class="config-toggle-label">下载后同步文件属主</span>
+                                        <span class="config-toggle-desc">下载完成的音频/歌词/索引文件将 chown 到下方 UID/GID 并设为 664，供外部工具修改；关闭则保持系统默认权限</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" name="download.syncOwnership" />
+                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                    </label>
+                                </div>
+                                <div class="config-field">
+                                    <label class="config-label">属主 UID / GID</label>
+                                    <div class="config-input-group">
+                                        <input type="number" name="download.ownerUid" class="form-input config-input"
+                                            placeholder="1026" min="0" />
+                                        <input type="number" name="download.ownerGid" class="form-input config-input"
+                                            placeholder="100" min="0" />
+                                    </div>
+                                    <small class="config-hint">填外部工具的运行身份（NAS 上 Music Tag Web 的 PUID/PGID，如 1026/100）；两项都填 0 表示不 chown，文件改为 666 权限</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- 代理配置卡片 -->
                         <div class="config-card glass">
                             <div class="config-card-header">

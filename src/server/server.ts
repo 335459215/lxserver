@@ -6847,6 +6847,15 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 }
               })
 
+              // 下载文件属主同步
+              if (newConfig['download.syncOwnership'] !== undefined) global.lx.config['download.syncOwnership'] = !!newConfig['download.syncOwnership']
+              ;(['ownerUid', 'ownerGid'] as const).forEach(k => {
+                const key = `download.${k}`
+                if (newConfig[key] === undefined) return
+                const n = parseInt(newConfig[key])
+                if (Number.isFinite(n) && n >= 0) global.lx.config[key] = n
+              })
+
               if (newConfig['admin.path'] !== undefined || newConfig['player.path'] !== undefined) {
                 const adminPath = (newConfig['admin.path'] !== undefined ? newConfig['admin.path'] : (global.lx.config['admin.path'] ?? '/admin'))
                 const playerPath = (newConfig['player.path'] !== undefined ? newConfig['player.path'] : (global.lx.config['player.path'] ?? '/'))
@@ -7052,9 +7061,12 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 'proxy.music.address': global.lx.config['proxy.music.address'] || '',
                 'proxy.customSource.enabled': global.lx.config['proxy.customSource.enabled'],
                 'proxy.customSource.address': global.lx.config['proxy.customSource.address'] || '',
-                'proxy.app.enabled': global.lx.config['proxy.app.enabled'],
-                'proxy.app.address': global.lx.config['proxy.app.address'] || '',
-                'admin.path': global.lx.config['admin.path'] ?? '/admin',
+            'proxy.app.enabled': global.lx.config['proxy.app.enabled'],
+            'proxy.app.address': global.lx.config['proxy.app.address'] || '',
+            'download.syncOwnership': global.lx.config['download.syncOwnership'] ?? true,
+            'download.ownerUid': global.lx.config['download.ownerUid'] ?? 1026,
+            'download.ownerGid': global.lx.config['download.ownerGid'] ?? 100,
+            'admin.path': global.lx.config['admin.path'] ?? '/admin',
                 'player.path': global.lx.config['player.path'] ?? '/',
                 'subsonic.enable': global.lx.config['subsonic.enable'],
                 'subsonic.path': global.lx.config['subsonic.path'],

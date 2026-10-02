@@ -79,6 +79,15 @@ const config: LX.Config = {
   'proxy.app.enabled': undefined,
   'proxy.app.address': '',
 
+  // 下载文件属主同步。
+  // 服务器常以 root 运行，下载的音频/歌词/索引文件默认属主为 root，
+  // 以固定 PUID 运行的外部工具（如 Music Tag Web）将无权修改这些文件。
+  // 开启后，文件写盘时 chown 到下方 UID/GID 并设为 664；
+  // UID/GID 未配置（<=0）时退化为 666，保证外部工具始终可编辑。
+  'download.syncOwnership': true,
+  'download.ownerUid': 1026,
+  'download.ownerGid': 100,
+
   // 访问路径配置
   'admin.path': '/admin', // 后台管理路径
   'player.path': '/', // 播放器路径，默认为根路径 /

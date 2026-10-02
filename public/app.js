@@ -2373,6 +2373,15 @@ class App {
             if (form.elements['proxy.all.address']) {
                 form.elements['proxy.all.address'].value = config['proxy.all.address'] || '';
             }
+            if (form.elements['download.syncOwnership']) {
+                form.elements['download.syncOwnership'].checked = config['download.syncOwnership'] !== false;
+            }
+            if (form.elements['download.ownerUid']) {
+                form.elements['download.ownerUid'].value = config['download.ownerUid'] ?? 1026;
+            }
+            if (form.elements['download.ownerGid']) {
+                form.elements['download.ownerGid'].value = config['download.ownerGid'] ?? 100;
+            }
             // 细分代理：enabled 为 undefined -> 沿用统一代理
             ['music', 'customSource', 'app'].forEach(cat => {
                 const modeSel = form.elements[`proxy.${cat}.mode`];
@@ -3068,6 +3077,9 @@ class App {
             'proxy.header': formData.get('proxy.header'),
             'proxy.all.enabled': formData.get('proxy.all.enabled') === 'on',
             'proxy.all.address': formData.get('proxy.all.address'),
+            'download.syncOwnership': formData.get('download.syncOwnership') === 'on',
+            'download.ownerUid': parseInt(formData.get('download.ownerUid')) || 0,
+            'download.ownerGid': parseInt(formData.get('download.ownerGid')) || 0,
             ...(() => {
                 const out = {};
                 ['music', 'customSource', 'app'].forEach(cat => {

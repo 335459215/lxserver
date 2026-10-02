@@ -11,6 +11,27 @@ const { MusicTagger, MetaPicture } = require('music-tag-native')
 import { buildLyrics, parseLyrics } from '../utils/lrcTool'
 import { formatPlayTime } from '../utils/common'
 
+// --- 下载文件属主同步 ---
+// 服务器常以 root 运行，下载的音频/歌词/索引文件默认属主为 root，
+// 以固定 PUID 运行的外部工具（如 Music Tag Web）将无权修改这些文件。
+// 开启后，文件写盘时 chown 到配置的 UID/GID 并设为 664；
+// UID/GID 未配置（<=0）时退化为 666，保证外部工具始终可编辑。
+export const applyOwnershipPolicy = (targetPath: string): void => {
+    try {
+        if (global.lx?.config?.['download.syncOwnership'] === false) return
+        const uid = Number(global.lx?.config?.['download.ownerUid'])
+        const gid = Number(global.lx?.config?.['download.ownerGid'])
+        if (Number.isFinite(uid) && uid > 0 && Number.isFinite(gid) && gid > 0) {
+            fs.chownSync(targetPath, uid, gid)
+            fs.chmodSync(targetPath, 0o664)
+        } else {
+            fs.chmodSync(targetPath, 0o666)
+        }
+    } catch (e) {
+        // 属主同步失败不影响下载主流程
+    }
+}
+
 // --- Cache Naming Patterns ---
 export const CACHE_NAMING_PATTERNS = {
     STANDARD: 'standard',       // {Name}_-_{Singer}_-_{Source}_-_{ID}_-_{Quality}
@@ -176,6 +197,7 @@ class CacheIndexManager {
         try {
             const data = Object.fromEntries(index)
             fs.writeFileSync(file, JSON.stringify(data, null, 2))
+            applyOwnershipPolicy(file)
         } catch (e) {
             console.error(`[缓存索引] 保存索引文件失败 (${key}):`, e)
         }
@@ -1779,6 +1801,7 @@ export const saveLyricCache = (songInfo: any, lyricsObj: any, username?: string,
         }
 
         fs.writeFileSync(finalPath, formattedLrc, { encoding: 'utf-8' })
+        applyOwnershipPolicy(finalPath)
         console.log(`[文件缓存] 歌词已成功保存至: ${finalPath}`)
 
         // Update index — use normalizeSongId to ensure the ID has source prefix, matching index keys
@@ -2233,6 +2256,7 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
                     }
 
                     const taggedStats = fs.statSync(finalPath)
+                    applyOwnershipPolicy(finalPath)
                     let finalHasCover = readEmbeddedCoverState(finalPath)
                     if (!finalHasCover && imageBuffer?.length) {
                         finalHasCover = writeCoverCache(finalBaseName + ext, normalizedUsername, imageBuffer, imageMime, taggedStats)
