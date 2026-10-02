@@ -484,21 +484,32 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
 // 连续失败的自定义源会被临时熔断，跳过直到冷却结束。
 // 没有它的话，每次播放都要把已知死掉的源重新拉一遍——它们往往要等满
 // 音源脚本自身的超时才返回，是整条链路上最贵的一段等待。
-interface BreakerState { fails: number, openUntil: number }
+interface BreakerState {
+    fails: number
+    openUntil: number
+    /** 冷却结束后已发放出去的探针数，保证同一时刻最多一个探针在飞 */
+    probeInFlight: boolean
+}
 const sourceBreakers = new Map<string, BreakerState>()
 
 const breakerEnabled = () => global.lx.config['music.url.breakerEnabled'] !== false
 const breakerThreshold = () => Math.max(1, Number(global.lx.config['music.url.breakerThreshold'] ?? 3))
 const breakerCooldownMs = () => Math.max(5_000, Number(global.lx.config['music.url.breakerCooldown'] ?? 300) * 1000)
 
+/**
+ * 该源当前是否应当被跳过。冷却结束后发放一个探针——用显式的 probeInFlight 标记，
+ * 而不是在这里扣减计数：候选收集循环每次请求都会遍历所有源，若把「每次扫描」
+ * 当成一次探针，一次解析（最多 6 个候选平台）就能把探针额度一次性耗光，
+ * 恢复中的源会被整个并发集群一起冲垮，正是熔断本该防的事。
+ */
 const isSourceTripped = (apiId: string) => {
     if (!breakerEnabled()) return false
     const st = sourceBreakers.get(apiId)
     if (!st) return false
-    if (st.openUntil > Date.now()) return true
-    if (st.fails <= 0) return false
-    // 冷却结束后放一个探针出去重新试探，而不是直接清零
-    sourceBreakers.set(apiId, { fails: st.fails - 1, openUntil: 0 })
+    const now = Date.now()
+    if (st.openUntil > now) return true
+    if (st.probeInFlight) return true
+    sourceBreakers.set(apiId, { ...st, probeInFlight: true })
     return false
 }
 
@@ -506,13 +517,16 @@ const recordSourceResult = (apiId: string, ok: boolean) => {
     if (!breakerEnabled() || !apiId) return
     const now = Date.now()
     if (ok) { sourceBreakers.delete(apiId); return }
-    const st = sourceBreakers.get(apiId) ?? { fails: 0, openUntil: 0 }
+    const st = sourceBreakers.get(apiId) ?? { fails: 0, openUntil: 0, probeInFlight: false }
     if (st.openUntil > now) return
     const fails = st.fails + 1
-    sourceBreakers.set(apiId, { fails, openUntil: fails >= breakerThreshold() ? now + breakerCooldownMs() : 0 })
+    sourceBreakers.set(apiId, { fails, probeInFlight: false, openUntil: fails >= breakerThreshold() ? now + breakerCooldownMs() : 0 })
 }
 
-/** 管理后台「测试音源」成功后应立刻解除该源的熔断状态 */
+/** 供解析器在「音源返回了不可用的链接」时上报——这类源不会抛异常，只能由外部记账 */
+export const reportSourceResult = (apiId: string, ok: boolean) => recordSourceResult(apiId, ok)
+
+/** 供后台「测试音源」成功后解除该源的熔断状态 */
 export const resetSourceBreaker = (apiId: string) => { sourceBreakers.delete(apiId) }
 
 /** 自定义源被增删改或重新加载时整体作废熔断状态 */
@@ -669,10 +683,12 @@ export async function callUserApiGetMusicUrl(
     }
 
     // 按 loadedApis 收集所有可用候选源（权限过滤，不强制任何顺序）
+    const trippedSourceNames: string[] = []
     for (const [apiId, api] of loadedApis) {
         if (!api.info.sources || !api.info.sources[source]) continue
         // 连续失败被熔断的源本轮直接不参与竞速
         if (isSourceTripped(api.info.id)) {
+            trippedSourceNames.push(api.info.name)
             if (global.lx.config['debug.enabled']) console.log(`[自定义源] ${api.info.name} 处于熔断冷却，本轮跳过`)
             continue
         }
@@ -764,9 +780,13 @@ export async function callUserApiGetMusicUrl(
 
     if (supportedCount === 0) {
         const hasExcluded = Array.isArray(excludeApiSources) && excludeApiSources.length > 0
+        // 三种「一个候选都没有」的原因要分开说。原来一律报「未找到支持 X 的自定义源」，
+        // 会把「源装着、只是连续失败进了冷却」说成「源没装」，把管理员引到设置页看半天。
         const errMsg = hasExcluded
             ? `支持 ${source} 平台的自定义源均已尝试且无法播放（已尝试 ${excludeApiSources.length} 个音源）`
-            : `未找到支持 ${source} 平台的自定义源，请在设置中添加或启用相关源`
+            : trippedSourceNames.length > 0
+                ? `支持 ${source} 平台的 ${trippedSourceNames.length} 个自定义源正在熔断冷却中（${trippedSourceNames.join('、')}），稍后会自动重试`
+                : `未找到支持 ${source} 平台的自定义源，请在设置中添加或启用相关源`
         if (onProgress) await onProgress({ name: '系统', status: 'fail', message: errMsg })
         const err: any = new Error(errMsg)
         err.allSourcesExhausted = true
@@ -781,10 +801,11 @@ export async function callUserApiGetMusicUrl(
     const staggerMs = Math.max(0, Number(opts?.staggerMs ?? cfg['music.url.raceStagger'] ?? 180))
     const priorityGraceMs = Math.max(0, Number(opts?.priorityGraceMs ?? cfg['music.url.priorityGrace'] ?? 350))
     const maxParallel = Math.max(1, Number(opts?.maxParallel ?? cfg['music.url.maxParallel'] ?? 4))
-    // 只有一个候选时它就是唯一机会，多给一次重试；多个候选时每个源只试一次，
-    // 试不过还有别的源顶上，也避免把上游接口打爆。
-    const defaultRetries = candidates.length === 1 ? 2 : 1
-    const maxRetries = Math.max(1, Number(opts?.retries ?? cfg['music.url.sourceRetries'] ?? defaultRetries))
+    // 只有一个候选时它就是唯一机会，至少给两次尝试（改造前是固定重试 3 次）。
+    // 不能只靠 `?? defaultRetries` 取默认值：music.url.sourceRetries 在 defaultConfig
+    // 里有值，?? 永远不会落到 defaultRetries，单源重试会直接消失。
+    const configuredRetries = Math.max(1, Number(opts?.retries ?? cfg['music.url.sourceRetries'] ?? 1))
+    const maxRetries = candidates.length === 1 ? Math.max(2, configuredRetries) : configuredRetries
     const retryDelayMs = Math.max(0, Number(cfg['music.url.retryDelay'] ?? 900))
 
     const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -847,22 +868,35 @@ export async function callUserApiGetMusicUrl(
         }
     }
 
-    // 按优先级依次错峰启动：既保住了 order.json 的优先级语义，
-    // 又不会像纯串行那样把每个源的失败延迟累加起来。
-    const schedule = async () => {
-        for (let i = 0; i < candidates.length; i++) {
-            if (accepted) return
-            if (i > 0) await sleep(staggerMs)
-            while (inflight.size >= maxParallel && !accepted) await sleep(20)
-            if (accepted) return
+    // 并发关闭时按 order.json 顺序逐个试（排障/与旧行为对比用）。
+    // 这个分支必须真的存在：music.url.race 是在后台 UI 上暴露的开关，
+    // 之前只算了 raceEnabled 却从没读过，关掉它毫无任何行为变化。
+    if (!raceEnabled) {
+        for (let i = 0; i < candidates.length && !accepted; i++) {
             inflight.add(i)
             void runCandidate(i)
+            while (inflight.has(i)) await nextChange()
         }
+    } else {
+        // 按优先级依次错峰启动：既保住了 order.json 的优先级语义，
+        // 又不会像纯串行那样把每个源的失败延迟累加起来。
+        const schedule = async () => {
+            for (let i = 0; i < candidates.length; i++) {
+                if (accepted) return
+                if (i > 0) await sleep(staggerMs)
+                while (inflight.size >= maxParallel && !accepted) await sleep(20)
+                if (accepted) return
+                inflight.add(i)
+                void runCandidate(i)
+            }
+        }
+        void schedule()
     }
-    void schedule()
 
     // 裁决：取已成功候选里序号最小的；只要还有序号更小的候选在途，就给它
     // priorityGrace 的时间反超——这样「排第一的源」通常还是赢，但不用等它先跑完。
+    // 音源脚本自带 10s VM 超时 + maxRetries 次重试，正常远到不了这个上限
+    const arbiterDeadline = Date.now() + 120_000
     let winner: { index: number, result: any } | null = null
     for (;;) {
         if (succeeded.size > 0) {
@@ -881,7 +915,13 @@ export async function callUserApiGetMusicUrl(
             break
         }
         if (done) break
-        await nextChange()
+        // 兜底：nextChange 最多等 1 秒。音源脚本自带超时，但若将来有路径忘了
+        // changed()，这里会让请求永久挂起而不是报错。
+        if (Date.now() > arbiterDeadline) {
+            console.warn(`[自定义源] 裁决超时, 已完成 ${finished}/${candidates.length} 个候选`)
+            break
+        }
+        await Promise.race([nextChange(), sleep(1000)])
     }
 
     const attempts = attemptSlots.flat()

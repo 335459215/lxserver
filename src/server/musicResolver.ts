@@ -14,7 +14,7 @@
  */
 import needle from 'needle'
 import { getProxyAgent } from '@/modules/utils/proxy.js'
-import { callUserApiGetMusicUrl, isSourceSupported } from '@/server/userApi'
+import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult } from '@/server/userApi'
 import { findServerSourceMatches, normalizeSongInfo, AUTO_SOURCE_ORDER } from '@/server/musicMatch'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -230,12 +230,18 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const crossParallel = Math.max(1, Number(cfg2['music.url.maxParallelPlatforms'] ?? 3))
 
     const errors: string[] = []
+    // 本次解析中已失败的源。跨音质档累积下来，下一档直接排除：
+    // 一个同时支持 4 个平台的源，在 3 档音质下最多会被无谓地调用 12 次。
+    const failedSourceIds = new Set<string>(
+        (Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(s => String(s)),
+    )
     const successes = new Map<number, any>()
     const inflight = new Set<number>()
     let attemptSlots: any[][] = [[]]
     let accepted: { index: number, value: any } | null = null
     let finished = 0
-    let searchDone = !crossEnabled
+    // needCrossSearch 定义在下方，这里按同样的条件预置，避免搜索块被跳过时永远等不到
+    let searchDone = !(crossEnabled && !!song.name && !!song.singer)
     let graceDeadline = 0
     let dirty = false
     let notify: (() => void) | null = null
@@ -261,56 +267,87 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                     void opts.onProgress?.({ ...att, source: c.platform, cross: c.cross })
                 },
                 opts.enableAutoSwitchApiSource !== false,
-                opts.excludeApiSources,
+                failedSourceIds.size ? [...failedSourceIds] : opts.excludeApiSources,
             )
             if (!r?.url) throw new Error('音源未返回可用链接')
-            let finalUrl = r.url
-            if (validate) {
-                const v = await resolveAndValidateUrl(r.url)
-                if (!v.ok) {
-                    const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
-                    console.warn(`[音源解析] 链接校验未通过 ${reason}`)
+            // 逐源尝试明细要并进本候选的槽位。否则响应里的 attempts 只剩一条
+            // 「最终成功」，哪个源试了几次、报了什么就全丢了，排障只能靠翻日志。
+            // 只取失败条目：成功条目由下面那条带「链接可用 / 跨平台替身」注释的统一记录
+            // 承担，两边都收会出现同一条成功重复一次。
+            for (const a of Array.isArray(r.attempts) ? r.attempts : []) {
+                if (a?.status === 'success') continue
+                slot.push({ ...a, source: c.platform, cross: c.cross })
+                if (a?.sourceId) failedSourceIds.add(String(a.sourceId))
+            }
+            // 重定向必须无条件跟随。music.url.validate 只决定「链接是否可用」的判定，
+            // 不是「要不要解析重定向」——早期把两者绑在一起，关掉校验就会把带
+            // 重定向的原始链接直接交给客户端，等于悄悄关了一个原有能力。
+            const v = await resolveAndValidateUrl(r.url)
+            if (!v.ok && validate) {
+                const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
+                console.warn(`[音源解析] 链接校验未通过 ${reason}`)
+                // 链接不可用同样算失败，必须记进熔断：「稳定返回 403 的源」永远
+                // 不会抛异常，不靠这里计入就会被反复优先尝试。
+                reportSourceResult(String(r.sourceId ?? ''), false)
+                if (!accepted) {
                     const att = { name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'fail' as const, message: v.reason ?? '链接不可用' }
                     slot.push(att)
                     // callUserApiGetMusicUrl 已经报过一次 success，这里必须补一条 fail，
                     // 否则前端进度里会留着一条和最终结果矛盾的「成功」。
                     void opts.onProgress?.(att)
-                    errors.push(reason)
-                    changed()
-                    return
                 }
-                finalUrl = v.url
+                errors.push(reason)
+                changed()
+                return
             }
+            if (!v.ok) console.warn(`[音源解析] 链接探测异常且校验已关闭，按解析出的链接返回: ${c.platform}/${r.sourceName || '未知源'}`)
             if (accepted) return
+            reportSourceResult(String(r.sourceId ?? ''), true)
             slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
-            successes.set(index, { result: r, url: finalUrl, platform: c.platform, song: c.song, quality })
+            successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality })
             changed()
         } catch (err: any) {
             errors.push(`${c.platform}: ${err?.message || err}`)
+            for (const a of Array.isArray(err?.attempts) ? err.attempts : []) {
+                if (a?.sourceId) failedSourceIds.add(String(a.sourceId))
+            }
             changed()
         } finally {
             inflight.delete(index)
             finished++
             changed()
+            // 关键：腾出并发槽位后必须把剩余候选拉起来。
+            // 少了这一句，pump 会在 inflight 达到 crossParallel 时退出且再没人
+            // 叫它，候选表里排队的平台永远不会被启动，finished 也就永远追不上
+            // candidates.length，裁决循环在 await nextChange() 上永久挂死。
+            // 这里的 quality 是 runCandidate 的形参（遮蔽了外层变量），正是本候选启动时
+            // 所用的那一档，不会串到别的音质。
+            void pump(quality)
         }
     }
 
     let nextIndex = 0
-    /** 有空位就把还没跑的候选补上去：原平台立即启动，跨平台候选之间错峰 */
-    const pump = async () => {
+    /**
+     * 有空位就把还没跑的候选补上去：原平台立即启动，跨平台候选之间错峰。
+     * quality 由调用方显式传入而不是读闭包——候选完成时会在自己的 finally 里
+     * 重新拉起 pump，那时外层音质循环可能已经换档，闭包里的值会串。
+     */
+    const pump = async (q: string) => {
         while (!accepted && nextIndex < candidates.length && inflight.size < crossParallel) {
             const index = nextIndex++
             if (index > 0) await sleep(crossStaggerMs)
             if (accepted) return
             inflight.add(index)
-            void runCandidate(index, quality)
+            void runCandidate(index, q)
         }
     }
-    // pump 需要看到当前音质的 quality，但它定义在音质循环里
     let quality = qualities[0]
 
-    // 跨平台搜索与原平台解析并行发起：结果回来时若还没定胜负，就补进候选表继续竞速
-    if (crossEnabled && song.name && song.singer) {
+    // 跨平台搜索与原平台解析并行发起：结果回来时若还没定胜负，就补进候选表继续竞速。
+    // needCrossSearch 为 false 时搜索块整体不执行，searchDone 必须已经是 true，
+    // 否则下面裁决循环的「搜索已结束且全部跑完」条件永远不成立，请求会永久挂死。
+    const needCrossSearch = crossEnabled && !!song.name && !!song.singer
+    if (needCrossSearch) {
         void findServerSourceMatches(song, username).then(matches => {
             try {
                 const allowed = opts.platformOrder?.length ? new Set(opts.platformOrder) : null
@@ -331,7 +368,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             } finally {
                 while (attemptSlots.length < candidates.length) attemptSlots.push([])
                 searchDone = true
-                void pump()
+                void pump(quality)
                 changed()
             }
         }).catch(err => {
@@ -341,6 +378,9 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
         })
     }
 
+    // 音源脚本自带 10s VM 超时，正常远到不了这个上限；纯粹是「绝不挂死」的兜底
+    const ARBITER_MAX_WAIT_MS = 120_000
+    let arbiterDeadline = 0
     let winner: { index: number, value: any } | null = null
 
     // 音质逐级降级：默认只有一档，Subsonic 可传多档
@@ -351,11 +391,12 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
         nextIndex = 0
         finished = 0
         graceDeadline = 0
+        arbiterDeadline = Date.now() + ARBITER_MAX_WAIT_MS
         accepted = null
         winner = null
         dirty = false
         errors.length = 0
-        void pump()
+        void pump(quality)
 
         // 与 callUserApiGetMusicUrl 同款的裁决：取序号最小的成功项，
         // 并给序号更小的在途候选一段「总预算」宽限时间反超。
@@ -377,7 +418,13 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             }
             // 必须等跨平台搜索也结束，否则可能在替身还没进来时就判定全军覆没
             if (searchDone && finished >= candidates.length) break
-            await nextChange()
+            // 兜底：即使将来有哪条路径忘了 signal，nextChange 也只会挂 1 秒，
+            // 不会让 /api/music/url 的请求和它带起的 SSE 永久泄漏。
+            if (Date.now() > arbiterDeadline) {
+                console.warn(`[音源解析] 裁决超时(${quality}), 已完成 ${finished}/${candidates.length} 个候选, 跨平台搜索${searchDone ? '已结束' : '未结束'}`)
+                break
+            }
+            await Promise.race([nextChange(), sleep(1000)])
         }
 
         if (winner) break

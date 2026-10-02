@@ -6423,6 +6423,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/custom-source/validate' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
         return customSourceHandlers.handleValidate(req, res)
       }
 
@@ -6736,6 +6738,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'] ?? true,
             'music.url.race': global.lx.config['music.url.race'] ?? true,
             'music.url.raceStagger': global.lx.config['music.url.raceStagger'] ?? 180,
+            'music.url.crossStagger': global.lx.config['music.url.crossStagger'] ?? 150,
+            'music.url.maxParallelPlatforms': global.lx.config['music.url.maxParallelPlatforms'] ?? 3,
             'music.url.priorityGrace': global.lx.config['music.url.priorityGrace'] ?? 350,
             'music.url.maxParallel': global.lx.config['music.url.maxParallel'] ?? 4,
             'music.url.sourceRetries': global.lx.config['music.url.sourceRetries'] ?? 1,
@@ -6987,6 +6991,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               if (newConfig['music.url.crossPlatform'] !== undefined) global.lx.config['music.url.crossPlatform'] = !!newConfig['music.url.crossPlatform']
               if (newConfig['music.url.race'] !== undefined) global.lx.config['music.url.race'] = !!newConfig['music.url.race']
               if (newConfig['music.url.raceStagger'] !== undefined && !Number.isNaN(Number(newConfig['music.url.raceStagger']))) global.lx.config['music.url.raceStagger'] = Number(newConfig['music.url.raceStagger'])
+              if (newConfig['music.url.crossStagger'] !== undefined && !Number.isNaN(Number(newConfig['music.url.crossStagger']))) global.lx.config['music.url.crossStagger'] = Number(newConfig['music.url.crossStagger'])
+              if (newConfig['music.url.maxParallelPlatforms'] !== undefined && !Number.isNaN(Number(newConfig['music.url.maxParallelPlatforms']))) global.lx.config['music.url.maxParallelPlatforms'] = Number(newConfig['music.url.maxParallelPlatforms'])
               if (newConfig['music.url.priorityGrace'] !== undefined && !Number.isNaN(Number(newConfig['music.url.priorityGrace']))) global.lx.config['music.url.priorityGrace'] = Number(newConfig['music.url.priorityGrace'])
               if (newConfig['music.url.maxParallel'] !== undefined && !Number.isNaN(Number(newConfig['music.url.maxParallel']))) global.lx.config['music.url.maxParallel'] = Number(newConfig['music.url.maxParallel'])
               if (newConfig['music.url.sourceRetries'] !== undefined && !Number.isNaN(Number(newConfig['music.url.sourceRetries']))) global.lx.config['music.url.sourceRetries'] = Number(newConfig['music.url.sourceRetries'])
@@ -7106,6 +7112,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'],
                 'music.url.race': global.lx.config['music.url.race'],
                 'music.url.raceStagger': global.lx.config['music.url.raceStagger'],
+                'music.url.crossStagger': global.lx.config['music.url.crossStagger'],
+                'music.url.maxParallelPlatforms': global.lx.config['music.url.maxParallelPlatforms'],
                 'music.url.priorityGrace': global.lx.config['music.url.priorityGrace'],
                 'music.url.maxParallel': global.lx.config['music.url.maxParallel'],
                 'music.url.sourceRetries': global.lx.config['music.url.sourceRetries'],
