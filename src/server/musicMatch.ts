@@ -122,11 +122,23 @@ export const findServerSourceMatches = async (songInfo: any, username: string) =
   // 整整 TTL 内都不再重试，正好把偶发故障放大成持续故障。
   let hadError = false
   const perSource: Record<string, number> = {}
+  const bestPerSource: Record<string, string> = {}
   const promise = Promise.all(searchSources.map(async source => {
     try {
       const searchData = await musicSdk[source].musicSearch.search(query, 1, 20)
       const list = Array.isArray(searchData?.list) ? searchData.list : []
       perSource[source] = list.length
+      // 记下该平台得分最高的一条。没匹配上时要能一眼看出「是根本没搜到这首歌」
+      // 还是「搜到了但被时长/歌手否掉了」。
+      let best: any = null
+      for (const it of list) {
+        const sc = getSongMatchScore(it, songInfo)
+        if (sc >= 0 && (best === null || sc > best.__score)) best = { ...it, __score: sc }
+      }
+      const first = list[0] || {}
+      bestPerSource[source] = best
+        ? `✓${best.__score} ${best.name}/${best.singer}/${best.interval}`
+        : `✗首条=${first.name || '空'}/${first.singer || '空'}/${first.interval || '空'} 目标=${songInfo.name}/${songInfo.singer}/${songInfo.interval}`
       return list.map((item: any) => ({ ...item, source }))
     } catch (err: any) {
       hadError = true
@@ -142,7 +154,7 @@ export const findServerSourceMatches = async (songInfo: any, username: string) =
     .then(matches => {
       // 跨平台是可选路径，而且会静默失效。把「搜了哪些平台、各搜到几条、
       // 最终几条通过相似度校验」打出来，「为什么这首歌没换源」才看得见。
-      console.log(`[自动换源] ${songInfo.name} ${songInfo.singer} | 搜索平台: ${searchSources.join(',') || '(无)'} | 命中: ${JSON.stringify(perSource)} | 通过相似度校验: ${matches.length}`)
+      console.log(`[自动换源] ${songInfo.name} ${songInfo.singer} | 搜索平台: ${searchSources.join(',') || '(无)'} | 命中: ${JSON.stringify(perSource)} | 通过校验: ${matches.length} | 各平台最佳: ${JSON.stringify(bestPerSource)}`)
       return matches
     })
 
