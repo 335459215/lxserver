@@ -489,6 +489,81 @@ declare namespace LX {
      */
     'subsonic.source.autoSwitchCustom'?: boolean
 
+    // === 音乐源解析（/api/music/url 与 Subsonic stream 共用）===
+
+    /**
+     * 不分平台解析 (默认 true)。开启后不局限于歌曲所属平台：按歌名+歌手在其它
+     * 「有自定义源能解析」的平台并发搜替身，任一平台的任一自定义源成功即采用。
+     */
+    'music.url.crossPlatform'?: boolean
+
+    /**
+     * 自定义源并发竞速 (默认 true)。关闭后回退到按 order.json 串行轮询。
+     */
+    'music.url.race'?: boolean
+
+    /**
+     * 竞速错峰间隔(ms, 默认 180)。相邻候选的启动间隔，防止死源拖慢整体，同时保留优先级语义。
+     */
+    'music.url.raceStagger'?: number
+
+    /**
+     * 平台候选错峰间隔(ms, 默认 150)。原平台立刻启动,跨平台候选依次跟进。
+     */
+    'music.url.crossStagger'?: number
+
+    /**
+     * 平台候选同时在途的上限(默认 3)。
+     */
+    'music.url.maxParallelPlatforms'?: number
+
+    /**
+     * 优先级宽限(ms, 默认 350)。低优先级源先返回时，给更靠前的在途候选反超的时间。
+     */
+    'music.url.priorityGrace'?: number
+
+    /**
+     * 同一平台同时在途的自定义源上限(默认 4)，防止一次性打满音源脚本与上游接口。
+     */
+    'music.url.maxParallel'?: number
+
+    /**
+     * 每个自定义源自身的尝试次数(默认 1)。>1 时按 music.url.retryDelay 间隔重试。
+     */
+    'music.url.sourceRetries'?: number
+
+    /**
+     * 单个源两次尝试之间的间隔(ms, 默认 900)。
+     */
+    'music.url.retryDelay'?: number
+
+    /**
+     * 解析成功后校验音频链接可用性(默认 true)。音源经常返回一个 403/404 的
+     * 「成功」链接，校验失败会把该源记为失败并继续竞速，而不是把坏链接交给播放器。
+     */
+    'music.url.validate'?: boolean
+
+    /**
+     * 解析结果粘滞缓存时长(秒, 默认 600)。命中后直接复用上次成功的平台+自定义源，
+     * 跳过整条搜索与竞速链路；0 表示关闭。
+     */
+    'music.url.stickyTtl'?: number
+
+    /**
+     * 死源熔断 (默认 true)。连续失败的源会被临时跳过，避免每首歌都重蹈死源的完整超时。
+     */
+    'music.url.breakerEnabled'?: boolean
+
+    /**
+     * 熔断阈值(默认 3)：连续失败达到该次数后熔断。
+     */
+    'music.url.breakerThreshold'?: number
+
+    /**
+     * 熔断冷却时长(秒, 默认 300)。冷却结束后放一个探针重新试探，而不是直接清零。
+     */
+    'music.url.breakerCooldown'?: number
+
     /**
      * 歌手信息源优先级
      */

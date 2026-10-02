@@ -25,8 +25,10 @@ import formidable from 'formidable'
 // @ts-ignore
 import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 const musicSdk = musicSdkRaw as any
-import { initUserApis, callUserApiGetMusicUrl, isSourceSupported, getLoadedApis, getLoadedApisCount } from './userApi'
+import { initUserApis, callUserApiGetMusicUrl, isSourceSupported, getLoadedApis, getLoadedApisCount, resetAllSourceBreakers } from './userApi'
+import { findServerSourceMatches, getSongMatchScore, normalizeSongMatchText, normalizeSongNameText, isSingerMatch, getSongDurationSeconds, AUTO_SOURCE_ORDER, normalizeSongInfo } from './musicMatch'
 import * as customSourceHandlers from './customSourceHandlers'
+import { resolveMusicUrl, clearStickyCache } from './musicResolver'
 import * as fileCache from './fileCache'
 import * as customMusicManager from './customMusicManager'
 import * as serverDownloadQueue from './serverDownloadQueue'
@@ -460,81 +462,6 @@ const getMime = (filename: string) => {
   return mimeTypes[ext] || 'application/octet-stream'
 }
 
-/**
- * 规范化歌曲信息，确保收藏列表中的 meta 属性在根节点也可用
- * 解决 SDK 无法识别收藏歌曲音质的问题
- */
-const normalizeSongInfo = (songInfo: any) => {
-  if (!songInfo) return songInfo
-  const meta = songInfo.meta || {}
-
-  // 1. 处理音质信息 (types / _types)
-  if (!songInfo.types && meta) {
-    songInfo.types = meta.qualitys || meta.types
-  }
-  if (!songInfo._types && meta) {
-    songInfo._types = meta._qualitys || meta._types
-  }
-
-  // 2. 处理基础字段备用根节点映射
-  if (!songInfo.albumName && meta.albumName) songInfo.albumName = meta.albumName
-  if (!songInfo.albumId && meta.albumId) songInfo.albumId = meta.albumId
-  if (!songInfo.img && meta.picUrl) songInfo.img = meta.picUrl
-  if (!songInfo.name && meta.name) songInfo.name = meta.name
-  if (!songInfo.singer && meta.singer) songInfo.singer = meta.singer
-  if (!songInfo.source && meta.source) songInfo.source = meta.source
-  if (!songInfo.interval && meta.interval) songInfo.interval = meta.interval
-
-  // 3. 处理通用 ID 转换 (id -> songmid)
-  if (!songInfo.songmid) {
-    if (meta.songId) {
-      songInfo.songmid = meta.songId
-    } else if (songInfo.id) {
-      const sourcePrefix = `${songInfo.source}_`
-      if (typeof songInfo.id === 'string' && songInfo.id.startsWith(sourcePrefix)) {
-        songInfo.songmid = songInfo.id.slice(sourcePrefix.length)
-      } else {
-        songInfo.songmid = songInfo.id
-      }
-    }
-  }
-
-  // 4. 针对各平台 SDK 所需的特定字段进行补全
-  switch (songInfo.source) {
-    case 'wy': // 网易
-      if (!songInfo.id && meta.songId) songInfo.id = Number(meta.songId)
-      if (!songInfo.songmid && songInfo.id) songInfo.songmid = String(songInfo.id)
-      break
-
-    case 'kg': // 酷狗
-      if (!songInfo.hash && meta.hash) songInfo.hash = meta.hash
-      // 兼容某些 SDK 可能需要的 songmid 格式 (数字_哈希 或 仅哈Hash)
-      break
-
-    case 'tx': // 腾讯
-      if (!songInfo.strMediaMid && meta.strMediaMid) songInfo.strMediaMid = meta.strMediaMid
-      if (!songInfo.albumMid && meta.albumMid) songInfo.albumMid = meta.albumMid
-      // 只有当 meta 中的 songId 是纯数字时才回填至 root.songId，否则保持 undefined 触发 SDK 自动获取
-      const metaSongId = String(meta.songId || '')
-      if (/^\d+$/.test(metaSongId)) {
-        songInfo.songId = metaSongId
-      }
-      break
-
-    case 'mg': // 咪咕
-      if (!songInfo.copyrightId && meta.copyrightId) songInfo.copyrightId = meta.copyrightId
-      if (!songInfo.lrcUrl && meta.lrcUrl) songInfo.lrcUrl = meta.lrcUrl
-      if (!songInfo.songId) songInfo.songId = songInfo.songmid
-      break
-
-    case 'kw': // 酷我
-      // 已在步骤 3 中通用处理
-      break
-  }
-
-  return songInfo
-}
-
 let status: LX.Sync.Status = {
   status: false,
   message: '',
@@ -743,6 +670,9 @@ const reloadServerData = async () => {
   // 3. 重新初始化 User APIs (解决脚本源实时生效问题)
   try {
     await initUserApis()
+    // 源已重载，之前的解析结果与熔断判定不再可信
+    clearStickyCache()
+    resetAllSourceBreakers()
     startupLog.info('User APIs re-initialized.')
   } catch (err: any) {
     startupLog.error('Failed to re-init user APIs:', err.message)
@@ -838,122 +768,6 @@ const getAudioRemoteSize = async (audioUrl: string): Promise<number | null> => {
   }
 
   return null
-}
-
-const AUTO_SOURCE_ORDER = ['wy', 'tx', 'kw', 'kg', 'mg']
-const SOURCE_MATCH_CACHE_TTL = 60_000
-const sourceMatchCache = new Map<string, { expiresAt: number, promise: Promise<any[]> }>()
-
-const normalizeSongMatchText = (value: unknown) => String(value || '')
-  .toLowerCase()
-  .replace(/[（(\[].*?[）)\]]/g, '')
-  .replace(/[\s\p{P}\p{S}]/gu, '')
-
-const normalizeSongNameText = (value: unknown) => String(value || '')
-  .toLowerCase()
-  .replace(/[\s\p{P}\p{S}]/gu, '')
-
-const splitSingerNames = (value: unknown) => String(value || '')
-  .toLowerCase()
-  .split(/[、，,&；;|/+]/)
-  .map(normalizeSongMatchText)
-  .filter(Boolean)
-
-const isSingerMatch = (candidateSinger: unknown, targetSinger: unknown) => {
-  const candidateText = normalizeSongMatchText(candidateSinger)
-  const targetText = normalizeSongMatchText(targetSinger)
-  if (!targetText) return true
-  if (!candidateText) return false
-  if (candidateText.includes(targetText) || targetText.includes(candidateText)) return true
-
-  const candidateParts = splitSingerNames(candidateSinger)
-  const targetParts = splitSingerNames(targetSinger)
-  return candidateParts.some(candidatePart => targetParts.some(targetPart => (
-    candidatePart.includes(targetPart) || targetPart.includes(candidatePart)
-  )))
-}
-
-const getSongDurationSeconds = (value: unknown) => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value > 10000 ? Math.round(value / 1000) : Math.round(value)
-  }
-
-  const text = String(value || '').trim()
-  if (!text) return 0
-  if (/^\d+(?:\.\d+)?$/.test(text)) {
-    const parsed = Number(text)
-    return parsed > 10000 ? Math.round(parsed / 1000) : Math.round(parsed)
-  }
-
-  const parts = text.split(':').map(Number)
-  if (parts.some(part => !Number.isFinite(part))) return 0
-  if (parts.length === 2) return Math.round(parts[0] * 60 + parts[1])
-  if (parts.length === 3) return Math.round(parts[0] * 3600 + parts[1] * 60 + parts[2])
-  return 0
-}
-
-const getSongMatchScore = (candidate: any, target: any) => {
-  const candidateName = normalizeSongNameText(candidate?.name)
-  const targetName = normalizeSongNameText(target?.name)
-  if (!candidateName || !targetName) return -1
-  if (!candidateName.includes(targetName) && !targetName.includes(candidateName)) return -1
-  if (!isSingerMatch(candidate?.singer, target?.singer)) return -1
-
-  const candidateDuration = getSongDurationSeconds(candidate?.interval)
-  const targetDuration = getSongDurationSeconds(target?.interval)
-  let durationScore = 0
-  if (candidateDuration > 0 && targetDuration > 0) {
-    const durationDiff = Math.abs(candidateDuration - targetDuration)
-    if (durationDiff > 8) return -1
-    durationScore = 8 - durationDiff
-  }
-
-  const nameScore = candidateName === targetName ? 20 : 10
-  const candidateAlbum = normalizeSongMatchText(candidate?.albumName)
-  const targetAlbum = normalizeSongMatchText(target?.albumName)
-  const albumScore = candidateAlbum && targetAlbum && candidateAlbum === targetAlbum ? 3 : 0
-  return nameScore + durationScore + albumScore
-}
-
-const findServerSourceMatches = async (songInfo: any, username: string) => {
-  if (!songInfo?.name || !songInfo?.singer) return []
-
-  const cacheKey = [
-    username,
-    songInfo.source,
-    normalizeSongMatchText(songInfo.name),
-    normalizeSongMatchText(songInfo.singer),
-    getSongDurationSeconds(songInfo.interval),
-  ].join(':')
-  const now = Date.now()
-  const cached = sourceMatchCache.get(cacheKey)
-  if (cached && cached.expiresAt > now) return cached.promise
-
-  for (const [key, value] of sourceMatchCache) {
-    if (value.expiresAt <= now) sourceMatchCache.delete(key)
-  }
-
-  const searchSources = AUTO_SOURCE_ORDER.filter(source => (
-    source !== songInfo.source && isSourceSupported(source, username) && musicSdk[source]?.musicSearch?.search
-  ))
-  const query = `${songInfo.name} ${songInfo.singer}`
-  const promise = Promise.all(searchSources.map(async source => {
-    try {
-      const searchData = await musicSdk[source].musicSearch.search(query, 1, 20)
-      const list = Array.isArray(searchData?.list) ? searchData.list : []
-      return list.map((item: any) => ({ ...item, source }))
-    } catch (err: any) {
-      console.warn(`[自动换源] 搜索 ${source} 失败: ${err?.message || err}`)
-      return []
-    }
-  })).then(resultGroups => resultGroups.flat()
-    .map(candidate => ({ candidate, score: getSongMatchScore(candidate, songInfo) }))
-    .filter(item => item.score >= 0)
-    .sort((a, b) => b.score - a.score)
-    .map(item => item.candidate))
-
-  sourceMatchCache.set(cacheKey, { expiresAt: now + SOURCE_MATCH_CACHE_TTL, promise })
-  return promise
 }
 
 interface ServerSongResolveResult {
@@ -6097,108 +5911,47 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           }
 
           try {
-            let { songInfo, quality, enableAutoSwitchApiSource, excludeApiSources } = JSON.parse(body)
-            songInfo = normalizeSongInfo(songInfo)
-            // console.log('[歌曲播放] 歌曲信息:', JSON.stringify(songInfo, null, 2))
+            const { songInfo: rawSongInfo, quality, enableAutoSwitchApiSource, excludeApiSources } = JSON.parse(body)
+            const songInfo = normalizeSongInfo(rawSongInfo)
             if (!songInfo || !songInfo.source) {
               throw new Error('Invalid songInfo')
             }
             const source = songInfo.source
-            let result: any
 
-            let customSourceError: string | null = null
-            let attempts: any[] = []
-            if (isSourceSupported(source, verifiedUsername)) {
-              try {
-                console.log(`[歌曲播放] 使用自定义源解析: ${source} (请求ID: ${reqId || '无'}, 用户: ${verifiedUsername})`)
+            console.log(`[歌曲播放] 开始解析: ${songInfo.name} - ${songInfo.singer} (请求平台 ${source}, 音质 ${quality || '128k'}, 请求ID: ${reqId || '无'}, 用户: ${verifiedUsername})`)
 
-                const userApiResult = await callUserApiGetMusicUrl(
-                  source, songInfo, quality || '128k', verifiedUsername,
-                  (attempt) => { void pushProgress(attempt) },
-                  enableAutoSwitchApiSource !== false,
-                  excludeApiSources
-                )
-                result = userApiResult
-                attempts = userApiResult.attempts || []
-              } catch (userApiError: any) {
-                console.error(`[歌曲播放] 自定义源解析失败:`, userApiError.message)
-                customSourceError = userApiError.message
-                attempts = userApiError.attempts || []
-                // 不抛出错误，继续尝试内置源
-              }
-            } else {
-              // isSourceSupported = false: 无任何自定义源支持此平台，立即通知前端
+            if (!isSourceSupported(source, verifiedUsername)) {
               void pushProgress({ name: '系统', status: 'fail', message: `未找到支持 ${source} 平台的自定义源，请在设置中添加或启用相关源` })
             }
 
-            // 自定义源失败则直接报错（内置 SDK 无独立解析能力，回退无意义）
-            if (!result) {
-              const errMsg = customSourceError || `未找到支持 ${source} 平台的自定义源，请在设置中添加或启用相关源`
-              const err: any = new Error(errMsg)
-              err.attempts = attempts
-              throw err
+            let result: any
+            let attempts: any[] = []
+            try {
+              // 不分平台 + 并发：除歌曲原平台外，也会在其它「有自定义源能解析」的平台
+              // 按歌名+歌手搜替身一起竞速，任一平台的任一自定义源先成功即采用。
+              result = await resolveMusicUrl({
+                songInfo,
+                quality: quality || '128k',
+                username: verifiedUsername,
+                onProgress: (attempt) => { void pushProgress(attempt) },
+                excludeApiSources,
+                enableAutoSwitchApiSource: enableAutoSwitchApiSource !== false,
+              })
+              attempts = result.attempts || []
+            } catch (resolveError: any) {
+              console.error(`[歌曲播放] 自定义源解析失败:`, resolveError.message)
+              attempts = resolveError.attempts || []
+              const wrapped: any = resolveError
+              wrapped.attempts = attempts
+              throw wrapped
             }
 
             // 合并解析尝试记录到响应（前端可用于诊断）
             if (attempts.length > 0) result.attempts = attempts
 
-            // [Fix] Server-side Mixed Content handling & Redirect Resolution
-            // If the upstream URL is HTTP, rewrite it to use our secure proxy OR resolve it if it's a redirect
+            // 重定向已在 musicResolver.resolveAndValidateUrl 里跟随并校验过（该源返回 4xx 时会被判失败并继续竞速），
+            // 这里只补上响应里前端需要的下载源判定字段。
             if (result && result.url) {
-              // 1. Resolve Redirects (301, 302, 307, etc.) to get direct link
-              try {
-                // Only try to resolve if it looks like a remote URL and is not already resolved
-                if (result.url.startsWith('http')) {
-                  // console.log(`[歌曲播放] 正在解析重定向: ${songInfo.name} (${quality})`);
-
-                  const checkRedirect = async (u: string, depth: number = 0): Promise<string> => {
-                    if (depth > 3) return u // Max depth 3
-                    try {
-                      const resp = await needle('head', u, null, {
-                        follow_max: 0,
-                        response_timeout: 4000, // Increase timeout slightly
-                        read_timeout: 4000,
-                        // 解析的是音乐平台链接，归 music 分类
-                        agent: await getProxyAgent(u, 'music'),
-                        headers: {
-                          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                          'Referer': new URL(u).origin
-                        }
-                      })
-                      if (resp.statusCode && [301, 302, 303, 307, 308].includes(resp.statusCode) && resp.headers.location) {
-                        let nextUrl = resp.headers.location
-                        if (!nextUrl.startsWith('http')) {
-                          try { nextUrl = new URL(nextUrl, u).href } catch (e) { }
-                        }
-                        // console.log(`[歌曲播放] 解析重定向 [${resp.statusCode}]: ${u.substring(0, 50)}... -> ${nextUrl.substring(0, 50)}...`)
-                        return checkRedirect(nextUrl, depth + 1)
-                      }
-                      // If error status but not redirect, return original
-                      if (resp.statusCode !== undefined && resp.statusCode >= 400) {
-                        console.warn(`[歌曲播放] 重定向探测返回异常状态码 ${resp.statusCode}，使用原始链接`);
-                        return u;
-                      }
-                    } catch (e: any) {
-                      console.warn(`[歌曲播放] HEAD 校验重定向失败: ${e.message}`);
-                    }
-                    return u
-                  }
-
-                  const finalUrl = await checkRedirect(result.url)
-                  if (finalUrl !== result.url) {
-                    result.url = finalUrl
-                  }
-                  // console.log(`[歌曲播放] 最终解析音频链接: ${result.url.substring(0, 100)}...`);
-                }
-              } catch (e) {
-                console.error('[歌曲播放] 解析重定向发生异常:', e)
-              }
-
-              // 2. Mixed Content Handling (Optional Proxy) implementation details handled by frontend now
-              // But we can keep the log for debugging
-              if (result.url.startsWith('http://')) {
-                // console.log(`[歌曲播放] 提示: 音频链接为 HTTP 协议: ${result.url}`)
-              }
 
               result.requestedSource = songInfo.source
               result.downloadSource = fileCache.detectDownloadSource(result.url, songInfo.source)
@@ -6688,9 +6441,13 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/custom-source/import' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
         return customSourceHandlers.handleImport(req, res)
       }
       if (pathname === '/api/custom-source/upload' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
         return customSourceHandlers.handleUpload(req, res)
       }
       if (pathname === '/api/custom-source/list' && req.method === 'GET') {
@@ -6711,16 +6468,23 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         return customSourceHandlers.handleList(req, res, username)
       }
       if (pathname === '/api/custom-source/toggle' && req.method === 'POST') {
+        // 自定义源的增删改会同时作废粘滞缓存与熔断状态，否则旧结果/旧熔断会一直粘住
+        clearStickyCache()
+        resetAllSourceBreakers()
         return customSourceHandlers.handleToggle(req, res)
       }
       if (pathname === '/api/custom-source/delete' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
         return customSourceHandlers.handleDelete(req, res)
       }
 
       if (pathname === '/api/custom-source/reorder' && req.method === 'POST') {
+        clearStickyCache()
         return customSourceHandlers.handleReorder(req, res)
       }
       if (pathname === '/api/custom-source/update-platforms' && req.method === 'POST') {
+        clearStickyCache()
         return customSourceHandlers.handleUpdatePlatforms(req, res)
       }
 
@@ -6966,6 +6730,18 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'subsonic.source.priority': global.lx.config['subsonic.source.priority'] ?? 'kw,tx,wy,mg,kg',
             'subsonic.source.crossPlatform': global.lx.config['subsonic.source.crossPlatform'] ?? true,
             'subsonic.source.autoSwitchCustom': global.lx.config['subsonic.source.autoSwitchCustom'] ?? true,
+            'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'] ?? true,
+            'music.url.race': global.lx.config['music.url.race'] ?? true,
+            'music.url.raceStagger': global.lx.config['music.url.raceStagger'] ?? 180,
+            'music.url.priorityGrace': global.lx.config['music.url.priorityGrace'] ?? 350,
+            'music.url.maxParallel': global.lx.config['music.url.maxParallel'] ?? 4,
+            'music.url.sourceRetries': global.lx.config['music.url.sourceRetries'] ?? 1,
+            'music.url.retryDelay': global.lx.config['music.url.retryDelay'] ?? 900,
+            'music.url.validate': global.lx.config['music.url.validate'] ?? true,
+            'music.url.stickyTtl': global.lx.config['music.url.stickyTtl'] ?? 600,
+            'music.url.breakerEnabled': global.lx.config['music.url.breakerEnabled'] ?? true,
+            'music.url.breakerThreshold': global.lx.config['music.url.breakerThreshold'] ?? 3,
+            'music.url.breakerCooldown': global.lx.config['music.url.breakerCooldown'] ?? 300,
             'singer.sourcePriority': (global.lx.config['singer.sourcePriority'] || ['tx', 'wy']).join(','),
             'artist.maxFetchPages': global.lx.config['artist.maxFetchPages'] ?? 20,
             'system.allowUnsafeVM': global.lx.config['system.allowUnsafeVM'] || false,
@@ -7194,6 +6970,18 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               if (newConfig['subsonic.source.priority'] !== undefined) global.lx.config['subsonic.source.priority'] = String(newConfig['subsonic.source.priority'])
               if (newConfig['subsonic.source.crossPlatform'] !== undefined) global.lx.config['subsonic.source.crossPlatform'] = !!newConfig['subsonic.source.crossPlatform']
               if (newConfig['subsonic.source.autoSwitchCustom'] !== undefined) global.lx.config['subsonic.source.autoSwitchCustom'] = !!newConfig['subsonic.source.autoSwitchCustom']
+              if (newConfig['music.url.crossPlatform'] !== undefined) global.lx.config['music.url.crossPlatform'] = !!newConfig['music.url.crossPlatform']
+              if (newConfig['music.url.race'] !== undefined) global.lx.config['music.url.race'] = !!newConfig['music.url.race']
+              if (newConfig['music.url.raceStagger'] !== undefined && !Number.isNaN(Number(newConfig['music.url.raceStagger']))) global.lx.config['music.url.raceStagger'] = Number(newConfig['music.url.raceStagger'])
+              if (newConfig['music.url.priorityGrace'] !== undefined && !Number.isNaN(Number(newConfig['music.url.priorityGrace']))) global.lx.config['music.url.priorityGrace'] = Number(newConfig['music.url.priorityGrace'])
+              if (newConfig['music.url.maxParallel'] !== undefined && !Number.isNaN(Number(newConfig['music.url.maxParallel']))) global.lx.config['music.url.maxParallel'] = Number(newConfig['music.url.maxParallel'])
+              if (newConfig['music.url.sourceRetries'] !== undefined && !Number.isNaN(Number(newConfig['music.url.sourceRetries']))) global.lx.config['music.url.sourceRetries'] = Number(newConfig['music.url.sourceRetries'])
+              if (newConfig['music.url.retryDelay'] !== undefined && !Number.isNaN(Number(newConfig['music.url.retryDelay']))) global.lx.config['music.url.retryDelay'] = Number(newConfig['music.url.retryDelay'])
+              if (newConfig['music.url.validate'] !== undefined) global.lx.config['music.url.validate'] = !!newConfig['music.url.validate']
+              if (newConfig['music.url.stickyTtl'] !== undefined && !Number.isNaN(Number(newConfig['music.url.stickyTtl']))) global.lx.config['music.url.stickyTtl'] = Number(newConfig['music.url.stickyTtl'])
+              if (newConfig['music.url.breakerEnabled'] !== undefined) global.lx.config['music.url.breakerEnabled'] = !!newConfig['music.url.breakerEnabled']
+              if (newConfig['music.url.breakerThreshold'] !== undefined && !Number.isNaN(Number(newConfig['music.url.breakerThreshold']))) global.lx.config['music.url.breakerThreshold'] = Number(newConfig['music.url.breakerThreshold'])
+              if (newConfig['music.url.breakerCooldown'] !== undefined && !Number.isNaN(Number(newConfig['music.url.breakerCooldown']))) global.lx.config['music.url.breakerCooldown'] = Number(newConfig['music.url.breakerCooldown'])
               if (newConfig['singer.sourcePriority'] !== undefined) {
                 const priority = String(newConfig['singer.sourcePriority']).split(',').filter(s => s === 'tx' || s === 'wy') as Array<'tx' | 'wy'>
                 if (priority.length > 0) global.lx.config['singer.sourcePriority'] = priority
@@ -7298,6 +7086,18 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 'subsonic.source.priority': global.lx.config['subsonic.source.priority'],
                 'subsonic.source.crossPlatform': global.lx.config['subsonic.source.crossPlatform'],
                 'subsonic.source.autoSwitchCustom': global.lx.config['subsonic.source.autoSwitchCustom'],
+                'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'],
+                'music.url.race': global.lx.config['music.url.race'],
+                'music.url.raceStagger': global.lx.config['music.url.raceStagger'],
+                'music.url.priorityGrace': global.lx.config['music.url.priorityGrace'],
+                'music.url.maxParallel': global.lx.config['music.url.maxParallel'],
+                'music.url.sourceRetries': global.lx.config['music.url.sourceRetries'],
+                'music.url.retryDelay': global.lx.config['music.url.retryDelay'],
+                'music.url.validate': global.lx.config['music.url.validate'],
+                'music.url.stickyTtl': global.lx.config['music.url.stickyTtl'],
+                'music.url.breakerEnabled': global.lx.config['music.url.breakerEnabled'],
+                'music.url.breakerThreshold': global.lx.config['music.url.breakerThreshold'],
+                'music.url.breakerCooldown': global.lx.config['music.url.breakerCooldown'],
                 'configBackup.enable': global.lx.config['configBackup.enable'],
                 'configBackup.retentionDays': global.lx.config['configBackup.retentionDays'],
                 'configBackup.dir': global.lx.config['configBackup.dir'],

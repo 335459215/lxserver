@@ -4487,7 +4487,9 @@ async function fetchSongUrl(song, quality, isRetry = false, isSilent = false, op
                 // 否则后端下载器会因无法识别相对路径而报 ERR_INVALID_URL 错误。
                 triggerServerCache(song, result.url, quality);
             }
-            console.log(`[Resolve] Online Success: ${song.name} via ${result.sourceName || 'Unknown'}`);
+            // 服务端现在是不分平台解析的：resolvedSource 与 song.source 不同说明命中了跨平台替身
+            console.log(`[Resolve] Online Success: ${song.name} via ${result.sourceName || 'Unknown'}` + (result.resolvedSource && result.resolvedSource !== song.source
+                    ? ` (换源: ${song.source} → ${result.resolvedSource})` : ''));
             return {
                 url: finalUrl,
                 sourceType: 'normal',
@@ -4496,6 +4498,7 @@ async function fetchSongUrl(song, quality, isRetry = false, isSilent = false, op
                 sourceId: result.sourceId,
                 hasMoreSources: !!result.hasMoreSources,
                 requestedSource: result.requestedSource || song.source,
+                resolvedSource: result.resolvedSource || song.source,
                 downloadSource: result.downloadSource || song.source,
                 songInfo: song,
                 errorMsg: result.errorMsg

@@ -481,6 +481,56 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
     }
 }
 
+// 连续失败的自定义源会被临时熔断，跳过直到冷却结束。
+// 没有它的话，每次播放都要把已知死掉的源重新拉一遍——它们往往要等满
+// 音源脚本自身的超时才返回，是整条链路上最贵的一段等待。
+interface BreakerState { fails: number, openUntil: number }
+const sourceBreakers = new Map<string, BreakerState>()
+
+const breakerEnabled = () => global.lx.config['music.url.breakerEnabled'] !== false
+const breakerThreshold = () => Math.max(1, Number(global.lx.config['music.url.breakerThreshold'] ?? 3))
+const breakerCooldownMs = () => Math.max(5_000, Number(global.lx.config['music.url.breakerCooldown'] ?? 300) * 1000)
+
+const isSourceTripped = (apiId: string) => {
+    if (!breakerEnabled()) return false
+    const st = sourceBreakers.get(apiId)
+    if (!st) return false
+    if (st.openUntil > Date.now()) return true
+    if (st.fails <= 0) return false
+    // 冷却结束后放一个探针出去重新试探，而不是直接清零
+    sourceBreakers.set(apiId, { fails: st.fails - 1, openUntil: 0 })
+    return false
+}
+
+const recordSourceResult = (apiId: string, ok: boolean) => {
+    if (!breakerEnabled() || !apiId) return
+    const now = Date.now()
+    if (ok) { sourceBreakers.delete(apiId); return }
+    const st = sourceBreakers.get(apiId) ?? { fails: 0, openUntil: 0 }
+    if (st.openUntil > now) return
+    const fails = st.fails + 1
+    sourceBreakers.set(apiId, { fails, openUntil: fails >= breakerThreshold() ? now + breakerCooldownMs() : 0 })
+}
+
+/** 管理后台「测试音源」成功后应立刻解除该源的熔断状态 */
+export const resetSourceBreaker = (apiId: string) => { sourceBreakers.delete(apiId) }
+
+/** 自定义源被增删改或重新加载时整体作废熔断状态 */
+export const resetAllSourceBreakers = () => { sourceBreakers.clear() }
+
+export interface MusicUrlRaceOptions {
+    /** 关闭后回退到串行轮询（仅用于排障/对比） */
+    race?: boolean
+    /** 相邻候选的错峰启动间隔(ms) */
+    staggerMs?: number
+    /** 已有低序号候选成功时，给更靠前在途候选反超的宽限时间(ms) */
+    priorityGraceMs?: number
+    /** 同时在途的候选上限 */
+    maxParallel?: number
+    /** 每个候选自身的尝试次数 */
+    retries?: number
+}
+
 // 调用自定义源的 getMusicUrl
 export async function callUserApiGetMusicUrl(
     source: string,
@@ -489,7 +539,8 @@ export async function callUserApiGetMusicUrl(
     clientUsername?: string,
     onProgress?: (attempt: any) => Promise<void> | void,
     enableAutoSwitchApiSource?: boolean,
-    excludeApiSources?: string[]
+    excludeApiSources?: string[],
+    opts?: MusicUrlRaceOptions
 ): Promise<{ url: string, type: string, sourceName?: string, sourceId?: string, attempts?: any[], hasMoreSources?: boolean }> {
     // 标准化 songInfo 格式：将 meta 中的字段提升到顶层
     const normalizedSongInfo = { ...songInfo }
@@ -581,7 +632,7 @@ export async function callUserApiGetMusicUrl(
     }
 
     let supportedCount = 0;
-    let lastError: Error | null = null;
+    let lastError: any = null;
 
     // 查找支持该 source 的 API
     // 收集所有支持该 source 的 API，并根据权限过滤
@@ -620,6 +671,11 @@ export async function callUserApiGetMusicUrl(
     // 按 loadedApis 收集所有可用候选源（权限过滤，不强制任何顺序）
     for (const [apiId, api] of loadedApis) {
         if (!api.info.sources || !api.info.sources[source]) continue
+        // 连续失败被熔断的源本轮直接不参与竞速
+        if (isSourceTripped(api.info.id)) {
+            if (global.lx.config['debug.enabled']) console.log(`[自定义源] ${api.info.name} 处于熔断冷却，本轮跳过`)
+            continue
+        }
 
         const state = getSourceState(api.info.id)
 
@@ -700,6 +756,8 @@ export async function callUserApiGetMusicUrl(
 
     if (enableAutoSwitchApiSource === false && candidates.length > 1) {
         candidates = [candidates[0]]
+        // 只留一个候选时并发竞速没有意义，退回串行 + 重试
+        opts = { ...opts, race: false }
     }
 
     supportedCount = candidates.length
@@ -715,76 +773,128 @@ export async function callUserApiGetMusicUrl(
         throw err
     }
 
-    // 逻辑分歧：
-    // 1. 如果只有一个源支持 -> 重试 3 次
-    // 2. 如果有多个源支持 -> 每个源试一次 (轮询)
+    // 每个候选占一个槽位：attempts 最终按候选(优先级)顺序输出，而不是按完成先后。
+    // 前端把这份列表直接展示给用户，按优先级排比按时间排可读。
+    const attemptSlots: any[][] = candidates.map(() => [])
+    const cfg = global.lx.config as any
+    const raceEnabled = opts?.race ?? (cfg['music.url.race'] !== false)
+    const staggerMs = Math.max(0, Number(opts?.staggerMs ?? cfg['music.url.raceStagger'] ?? 180))
+    const priorityGraceMs = Math.max(0, Number(opts?.priorityGraceMs ?? cfg['music.url.priorityGrace'] ?? 350))
+    const maxParallel = Math.max(1, Number(opts?.maxParallel ?? cfg['music.url.maxParallel'] ?? 4))
+    // 只有一个候选时它就是唯一机会，多给一次重试；多个候选时每个源只试一次，
+    // 试不过还有别的源顶上，也避免把上游接口打爆。
+    const defaultRetries = candidates.length === 1 ? 2 : 1
+    const maxRetries = Math.max(1, Number(opts?.retries ?? cfg['music.url.sourceRetries'] ?? defaultRetries))
+    const retryDelayMs = Math.max(0, Number(cfg['music.url.retryDelay'] ?? 900))
 
-    const attempts: any[] = []
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+    const succeeded = new Map<number, any>()
+    const inflight = new Set<number>()
+    let accepted: { index: number, result: any } | null = null
+    let finished = 0
+    let done = false
+    let graceDeadline = 0
+    let dirty = false
+    let notify: (() => void) | null = null
+    const changed = () => { dirty = true; const n = notify; notify = null; n?.() }
+    // dirty 标志保证「状态变化早于等待注册」时不会漏唤醒（否则可能空等到全部候选结束）
+    const nextChange = async (): Promise<void> => {
+        if (dirty) { dirty = false; return }
+        await new Promise<void>(r => { notify = r })
+        dirty = false
+    }
 
-    if (supportedCount === 1) {
-        const api = candidates[0]
-        const maxRetries = 3
+    const emit = async (slot: any[], att: any) => {
+        slot.push(att)
+        // 已有赢家时不再往前端推流：这个请求的 SSE 可能已经结束或已被下一个请求接管
+        if (!accepted && onProgress) { try { await onProgress(att) } catch (e) { /* 忽略推送异常 */ } }
+    }
 
-        for (let i = 0; i < maxRetries; i++) {
-            try {
-                console.log(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner})`)
-
-                const url = await api.callRequest('musicUrl', source, {
-                    musicInfo: normalizedSongInfo,
-                    quality: quality,
-                    type: quality
-                })
-
-                console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
-                const att = { name: api.info.name, status: 'success', message: `第 ${i + 1} 次尝试成功` }
-                attempts.push(att)
-                if (onProgress) await onProgress(att)
-                return { url, type: quality, sourceName: api.info.name, sourceId: api.info.id, attempts, hasMoreSources: false }
-            } catch (error: any) {
-                console.error(`[自定义源] ${api.info.name} 失败 (第 ${i + 1}/${maxRetries} 次):`, `音源日志：${error.message}`)
-                lastError = error
-                const att = { name: api.info.name, status: 'fail', message: `第 ${i + 1} 次尝试失败,音源日志：${error.message}` }
-                attempts.push(att)
-                if (onProgress) await onProgress(att)
-                // 如果不是最后一次尝试，等待一小会儿
-                if (i < maxRetries - 1) {
-                    await new Promise(r => setTimeout(r, 1000))
+    const runCandidate = async (index: number) => {
+        const api = candidates[index]
+        const slot = attemptSlots[index]
+        try {
+            for (let i = 0; i < maxRetries; i++) {
+                if (accepted) return
+                try {
+                    console.log(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner}, 优先级: ${index + 1}/${candidates.length})`)
+                    const url = await api.callRequest('musicUrl', source, {
+                        musicInfo: normalizedSongInfo,
+                        quality: quality,
+                        type: quality
+                    })
+                    if (accepted) return
+                    console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
+                    recordSourceResult(api.info.id, true)
+                    await emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'success', message: maxRetries > 1 ? `第 ${i + 1} 次尝试成功` : '' })
+                    succeeded.set(index, { url, type: quality, sourceName: api.info.name, sourceId: api.info.id })
+                    changed()
+                    return
+                } catch (error: any) {
+                    lastError = error
+                    console.error(`[自定义源] ${api.info.name} 失败 (第 ${i + 1}/${maxRetries} 次):`, `音源日志：${error.message}`)
+                    recordSourceResult(api.info.id, false)
+                    await emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: `音源日志：${error.message}` })
+                    changed()
+                    if (i < maxRetries - 1 && !accepted) await sleep(retryDelayMs)
                 }
             }
+        } finally {
+            inflight.delete(index)
+            finished++
+            if (finished >= candidates.length) done = true
+            changed()
         }
-    } else {
-        // 多个源，轮流尝试
-        for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
-            const api = candidates[candidateIndex]
-            try {
-                console.log(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (所属: ${api.info.owner})`)
+    }
 
-                const url = await api.callRequest('musicUrl', source, {
-                    musicInfo: normalizedSongInfo,
-                    quality: quality,
-                    type: quality
-                })
+    // 按优先级依次错峰启动：既保住了 order.json 的优先级语义，
+    // 又不会像纯串行那样把每个源的失败延迟累加起来。
+    const schedule = async () => {
+        for (let i = 0; i < candidates.length; i++) {
+            if (accepted) return
+            if (i > 0) await sleep(staggerMs)
+            while (inflight.size >= maxParallel && !accepted) await sleep(20)
+            if (accepted) return
+            inflight.add(i)
+            void runCandidate(i)
+        }
+    }
+    void schedule()
 
-                console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
-                const att = { name: api.info.name, status: 'success' }
-                attempts.push(att)
-                if (onProgress) await onProgress(att)
-                return {
-                    url,
-                    type: quality,
-                    sourceName: api.info.name,
-                    sourceId: api.info.id,
-                    attempts,
-                    hasMoreSources: candidateIndex < candidates.length - 1
-                }
-            } catch (error: any) {
-                console.error(`[自定义源] ${api.info.name} 失败:`, `音源日志：${error.message}`)
-                lastError = error
-                const att = { name: api.info.name, status: 'fail', message: `音源日志：${error.message}` }
-                attempts.push(att)
-                if (onProgress) await onProgress(att)
+    // 裁决：取已成功候选里序号最小的；只要还有序号更小的候选在途，就给它
+    // priorityGrace 的时间反超——这样「排第一的源」通常还是赢，但不用等它先跑完。
+    let winner: { index: number, result: any } | null = null
+    for (;;) {
+        if (succeeded.size > 0) {
+            const indexes = [...succeeded.keys()].sort((a, b) => a - b)
+            const best = indexes[0]
+            // 宽限必须是「从第一个成功出现算起的总预算」而不是每轮各等一次，
+            // 否则 while 里会一轮一轮地重新等，慢源照样把延迟拖满，宽限形同虚设。
+            if (graceDeadline === 0) graceDeadline = Date.now() + priorityGraceMs
+            const hasLowerInFlight = [...inflight].some(i => i < best)
+            if (hasLowerInFlight && priorityGraceMs > 0 && Date.now() < graceDeadline) {
+                await Promise.race([nextChange(), sleep(graceDeadline - Date.now())])
                 continue
             }
+            winner = { index: best, result: succeeded.get(best) }
+            accepted = winner
+            break
+        }
+        if (done) break
+        await nextChange()
+    }
+
+    const attempts = attemptSlots.flat()
+
+    if (winner) {
+        const r = winner.result
+        return {
+            url: r.url,
+            type: r.type || quality,
+            sourceName: r.sourceName,
+            sourceId: r.sourceId,
+            attempts,
+            hasMoreSources: winner.index < candidates.length - 1
         }
     }
 

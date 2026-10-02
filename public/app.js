@@ -2632,6 +2632,42 @@ class App {
             if (form.elements['subsonic.source.autoSwitchCustom']) {
                 form.elements['subsonic.source.autoSwitchCustom'].checked = config['subsonic.source.autoSwitchCustom'] !== false;
             }
+            if (form.elements['music.url.crossPlatform']) {
+                form.elements['music.url.crossPlatform'].checked = config['music.url.crossPlatform'] !== false;
+            }
+            if (form.elements['music.url.race']) {
+                form.elements['music.url.race'].checked = config['music.url.race'] !== false;
+            }
+            if (form.elements['music.url.validate']) {
+                form.elements['music.url.validate'].checked = config['music.url.validate'] !== false;
+            }
+            if (form.elements['music.url.breakerEnabled']) {
+                form.elements['music.url.breakerEnabled'].checked = config['music.url.breakerEnabled'] !== false;
+            }
+            if (form.elements['music.url.raceStagger']) {
+                form.elements['music.url.raceStagger'].value = config['music.url.raceStagger'] ?? 180;
+            }
+            if (form.elements['music.url.priorityGrace']) {
+                form.elements['music.url.priorityGrace'].value = config['music.url.priorityGrace'] ?? 350;
+            }
+            if (form.elements['music.url.maxParallel']) {
+                form.elements['music.url.maxParallel'].value = config['music.url.maxParallel'] ?? 4;
+            }
+            if (form.elements['music.url.sourceRetries']) {
+                form.elements['music.url.sourceRetries'].value = config['music.url.sourceRetries'] ?? 1;
+            }
+            if (form.elements['music.url.retryDelay']) {
+                form.elements['music.url.retryDelay'].value = config['music.url.retryDelay'] ?? 900;
+            }
+            if (form.elements['music.url.stickyTtl']) {
+                form.elements['music.url.stickyTtl'].value = config['music.url.stickyTtl'] ?? 600;
+            }
+            if (form.elements['music.url.breakerThreshold']) {
+                form.elements['music.url.breakerThreshold'].value = config['music.url.breakerThreshold'] ?? 3;
+            }
+            if (form.elements['music.url.breakerCooldown']) {
+                form.elements['music.url.breakerCooldown'].value = config['music.url.breakerCooldown'] ?? 300;
+            }
 
             // 自定义歌曲目录配置
             if (form.elements['user.enableCustomMusicDir']) {
@@ -3102,6 +3138,18 @@ class App {
             'subsonic.source.priority': (formData.get('subsonic.source.priority') || '').trim() || 'kw,tx,wy,mg,kg',
             'subsonic.source.crossPlatform': formData.get('subsonic.source.crossPlatform') === 'on',
             'subsonic.source.autoSwitchCustom': formData.get('subsonic.source.autoSwitchCustom') === 'on',
+            'music.url.crossPlatform': formData.get('music.url.crossPlatform') === 'on',
+            'music.url.race': formData.get('music.url.race') === 'on',
+            'music.url.validate': formData.get('music.url.validate') === 'on',
+            'music.url.breakerEnabled': formData.get('music.url.breakerEnabled') === 'on',
+            'music.url.raceStagger': Number(formData.get('music.url.raceStagger')) || 180,
+            'music.url.priorityGrace': Number(formData.get('music.url.priorityGrace')) || 350,
+            'music.url.maxParallel': Number(formData.get('music.url.maxParallel')) || 4,
+            'music.url.sourceRetries': Number(formData.get('music.url.sourceRetries')) || 1,
+            'music.url.retryDelay': Number(formData.get('music.url.retryDelay')) || 900,
+            'music.url.stickyTtl': Number(formData.get('music.url.stickyTtl')) || 600,
+            'music.url.breakerThreshold': Number(formData.get('music.url.breakerThreshold')) || 3,
+            'music.url.breakerCooldown': Number(formData.get('music.url.breakerCooldown')) || 300,
             'singer.sourcePriority': formData.get('singer.sourcePriority'),
             'system.allowUnsafeVM': formData.get('system.allowUnsafeVM') === 'on',
         };

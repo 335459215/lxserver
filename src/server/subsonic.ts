@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import { URL } from 'url'
 import { getUserSpace, getUserDirname, getUserConfig } from '@/user'
 import { callUserApiGetMusicUrl } from '@/server/userApi'
+import { resolveMusicUrl } from '@/server/musicResolver'
 import { downloadAndCache, checkCache, serveCacheFile } from '@/server/fileCache'
 import {
     getSingerPic, getSingerDetail, getSingerMid, nameSimilarity,
@@ -5234,111 +5235,36 @@ class SubsonicHandler {
         username: string,
     ): Promise<{ url: string, quality: string, selected?: string }> {
         const cfg = global.lx.config
-        // 总开关关闭 → 退化为单次解析（服务端硬策略，客户端无法 override 打开）
-        if (cfg['subsonic.quality.enabled'] === false) {
-            const r = await callUserApiGetMusicUrl(source as any, musicInfo as any, requestedQuality, username)
-            if (!r?.url) throw new Error('Could not resolve music URL')
-            return { url: r.url, quality: r.type || requestedQuality }
-        }
-
         const asList = (v: any, fb: string[]): string[] => {
             const arr = Array.isArray(v) ? v.map(String) : String(v || '').split(',').map((s: string) => s.trim()).filter(Boolean)
             return arr.length ? arr : fb
         }
-        const autoSwitchCustom = cfg['subsonic.source.autoSwitchCustom'] !== false
 
-        // 平台优选顺序：客户端所选源优先，其余按 subsonic.source.priority
-        const sourcesToTry: string[] = [source]
-        if (cfg['subsonic.source.crossPlatform'] !== false) {
-            const srcPriority: string[] = asList(cfg['subsonic.source.priority'], ['kw', 'tx', 'wy', 'mg', 'kg'])
-            for (const s of srcPriority) if (s !== source && !sourcesToTry.includes(s)) sourcesToTry.push(s)
-        }
+        // 音质优先级: 关闭优选时只解析客户端请求的那一档，否则按优先级从高到低逐档尝试。
+        // 平台不再由这里串行遍历——解析器会自己把「有自定义源的平台」并发铺开竞速。
+        const qualities = cfg['subsonic.quality.enabled'] === false
+            ? [requestedQuality]
+            : this.getQualityPriorityOrder(source, maxBitrate)
 
-        // 已确认失败的自定义源。必须声明在平台循环之外：原先放在 for 体内，
-        // 切换到下一个平台时会被重置，已失效的源会在每个平台各被重新调用一次
-        // （叠加 userApi 单候选路径的 3 次重试，一次流播放最多重复调用十几次）。
-        const excludeApiSources: string[] = []
+        const crossPlatform = cfg['subsonic.source.crossPlatform'] !== false
+        const platformOrder = crossPlatform
+            ? [source, ...asList(cfg['subsonic.source.priority'], ['kw', 'tx', 'wy', 'mg', 'kg']).filter(s => s !== source)]
+            : [source]
 
-        for (const trySource of sourcesToTry) {
-            // 跨平台时按歌名+歌手搜索替身；同源直接用原 songmid
-            let candidates: { music: any }[]
-            if (trySource === source) {
-                candidates = [{ music: musicInfo }]
-            } else {
-                const name = musicInfo?.name
-                const singer = musicInfo?.singer
-                if (!name) continue
-                const query = singer ? `${name} ${singer}` : name
-                let list: any[] = []
-                try {
-                    const searchRes: any = await (musicSdk as any)[trySource]?.musicSearch?.search?.(query, 1, 5)
-                    list = searchRes?.list || []
-                } catch (e: any) {
-                    if (cfg['subsonic.enableDebug']) subsonicLog.debug(`[Subsonic] quality-select crossPlatform ${source}->${trySource} search failed: ${e?.message || e}`)
-                    continue
-                }
-                if (list.length === 0) continue
-                // 没有任何一条通过歌名/歌手校验时不得回退 list[0]，
-                // 否则会用不相干歌曲的 songmid 去解析播放地址，导致用户听到完全不同的歌。
-                const match = list.find((it: any) => this.matchSongAcrossSources(it, musicInfo))
-                if (!match) continue
-                const tSongmid = String(match?.songmid || match?.id || '')
-                if (!tSongmid) continue
-                candidates = [{
-                    music: {
-                        source: trySource,
-                        songmid: tSongmid,
-                        id: `${trySource}_${tSongmid}`,
-                        name: match.name,
-                        singer: match.singer,
-                        meta: { ...(match.meta || {}), songId: tSongmid },
-                    },
-                }]
-            }
+        const resolved = await resolveMusicUrl({
+            songInfo: { ...musicInfo, source, songmid, id },
+            quality: qualities[0] || requestedQuality,
+            qualities,
+            username,
+            crossPlatform,
+            platformOrder,
+            enableAutoSwitchApiSource: cfg['subsonic.source.autoSwitchCustom'] !== false,
+        })
 
-            const order = this.getQualityPriorityOrder(trySource, maxBitrate)
-            for (const cand of candidates) {
-                for (const q of order) {
-                    try {
-                        const r = await callUserApiGetMusicUrl(
-                            trySource as any, cand.music as any, q, username,
-                            undefined, autoSwitchCustom,
-                            excludeApiSources.length ? excludeApiSources : undefined,
-                        )
-                        if (r?.url) {
-                            const selected = trySource === source
-                                ? (q !== requestedQuality ? `quality:${source}/${q}` : undefined)
-                                : `source:${source}->${trySource}/${q}`
-                            return { url: r.url, quality: r.type || q, selected }
-                        }
-                    } catch (err: any) {
-                        // 收集本次失败过的自定义源，避免后续音质/平台重复试死源
-                        const atts = err?.attempts
-                        if (Array.isArray(atts)) {
-                            for (const a of atts) {
-                                if (a?.sourceId && !excludeApiSources.includes(a.sourceId)) excludeApiSources.push(a.sourceId)
-                                if (a?.name && !excludeApiSources.includes(a.name)) excludeApiSources.push(a.name)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        throw new Error('Could not resolve music URL (all quality/source candidates failed)')
-    }
-
-    /** 跨平台重锚时判断搜索结果是否匹配原曲：歌名归一化相等/包含 + 歌手部分匹配 */
-    private matchSongAcrossSources(it: any, musicInfo: any): boolean {
-        const norm = (s: string) => String(s || '').toLowerCase().replace(/[\s\-_()（）【】\[\]、，,。.]/g, '')
-        const n1 = norm(it?.name)
-        const n2 = norm(musicInfo?.name)
-        if (!n1 || !n2) return false
-        if (n1 !== n2 && !n1.includes(n2) && !n2.includes(n1)) return false
-        const s1 = norm(it?.singer)
-        const s2 = norm(musicInfo?.singer)
-        if (s1 && s2 && !s1.includes(s2) && !s2.includes(s1)) return false
-        return true
+        const selected = resolved.resolvedSource !== source
+            ? `source:${source}->${resolved.resolvedSource}/${resolved.type}`
+            : (resolved.type !== requestedQuality ? `quality:${source}/${resolved.type}` : undefined)
+        return { url: resolved.url, quality: resolved.type, selected }
     }
 
     /**

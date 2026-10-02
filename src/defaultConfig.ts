@@ -112,6 +112,20 @@ const config: LX.Config = {
   'subsonic.source.priority': 'kw,tx,wy,mg,kg', // 跨平台优选顺序(逗号分隔, 客户端所选源始终优先)
   'subsonic.source.crossPlatform': true, // 是否允许跨平台优选(按歌名+歌手在其它平台搜索替身)
   'subsonic.source.autoSwitchCustom': true, // 同源是否切换其它自定义源脚本(callUserApiGetMusicUrl 内部循环同平台候选脚本)
+  'music.url.crossPlatform': true, // 不分平台解析: 按歌名+歌手在其它有自定义源的平台并发搜替身
+  'music.url.race': true, // 自定义源并发竞速(关闭则回退按 order.json 串行轮询)
+  'music.url.raceStagger': 180, // 竞速错峰间隔(ms)
+  'music.url.crossStagger': 150, // 平台候选之间的错峰间隔(ms): 原平台立刻启动,跨平台候选依次跟进
+  'music.url.maxParallelPlatforms': 3, // 平台候选同时在途的上限
+  'music.url.priorityGrace': 350, // 优先级宽限(ms): 低优先级先返回时给更靠前在途候选反超的时间
+  'music.url.maxParallel': 4, // 同一平台同时在途的自定义源上限
+  'music.url.sourceRetries': 1, // 每个自定义源自身的尝试次数
+  'music.url.retryDelay': 900, // 单源两次尝试之间的间隔(ms)
+  'music.url.validate': true, // 校验音源返回的音频链接是否真的可用(403/404 视为该源失败并继续竞速)
+  'music.url.stickyTtl': 600, // 解析结果粘滞缓存时长(秒), 0 关闭
+  'music.url.breakerEnabled': true, // 死源熔断
+  'music.url.breakerThreshold': 3, // 连续失败达到该次数后熔断
+  'music.url.breakerCooldown': 300, // 熔断冷却时长(秒)
   'subsonic.transcode.enabled': false, // 服务端转码总开关(需安装 ffmpeg);音源无客户端请求音质时降码率转发以省客户端流量
   'subsonic.transcode.onQualityMiss': true, // 仅音源缺失对应低音质时才转码;关闭则永不转码
   'subsonic.transcode.format': 'mp3', // 转码目标格式: mp3 | opus | aac

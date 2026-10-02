@@ -1729,6 +1729,90 @@
                                         <span class="toggle-track"><span class="toggle-thumb"></span></span>
                                     </label>
                                 </div>
+
+                                <div class="config-divider"></div>
+
+                                <div class="config-toggle-row">
+                                    <div class="config-toggle-info">
+                                        <span class="config-toggle-label">不分平台解析</span>
+                                        <span class="config-toggle-desc">除歌曲所属平台外，同时在其它「有自定义源」的平台按歌名+歌手搜替身一起竞速</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" name="music.url.crossPlatform" />
+                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                    </label>
+                                </div>
+                                <div class="config-toggle-row">
+                                    <div class="config-toggle-info">
+                                        <span class="config-toggle-label">自定义源并发竞速</span>
+                                        <span class="config-toggle-desc">按排序错峰并发启动多个源，先返回的可用链接胜出；关闭则回退串行轮询</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" name="music.url.race" />
+                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                    </label>
+                                </div>
+                                <div class="config-toggle-row">
+                                    <div class="config-toggle-info">
+                                        <span class="config-toggle-label">校验音频链接可用性</span>
+                                        <span class="config-toggle-desc">音源常返回 403/404 的「成功」链接，探测失败会判该源失败并继续竞速</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" name="music.url.validate" />
+                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                    </label>
+                                </div>
+                                <div class="config-toggle-row">
+                                    <div class="config-toggle-info">
+                                        <span class="config-toggle-label">死源熔断</span>
+                                        <span class="config-toggle-desc">连续失败的源会被临时跳过，避免每首歌都重蹈死源的完整超时</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" name="music.url.breakerEnabled" />
+                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                    </label>
+                                </div>
+
+                                    <div class="config-field">
+                                        <label class="config-label">竞速错峰间隔 (ms)</label>
+                                        <input type="number" name="music.url.raceStagger" class="form-input config-input" min="0" step="10" />
+                                        <small class="config-hint">相邻源之间的启动间隔</small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">优先级宽限 (ms)</label>
+                                        <input type="number" name="music.url.priorityGrace" class="form-input config-input" min="0" step="10" />
+                                        <small class="config-hint">给排序更靠前的在途源反超的时间</small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">同平台并发源上限</label>
+                                        <input type="number" name="music.url.maxParallel" class="form-input config-input" min="1" step="1" />
+                                        <small class="config-hint">防止一次性打满音源脚本</small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">单源尝试次数</label>
+                                        <input type="number" name="music.url.sourceRetries" class="form-input config-input" min="1" step="1" />
+                                        <small class="config-hint">大于 1 时按重试间隔再次尝试同一个源</small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">单源重试间隔 (ms)</label>
+                                        <input type="number" name="music.url.retryDelay" class="form-input config-input" min="0" step="50" />
+                                        <small class="config-hint"></small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">解析结果缓存时长 (秒)</label>
+                                        <input type="number" name="music.url.stickyTtl" class="form-input config-input" min="0" step="60" />
+                                        <small class="config-hint">重复播放同一首歌时直接复用上次成功的平台与源；0 关闭</small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">熔断阈值 (连续失败次数)</label>
+                                        <input type="number" name="music.url.breakerThreshold" class="form-input config-input" min="1" step="1" />
+                                        <small class="config-hint"></small>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">熔断冷却时长 (秒)</label>
+                                        <input type="number" name="music.url.breakerCooldown" class="form-input config-input" min="5" step="10" />
+                                        <small class="config-hint"></small>
+                                    </div>
                             </div>
                         </div>
 
