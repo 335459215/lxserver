@@ -6059,14 +6059,20 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 热搜 API
       if (pathname === '/api/music/hotSearch' && req.method === 'GET') {
-        const source = urlObj.searchParams.get('source') || 'mg'
+        let source = urlObj.searchParams.get('source') || 'mg'
 
         try {
-          // 检查是否支持热搜
-          if (!musicSdk[source] || !musicSdk[source].hotSearch) {
-            res.writeHead(404, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ error: '该音源不支持热搜功能' }))
-            return
+          // 搜索下拉里新增了「聚合搜索(全部平台)」选项，播放器会把 source=all 一并
+          // 传给热搜——热搜没有「全部平台」的概念，回落到默认平台，否则直接 404，
+          // 切到聚合搜索后热搜栏就一直报错。
+          if (source === 'all' || !musicSdk[source] || !musicSdk[source].hotSearch) {
+            const fallback = ['kw', 'wy', 'mg', 'tx', 'kg'].find(s => musicSdk[s]?.hotSearch)
+            if (!fallback) {
+              res.writeHead(404, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: '该音源不支持热搜功能' }))
+              return
+            }
+            source = fallback
           }
 
           // console.log(`[热搜服务] 获取热搜: source=${source}`)
