@@ -106,6 +106,47 @@ const stickySet = (key: string, entry: StickyEntry) => {
 /** 音源脚本被增删改、或开关变化后，粘滞缓存必须作废 */
 export const clearStickyCache = () => { stickyCache.clear() }
 
+// === 按歌记忆「播放器报告过播不了的源」 ===
+// 播放失败后播放器会带 excludeApiSources 重试——这是对「这个源这首歌不行」
+// 最权威的报告，比服务端探测可信（网关可以对探针 RST，但骗不过真正的播放）。
+// 只在重试那一次生效是不够的：下次播放同一首歌会被重新解析回同一个死源。
+// 记住它，后续解析直接跳过。
+const SONG_BLACKLIST_TTL = 15 * 60_000
+const SONG_BLACKLIST_MAX = 800
+const songSourceBlacklist = new Map<string, { ids: Set<string>, expiresAt: number }>()
+
+const songBlacklistKey = (username: string, song: any) => [
+    username,
+    song?.source,
+    song?.songmid ?? song?.id ?? '',
+    String(song?.name || ''),
+    String(song?.singer || ''),
+].join('|')
+
+const addSongBlacklist = (key: string, rawIds: string[]) => {
+    const entry = songSourceBlacklist.get(key) ?? { ids: new Set<string>(), expiresAt: 0 }
+    for (const id of rawIds) {
+        const v = String(id || '').trim().toLowerCase()
+        if (v) entry.ids.add(v)
+    }
+    entry.expiresAt = Date.now() + SONG_BLACKLIST_TTL
+    songSourceBlacklist.set(key, entry)
+    if (songSourceBlacklist.size > SONG_BLACKLIST_MAX) {
+        const it = songSourceBlacklist.keys()
+        for (let i = 0; i < 100; i++) { const k = it.next(); if (k.done) break; songSourceBlacklist.delete(k.value) }
+    }
+}
+
+const getSongBlacklist = (key: string): string[] => {
+    const entry = songSourceBlacklist.get(key)
+    if (!entry) return []
+    if (entry.expiresAt <= Date.now()) { songSourceBlacklist.delete(key); return [] }
+    return [...entry.ids]
+}
+
+/** 播放器成功换源播放后，把这首歌此前拉黑的源清掉——它们可能只是当时抽风 */
+export const clearSongBlacklist = (username: string, song: any) => { songSourceBlacklist.delete(songBlacklistKey(username, song)) }
+
 // === 链接探测 ===
 
 const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?: number, location?: string } | null> => {
@@ -196,8 +237,15 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     //    客户端带来的排除清单必须参与判断：播放失败后播放器会带着「排除刚失败的那个源」
     //    重试，若粘滞缓存照常命中，就会把同一个死链原样再发回去——播放器永远逃不出
     //    这个源，表现为「解析成功→一直缓冲→换源→还是缓冲」的死循环。
-    const clientExcludes = new Set(
-        (Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(x => String(x).trim().toLowerCase()),
+    const songKey = songBlacklistKey(username, song)
+    // 播放器带来的排除清单 = 「刚失败的源」的权威报告，记入按歌黑名单
+    if (Array.isArray(opts.excludeApiSources) && opts.excludeApiSources.length > 0) {
+        addSongBlacklist(songKey, opts.excludeApiSources)
+    }
+    const clientExcludes = new Set<string>(
+        [...getSongBlacklist(songKey),
+         ...(Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : [])]
+            .map(x => String(x).trim().toLowerCase()).filter(Boolean),
     )
     const stickyExcluded = (hit: StickyEntry) => {
         if (!clientExcludes.size) return false
@@ -542,6 +590,8 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             })
         }
         console.log(`[音源解析] ✓ ${song.name} - ${song.singer} (${requestedQualityLabel(opts.quality, usedQuality)}) 命中 ${platform}/${result.sourceName}`)
+        // 拿到了确认可用的链接：这首歌之前的失败记录不再有参考价值
+        if (confirmed) clearSongBlacklist(username, song)
         return {
             url,
             type: result.type || usedQuality,
