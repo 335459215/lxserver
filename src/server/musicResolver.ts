@@ -147,11 +147,76 @@ const getSongBlacklist = (key: string): string[] => {
 /** 播放器成功换源播放后，把这首歌此前拉黑的源清掉——它们可能只是当时抽风 */
 export const clearSongBlacklist = (username: string, song: any) => { songSourceBlacklist.delete(songBlacklistKey(username, song)) }
 
+// === 源级熔断（由真实播放失败驱动） ===
+// 服务端探测在「网关屏蔽探针」和「网关真挂了」之间无法区分（Cloudflare 的 522
+// 要等 10~30s 才返回，探测超时内拿不到）。唯一能分辨的是真正的播放。
+// 所以：播放器报告某源播不了时按源累计「不同的歌」；短时间内在 2 首以上歌曲上
+// 都失败，就判定这个源当前不可用，全部歌曲跳过它一段时间——否则每首新歌都要
+// 先撞一次它。恢复靠时间到期后放探针，或后台测试音源时整体清零。
+const PLAYBACK_BREAKER_MIN_SONGS = 2
+const PLAYBACK_BREAKER_WINDOW_MS = 10 * 60_000
+const PLAYBACK_BREAKER_COOLDOWN_MS = 10 * 60_000
+const playbackBreakers = new Map<string, { songs: Set<string>, firstAt: number, openUntil: number }>()
+
+const playbackBreakerKey = (rawId: string) => String(rawId || '').trim().toLowerCase()
+
+/** 记录一次「播放器报告该源在这首歌上播不了」；返回该源是否因此被熔断 */
+const recordPlaybackFailure = (rawId: string, songKey: string): boolean => {
+    const key = playbackBreakerKey(rawId)
+    if (!key) return false
+    const now = Date.now()
+    const st = playbackBreakers.get(key)
+    if (st && st.openUntil > now) return true
+    const cur = st && now - st.firstAt <= PLAYBACK_BREAKER_WINDOW_MS
+        ? st
+        : { songs: new Set<string>(), firstAt: now, openUntil: 0 }
+    cur.songs.add(songKey)
+    // 探测被拒的链接有的能播有的不能，单首歌失败不作数；要不同歌曲都失败才算
+    if (cur.songs.size >= PLAYBACK_BREAKER_MIN_SONGS) {
+        cur.openUntil = now + PLAYBACK_BREAKER_COOLDOWN_MS
+        playbackBreakers.set(key, cur)
+        console.warn(`[音源解析] 「${rawId}」在 ${cur.songs.size} 首歌上播放失败，熔断 ${PLAYBACK_BREAKER_COOLDOWN_MS / 60000} 分钟`)
+        return true
+    }
+    playbackBreakers.set(key, cur)
+    return false
+}
+
+/** 该源是否已被「播放失败」熔断 */
+const isPlaybackTripped = (rawId: string): boolean => {
+    const st = playbackBreakers.get(playbackBreakerKey(rawId))
+    if (!st) return false
+    if (st.openUntil > Date.now()) return true
+    playbackBreakers.delete(playbackBreakerKey(rawId))
+    return false
+}
+
+export const resetAllPlaybackBreakers = () => { playbackBreakers.clear() }
+
+/** 当前所有被播放失败熔断中的源（id 或名称，匹配规则与 excludeApiSources 一致） */
+const getPlaybackTrippedSources = (): string[] => {
+    const now = Date.now()
+    const out: string[] = []
+    for (const [key, st] of playbackBreakers) {
+        if (st.openUntil > now) out.push(key)
+        else playbackBreakers.delete(key)
+    }
+    return out
+}
+
 // === 链接探测 ===
 
-const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?: number, location?: string } | null> => {
+/**
+ * 用 Range GET 探测——不用 HEAD。
+ * 原因一：播放器就是用 GET 播的，GET 的结果才是「能不能播」的真相，
+ * 大量网关/CDN 对 HEAD 直接 404/RST，用 HEAD 判断会误杀好链接。
+ * 原因二：Cloudflare 站点源站挂掉时，522 要等 CF 等完源站(10~30s)才返回，
+ * 探测超时内拿不到——所以「探测被拒」的结论必须交给播放器的失败报告去补，
+ * 这里不做更久的等待。
+ */
+const probeUrl = async (url: string): Promise<{ status?: number, location?: string } | null> => {
     try {
-        const resp = await needle(method, url, null, {
+        const resp = await needle('get', url, null, {
             follow_max: 0,
             // 校验是优化手段不是闸门：探不通就放行，所以超时必须给得起。
             // 另外必须显式给 open_timeout——needle 默认 10s，TCP 连接挂住时
@@ -164,8 +229,7 @@ const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?:
             headers: {
                 'User-Agent': UA,
                 Referer: new URL(url).origin,
-                // 一些 CDN 禁 HEAD，用 Range GET 兜底
-                ...(method === 'get' ? { Range: 'bytes=0-1' } : {}),
+                Range: 'bytes=0-1',
             },
         })
         return { status: resp.statusCode, location: resp.headers.location }
@@ -185,25 +249,14 @@ export const resolveAndValidateUrl = async (
     if (!url || !url.startsWith('http')) return { url, ok: true }
     let current = url
     for (let depth = 0; depth <= 3; depth++) {
-        let probe = await probeUrl(current, 'head')
+        const probe = await probeUrl(current)
         if (!probe) {
             // 探测本身失败（超时 / 连接被重置 / 站点只认浏览器 TLS 指纹）。
             // 自定义源大量返回 PHP 网关地址而非 CDN 直链，这类地址对服务端探测
             // 常直接 RST，对浏览器却完全可播——把「探测不到」判成死链会把能播的
-            // 歌全部误杀（改造前这里只告警并放行）。这里直接放行，不再补一次 GET：
-            // HEAD 已经拿不到任何信息，再等一轮 GET 只是把延迟翻倍。
+            // 歌全部误杀（改造前这里只告警并放行）。「探针拿不到真相」的另一半
+            // 由播放器的失败报告（按歌/按源黑名单）补上。
             return { url: current, ok: true, probeError: true }
-        }
-        // HEAD 不可靠：不少 CDN/网关对 HEAD 直接给 4xx，但 GET 正常。
-        // 这类情况用 Range GET 再确认一次，两种探法都确认失败才判死。
-        if (probe.status === 400 || probe.status === 403 || probe.status === 405 || probe.status === 501) {
-            const viaGet = await probeUrl(current, 'get')
-            if (!viaGet) {
-                // HEAD 给了 4xx 但 GET 是网络错：拿不到可信结论，与上面的规则保持一致
-                // （网络错不判死），否则「HEAD 403 + GET 被重置」的网关会被误杀。
-                return { url: current, ok: true, probeError: true }
-            }
-            probe = viaGet
         }
         const status = probe.status ?? 0
         if ([301, 302, 303, 307, 308].includes(status) && probe.location) {
@@ -238,15 +291,23 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     //    重试，若粘滞缓存照常命中，就会把同一个死链原样再发回去——播放器永远逃不出
     //    这个源，表现为「解析成功→一直缓冲→换源→还是缓冲」的死循环。
     const songKey = songBlacklistKey(username, song)
-    // 播放器带来的排除清单 = 「刚失败的源」的权威报告，记入按歌黑名单
+    // 播放器带来的排除清单 = 「刚失败的源」的权威报告，记入按歌黑名单，
+    // 并累计到源级熔断（不同歌曲都失败才触发）。
     if (Array.isArray(opts.excludeApiSources) && opts.excludeApiSources.length > 0) {
         addSongBlacklist(songKey, opts.excludeApiSources)
+        for (const src of opts.excludeApiSources) {
+            if (isPlaybackTripped(String(src))) continue
+            recordPlaybackFailure(String(src), songKey)
+        }
     }
+    const reportedSources = Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []
     const clientExcludes = new Set<string>(
-        [...getSongBlacklist(songKey),
-         ...(Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : [])]
+        [...getSongBlacklist(songKey), ...reportedSources]
             .map(x => String(x).trim().toLowerCase()).filter(Boolean),
     )
+    // 被播放失败熔断的源：所有歌曲都跳过，直到冷却结束
+    const playbackTripped = getPlaybackTrippedSources()
+    for (const t of playbackTripped) clientExcludes.add(t.toLowerCase())
     const stickyExcluded = (hit: StickyEntry) => {
         if (!clientExcludes.size) return false
         const id = String(hit.sourceId || '').toLowerCase()
@@ -323,9 +384,10 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const outerAbort = { aborted: false }
     // 本次解析中已失败的源。跨音质档累积下来，下一档直接排除：
     // 一个同时支持 4 个平台的源，在 3 档音质下最多会被无谓地调用 12 次。
-    const failedSourceIds = new Set<string>(
-        (Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(s => String(s)),
-    )
+    const failedSourceIds = new Set<string>([
+        ...(Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(x => String(x)),
+        ...playbackTripped,
+    ])
     const successes = new Map<number, any>()
     const inflight = new Set<number>()
     let attemptSlots: any[][] = [[]]

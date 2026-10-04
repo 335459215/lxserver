@@ -28,7 +28,7 @@ const musicSdk = musicSdkRaw as any
 import { initUserApis, callUserApiGetMusicUrl, isSourceSupported, getLoadedApis, getLoadedApisCount, resetAllSourceBreakers } from './userApi'
 import { findServerSourceMatches, getSongMatchScore, normalizeSongMatchText, normalizeSongNameText, isSingerMatch, getSongDurationSeconds, AUTO_SOURCE_ORDER, normalizeSongInfo } from './musicMatch'
 import * as customSourceHandlers from './customSourceHandlers'
-import { resolveMusicUrl, clearStickyCache } from './musicResolver'
+import { resolveMusicUrl, clearStickyCache, resetAllPlaybackBreakers } from './musicResolver'
 import * as fileCache from './fileCache'
 import * as customMusicManager from './customMusicManager'
 import * as serverDownloadQueue from './serverDownloadQueue'
@@ -6448,6 +6448,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/custom-source/validate' && req.method === 'POST') {
         clearStickyCache()
         resetAllSourceBreakers()
+        resetAllPlaybackBreakers()
         return customSourceHandlers.handleValidate(req, res)
       }
 
