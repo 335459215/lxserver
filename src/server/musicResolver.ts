@@ -64,6 +64,8 @@ interface StickyEntry {
     sourceName?: string
     platform: string
     song: any
+    /** 只有探测确认过可用的链接才允许进缓存；探测被拒(probeError)的不缓存 */
+    confirmed: boolean
     createdAt: number
     expiresAt: number
 }
@@ -111,9 +113,11 @@ const probeUrl = async (url: string, method: 'head' | 'get'): Promise<{ status?:
         const resp = await needle(method, url, null, {
             follow_max: 0,
             // 校验是优化手段不是闸门：探不通就放行，所以超时必须给得起。
-            // 3.5s 时一次解析会被拖到 7s+，2s 足够区分「直链很快返回」与「网关挂掉」。
-            response_timeout: 2000,
-            read_timeout: 2000,
+            // 另外必须显式给 open_timeout——needle 默认 10s，TCP 连接挂住时
+            // 一次解析会被拖到 10s 以上。
+            open_timeout: 1200,
+            response_timeout: 1200,
+            read_timeout: 1200,
             // 探测的是音乐平台链接，归 music 分类（NAS 上该分类不走代理）
             agent: await getProxyAgent(url, 'music'),
             headers: {
@@ -153,7 +157,11 @@ export const resolveAndValidateUrl = async (
         // 这类情况用 Range GET 再确认一次，两种探法都确认失败才判死。
         if (probe.status === 400 || probe.status === 403 || probe.status === 405 || probe.status === 501) {
             const viaGet = await probeUrl(current, 'get')
-            if (!viaGet) return { url: current, ok: false, reason: `音源返回的链接不可用(HTTP ${probe.status})` }
+            if (!viaGet) {
+                // HEAD 给了 4xx 但 GET 是网络错：拿不到可信结论，与上面的规则保持一致
+                // （网络错不判死），否则「HEAD 403 + GET 被重置」的网关会被误杀。
+                return { url: current, ok: true, probeError: true }
+            }
             probe = viaGet
         }
         const status = probe.status ?? 0
@@ -184,11 +192,28 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const stickyTtlMs = Math.max(0, Number(cfg['music.url.stickyTtl'] ?? 600)) * 1000
     const qualities = opts.qualities?.length ? opts.qualities : [opts.quality || '128k']
 
-    // 1) 粘滞缓存：同一首歌反复播放时直接复用上次的平台+自定义源，跳过整条链路
+    // 1) 粘滞缓存：同一首歌反复播放时直接复用上次的平台+自定义源，跳过整条链路。
+    //    客户端带来的排除清单必须参与判断：播放失败后播放器会带着「排除刚失败的那个源」
+    //    重试，若粘滞缓存照常命中，就会把同一个死链原样再发回去——播放器永远逃不出
+    //    这个源，表现为「解析成功→一直缓冲→换源→还是缓冲」的死循环。
+    const clientExcludes = new Set(
+        (Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(x => String(x).trim().toLowerCase()),
+    )
+    const stickyExcluded = (hit: StickyEntry) => {
+        if (!clientExcludes.size) return false
+        const id = String(hit.sourceId || '').toLowerCase()
+        const name = String(hit.sourceName || '').toLowerCase()
+        return (id && clientExcludes.has(id)) || (name && clientExcludes.has(name))
+    }
     if (stickyTtlMs > 0) {
         for (const q of qualities) {
             const hit = stickyGet(stickyKey(username, song, q))
             if (!hit) continue
+            if (stickyExcluded(hit)) {
+                console.warn(`[音源解析] 粘滞缓存的 ${hit.sourceName} 在客户端排除清单里，跳过缓存重新解析`)
+                stickyCache.delete(stickyKey(username, song, q))
+                continue
+            }
             const fresh = Date.now() - hit.createdAt < STICKY_TRUST_MS
             if (fresh || !validate) {
                 console.log(`[音源解析] 命中粘滞缓存: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
@@ -242,6 +267,12 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const crossParallel = Math.max(1, Number(cfg2['music.url.maxParallelPlatforms'] ?? 3))
 
     const errors: string[] = []
+    // 探测被拒但未判死的候选。只在没有任何「确认可用」候选时兜底。
+    const unconfirmed = new Map<number, any>()
+    // 外层胜出后通知所有还在跑的内部竞速立刻收手。没有它，输掉的候选会把自己
+    // 那条内部竞速（同平台最多 14 个源）整个跑完——一次播放平白多打 4~15 次
+    // 上游请求，既慢又把上游接口打到限流。
+    const outerAbort = { aborted: false }
     // 本次解析中已失败的源。跨音质档累积下来，下一档直接排除：
     // 一个同时支持 4 个平台的源，在 3 档音质下最多会被无谓地调用 12 次。
     const failedSourceIds = new Set<string>(
@@ -280,6 +311,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 },
                 opts.enableAutoSwitchApiSource !== false,
                 failedSourceIds.size ? [...failedSourceIds] : opts.excludeApiSources,
+                { signal: outerAbort, recordBreakerSuccess: false },
             )
             if (!r?.url) throw new Error('音源未返回可用链接')
             // 逐源尝试明细要并进本候选的槽位。否则响应里的 attempts 只剩一条
@@ -309,22 +341,34 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                     void opts.onProgress?.(att)
                 }
                 errors.push(reason)
+                failedSourceIds.add(String(r.sourceId ?? ''))
+                // 原平台这边已经出了失败结果，跨平台搜索不用再等定时器
+                ensureSearchStarted()
                 changed()
                 return
             }
+            // 探测被拒（网关对服务端探针直接 RST）≠ 链接可用：这类地址有的浏览器能播、
+            // 有的就是死链（同一网关两种都实测过）。既不能直接当赢家——死链会被立刻
+            // 交给播放器；也不能判死——会误杀能播的。降进「次选池」：只有当没有任何
+            // 「确认可用」的候选时才用它兜底。
             if (v.probeError) {
-                console.warn(`[音源解析] 链接探测被拒绝(超时/连接重置)，但这类网关地址浏览器通常仍可播，放行: ${c.platform}/${r.sourceName || '未知源'}`)
+                console.warn(`[音源解析] 链接探测被拒(超时/连接重置)，降为次选候选: ${c.platform}/${r.sourceName || '未知源'}`)
+                unconfirmed.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality })
+                changed()
+                return
             }
             if (accepted) return
             reportSourceResult(String(r.sourceId ?? ''), true)
             slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
-            successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality })
+            successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality, confirmed: true })
             changed()
         } catch (err: any) {
             errors.push(`${c.platform}: ${err?.message || err}`)
             for (const a of Array.isArray(err?.attempts) ? err.attempts : []) {
                 if (a?.sourceId) failedSourceIds.add(String(a.sourceId))
             }
+            // 同上：出失败结果就立刻拉起跨平台搜索
+            ensureSearchStarted()
             changed()
         } finally {
             inflight.delete(index)
@@ -357,11 +401,16 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     }
     let quality = qualities[0]
 
-    // 跨平台搜索与原平台解析并行发起：结果回来时若还没定胜负，就补进候选表继续竞速。
-    // needCrossSearch 为 false 时搜索块整体不执行，searchDone 必须已经是 true，
-    // 否则下面裁决循环的「搜索已结束且全部跑完」条件永远不成立，请求会永久挂死。
+    // 跨平台搜索改惰性触发：原平台自己能解析时一次都不搜（这是对上游接口最省的路径，
+    // 每次播放省下 4 次平台搜索——持续打搜索会把上游打到限流，反过来拖慢所有源）。
+    // 触发时机取「第一次候选失败」或「1.2s 内还没出结果」中更早的那个。
     const needCrossSearch = crossEnabled && !!song.name && !!song.singer
-    if (needCrossSearch) {
+    let searchStarted = false
+    let lazyTimer: ReturnType<typeof setTimeout> | null = null
+    const startCrossSearch = () => {
+        if (searchStarted || !needCrossSearch) return
+        searchStarted = true
+        if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
         void findServerSourceMatches(song, username).then(matches => {
             try {
                 const allowed = opts.platformOrder?.length ? new Set(opts.platformOrder) : null
@@ -391,6 +440,13 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             changed()
         })
     }
+    // 原平台迟迟没出结果就主动把跨平台搜索拉起来
+    if (needCrossSearch) {
+        lazyTimer = setTimeout(() => startCrossSearch(), 1200)
+    }
+    const ensureSearchStarted = () => {
+        if (!searchStarted) startCrossSearch()
+    }
 
     // 音源脚本自带 10s VM 超时，正常远到不了这个上限；纯粹是「绝不挂死」的兜底
     const ARBITER_MAX_WAIT_MS = 120_000
@@ -401,6 +457,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     for (quality of qualities) {
         attemptSlots.forEach(x => { x.length = 0 })
         successes.clear()
+        unconfirmed.clear()
         inflight.clear()
         nextIndex = 0
         finished = 0
@@ -428,10 +485,29 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 }
                 winner = { index: best, value: successes.get(best) }
                 accepted = winner
+                if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
+                break
+            }
+            // 只有「探测被拒」的次选、还没有任何确认可用的候选：
+            // 给在途/未启动的候选一个宽限窗口去产出确认可用的结果，
+            // 到点还没有才用次选兜底（次选仍可能被浏览器播出来）。
+            if (unconfirmed.size > 0) {
+                if (graceDeadline === 0) graceDeadline = Date.now() + crossGraceMs
+                const confirmedStillPossible = inflight.size > 0 || nextIndex < candidates.length
+                if (confirmedStillPossible && crossGraceMs > 0 && Date.now() < graceDeadline) {
+                    await Promise.race([nextChange(), sleep(graceDeadline - Date.now())])
+                    continue
+                }
+                const idx = Math.min(...unconfirmed.keys())
+                winner = { index: idx, value: unconfirmed.get(idx) }
+                accepted = winner
+                if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
                 break
             }
             // 必须等跨平台搜索也结束，否则可能在替身还没进来时就判定全军覆没
             if (searchDone && finished >= candidates.length) break
+            // 防御：正常情况下失败路径已经把搜索拉起来了，这里兜底
+            ensureSearchStarted()
             // 兜底：即使将来有哪条路径忘了 signal，nextChange 也只会挂 1 秒，
             // 不会让 /api/music/url 的请求和它带起的 SSE 永久泄漏。
             if (Date.now() > arbiterDeadline) {
@@ -448,8 +524,10 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const attempts = attemptSlots.flat()
 
     if (winner) {
-        const { result, url, platform, song: usedSong, quality: usedQuality } = winner.value
-        if (stickyTtlMs > 0) {
+        const { result, url, platform, song: usedSong, quality: usedQuality, confirmed } = winner.value
+        // 只缓存「探测确认可用」的链接。探测被拒的地址有可能本来就是死链，
+        // 缓存它等于把死链钉死十分钟——播放器重试换源也逃不掉。
+        if (stickyTtlMs > 0 && confirmed) {
             const key = stickyKey(username, song, opts.quality || usedQuality)
             stickySet(key, {
                 url,
@@ -458,6 +536,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 sourceName: result.sourceName,
                 platform,
                 song: usedSong,
+                confirmed: true,
                 createdAt: Date.now(),
                 expiresAt: Date.now() + stickyTtlMs,
             })

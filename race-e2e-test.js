@@ -176,6 +176,24 @@ async function main() {
   check(Array.isArray(results.E_attempts.attempts) && results.E_attempts.attempts.length > 0,
     `E attempts 明细非空：${JSON.stringify((results.E_attempts.attempts || []).map(a => a.name + ':' + a.status)).slice(0, 120)}`)
 
+  // E2) 回归重点：粘滞缓存必须尊重客户端的排除清单。
+  //     否则播放器播放失败后带着「排除刚才那个源」重试，粘滞缓存仍把同一个
+  //     死源原样返回——表现为「解析成功→一直缓冲→换源→还是缓冲」的死循环。
+  const hit = await post({ songInfo: song('mg', 'mg_sticky_1', { name: '青花瓷' }), quality: '128k' })
+  const winner = hit.sourceName
+  const retry = await post({
+    songInfo: song('mg', 'mg_sticky_1', { name: '青花瓷' }),
+    quality: '128k',
+    excludeApiSources: [winner],
+  })
+  results.G_stickyExcluded = {
+    firstWinner: winner,
+    retryWinner: retry.sourceName,
+    retryError: (retry.error || '').slice(0, 80),
+  }
+  check(retry.sourceName !== winner,
+    `G 粘滞缓存尊重排除清单：首次=${winner}，排除后=${retry.sourceName || ('(全部失败: ' + results.G_stickyExcluded.retryError + ')')}`)
+
   // F) 死源熔断：咪咕死源连续失败到阈值后应被剔除
   let lastAttempts = []
   for (let i = 0; i < 6; i++) {

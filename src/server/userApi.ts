@@ -506,11 +506,21 @@ const isSourceTripped = (apiId: string) => {
     if (!breakerEnabled()) return false
     const st = sourceBreakers.get(apiId)
     if (!st) return false
-    const now = Date.now()
-    if (st.openUntil > now) return true
-    if (st.probeInFlight) return true
-    sourceBreakers.set(apiId, { ...st, probeInFlight: true })
+    // 冷却中：若探针名额还没发出去，放一个候选过去试探（名额在真正调用前发放，
+    // 见 grantCooldownProbe——若在这里就发放，而该候选随后被权限/排除条件过滤掉，
+    // 没人回来核销，这个源会被永久跳过）。
+    if (st.openUntil > Date.now()) return st.probeInFlight
     return false
+}
+
+/** 候选真正要被调用前发放冷却探针名额 */
+const grantCooldownProbe = (apiId: string) => {
+    if (!breakerEnabled()) return
+    const st = sourceBreakers.get(apiId)
+    if (!st) return
+    if (st.openUntil > Date.now() && !st.probeInFlight) {
+        sourceBreakers.set(apiId, { ...st, probeInFlight: true })
+    }
 }
 
 const recordSourceResult = (apiId: string, ok: boolean) => {
@@ -533,6 +543,15 @@ export const resetSourceBreaker = (apiId: string) => { sourceBreakers.delete(api
 export const resetAllSourceBreakers = () => { sourceBreakers.clear() }
 
 export interface MusicUrlRaceOptions {
+    /** 外层置 true 后，内部竞速立刻停止发起新的候选并尽快返回——
+     *  否则输掉的外层候选会把整条内部竞速跑完，一次播放多打十几次上游请求 */
+    signal?: { aborted: boolean }
+    /**
+     * 脚本成功返回链接时要不要记一次熔断「成功」。解析器会随后对链接做可用性
+     * 探测并自行记账；若这里也记成功，就会把熔断计数清零，紧接着解析器记的
+     * 「校验失败」永远只有 1 次——稳定返回死链的源永远到不了熔断阈值。
+     */
+    recordBreakerSuccess?: boolean
     /** 关闭后回退到串行轮询（仅用于排障/对比） */
     race?: boolean
     /** 相邻候选的错峰启动间隔(ms) */
@@ -825,18 +844,24 @@ export async function callUserApiGetMusicUrl(
         dirty = false
     }
 
-    const emit = async (slot: any[], att: any) => {
+    const emit = (slot: any[], att: any) => {
         slot.push(att)
-        // 已有赢家时不再往前端推流：这个请求的 SSE 可能已经结束或已被下一个请求接管
-        if (!accepted && onProgress) { try { await onProgress(att) } catch (e) { /* 忽略推送异常 */ } }
+        // 推进度不等待：onProgress 里可能带着 SSE 未就绪的重试（最多 10×300ms），
+        // 在竞速里 await 它会把候选完成时间拖慢最多 3 秒。进度是尽力而为的旁路信息。
+        if (!accepted && onProgress) {
+            try { void Promise.resolve(onProgress(att)).catch(() => { /* 忽略推送异常 */ }) } catch (e) { /* 忽略 */ }
+        }
     }
 
     const runCandidate = async (index: number) => {
         const api = candidates[index]
         const slot = attemptSlots[index]
         try {
+            // 若该源正处于熔断冷却且探针名额未发放，这次调用就是那次探针
+            grantCooldownProbe(api.info.id)
             for (let i = 0; i < maxRetries; i++) {
                 if (accepted) return
+                if (opts?.signal?.aborted) return
                 try {
                     console.log(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner}, 优先级: ${index + 1}/${candidates.length})`)
                     const url = await api.callRequest('musicUrl', source, {
@@ -846,8 +871,10 @@ export async function callUserApiGetMusicUrl(
                     })
                     if (accepted) return
                     console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
-                    recordSourceResult(api.info.id, true)
-                    await emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'success', message: maxRetries > 1 ? `第 ${i + 1} 次尝试成功` : '' })
+                    // 成功记账可由调用方关闭：解析器会对链接做可用性探测并自行记账，
+                    // 两边都记会让「成功清零」抵消掉随后的「校验失败」。
+                    if (opts?.recordBreakerSuccess !== false) recordSourceResult(api.info.id, true)
+                    emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'success', message: maxRetries > 1 ? `第 ${i + 1} 次尝试成功` : '' })
                     succeeded.set(index, { url, type: quality, sourceName: api.info.name, sourceId: api.info.id })
                     changed()
                     return
@@ -855,7 +882,7 @@ export async function callUserApiGetMusicUrl(
                     lastError = error
                     console.error(`[自定义源] ${api.info.name} 失败 (第 ${i + 1}/${maxRetries} 次):`, `音源日志：${error.message}`)
                     recordSourceResult(api.info.id, false)
-                    await emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: `音源日志：${error.message}` })
+                    emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: `音源日志：${error.message}` })
                     changed()
                     if (i < maxRetries - 1 && !accepted) await sleep(retryDelayMs)
                 }
@@ -872,7 +899,7 @@ export async function callUserApiGetMusicUrl(
     // 这个分支必须真的存在：music.url.race 是在后台 UI 上暴露的开关，
     // 之前只算了 raceEnabled 却从没读过，关掉它毫无任何行为变化。
     if (!raceEnabled) {
-        for (let i = 0; i < candidates.length && !accepted; i++) {
+        for (let i = 0; i < candidates.length && !accepted && !opts?.signal?.aborted; i++) {
             inflight.add(i)
             void runCandidate(i)
             while (inflight.has(i)) await nextChange()
@@ -880,12 +907,13 @@ export async function callUserApiGetMusicUrl(
     } else {
         // 按优先级依次错峰启动：既保住了 order.json 的优先级语义，
         // 又不会像纯串行那样把每个源的失败延迟累加起来。
+        const aborted = () => accepted || !!opts?.signal?.aborted
         const schedule = async () => {
             for (let i = 0; i < candidates.length; i++) {
-                if (accepted) return
+                if (aborted()) return
                 if (i > 0) await sleep(staggerMs)
-                while (inflight.size >= maxParallel && !accepted) await sleep(20)
-                if (accepted) return
+                while (inflight.size >= maxParallel && !aborted()) await sleep(20)
+                if (aborted()) return
                 inflight.add(i)
                 void runCandidate(i)
             }
@@ -915,6 +943,8 @@ export async function callUserApiGetMusicUrl(
             break
         }
         if (done) break
+        // 外层已选定别的候选：立刻收手，不再等内部竞速跑完
+        if (opts?.signal?.aborted) break
         // 兜底：nextChange 最多等 1 秒。音源脚本自带超时，但若将来有路径忘了
         // changed()，这里会让请求永久挂起而不是报错。
         if (Date.now() > arbiterDeadline) {
