@@ -98,7 +98,10 @@ export const getCacheDir = (username?: string, isOnlyDownload?: boolean, locatio
 }
 
 export const getCoverCacheDir = (username: string) => {
-    const baseDir = path.join(process.cwd(), 'cover_cache')
+    // 必须落在数据卷而不是 cwd：cwd 在镜像里属 root，compose 配了 user: "1026:100"
+    // 之后进程对它只读，每次建目录都抛 EACCES（日志被刷屏，封面缓存整个失效）。
+    // 与下方 getLegacyCoverCachePaths 统一走 dataPath，缓存还能跨容器重建保留。
+    const baseDir = path.join(global.lx.dataPath, 'cover_cache')
     const userDirName = (username && username !== '_open' && username !== 'default') ? username : '_open'
     const fullPath = path.join(baseDir, userDirName)
     if (!fs.existsSync(fullPath)) {
