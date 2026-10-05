@@ -14143,6 +14143,31 @@ const RecoveryToast = {
     currentStatus: 'loading', // 'loading' | 'success' | 'error'
     triedHistory: [], // 记录本次试错轨迹：[{ platform, platformName, qualityName, status }]
 
+    /** 渲染「尝试轨迹」单行跑马灯。show() 与 success() 共用，避免两处逻辑分叉。 */
+    renderHistoryHtml() {
+        if (this.triedHistory.length === 0) return '';
+        const sep = '<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>';
+        const chips = this.triedHistory.map((item) => {
+            if (item.status === 'failed') {
+                return `<span class="px-1.5 py-0.5 rounded bg-red-50 text-red-500 border border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30 line-through text-[10px]">${item.platformName}</span>`;
+            }
+            if (item.status === 'success') {
+                return `<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30 font-bold text-[10px]">${item.platformName}</span>`;
+            }
+            return `<span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/30 font-medium animate-pulse text-[10px]">${item.platformName}</span>`;
+        }).join(sep);
+        return `
+            <div class="recovery-history text-[11px]">
+                <span class="recovery-history-label">尝试轨迹</span>
+                <div class="recovery-history-viewport">
+                    <div class="recovery-history-track" data-history-track>
+                        <span class="recovery-history-unit">${chips}${sep}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    },
+
     init() {
         if (!document.getElementById('recovery-toast-keyframes')) {
             const style = document.createElement('style');
@@ -14158,32 +14183,78 @@ const RecoveryToast = {
                 /* 尝试轨迹：单行横向跑马灯。候选平台多的时候不再换行堆叠成
                    好几行（flex-wrap 会把卡片撑高、显得杂乱），而是一条轨道
                    匀速左移；内容不超出时不滚动，超出时循环滚动。 */
+                /* 尝试轨迹：单行横向跑马灯。候选平台多的时候不再换行堆叠成好几行
+                   （flex-wrap 会把卡片撑高、显得杂乱），而是一条轨道匀速左移。
+                   无缝做法：轨道里放 N 个「完全相同」的单位，位移正好一个单位的
+                   宽度——内容以单位宽度为周期，移满一个周期后画面与起点完全一致，
+                   所以看不出接缝。早前用 translateX(-50%) 是错的：轨道内容并非
+                   两等分（分隔符只出现一次），-50% 落不到接缝上，每次循环都会跳。 */
+                .recovery-history {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    min-width: 0;
+                    margin-top: 4px;
+                }
+                .recovery-history-label {
+                    flex: 0 0 auto;
+                    font-size: 10px;
+                    color: rgb(156 163 175);
+                }
+                .dark .recovery-history-label { color: rgb(107 114 128); }
+                .recovery-history-viewport {
+                    flex: 1 1 auto;
+                    min-width: 0;
+                    overflow: hidden;
+                    position: relative;
+                    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+                    mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+                }
                 .recovery-history-track {
                     display: flex;
                     align-items: center;
-                    gap: 4px;
                     white-space: nowrap;
                     width: max-content;
                     will-change: transform;
                 }
-                .recovery-history-viewport {
-                    overflow: hidden;
-                    position: relative;
-                    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-                    mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+                .recovery-history-unit {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding-right: 4px;
                 }
                 .recovery-history-track.recovery-scroll {
                     animation: recoveryHistoryScroll var(--recovery-scroll-dur, 9s) linear infinite;
                 }
-                .recovery-history-viewport:hover .recovery-history-track.recovery-scroll {
-                    animation-play-state: paused;
+                /* 桌面端悬停暂停。触摸设备没有 hover，不做:hover 规则——否则部分
+                   移动浏览器会在点按瞬间误判成 hover，卡住动画。 */
+                @media (hover: hover) and (pointer: fine) {
+                    .recovery-history-viewport:hover .recovery-history-track.recovery-scroll {
+                        animation-play-state: paused;
+                    }
                 }
                 @keyframes recoveryHistoryScroll {
-                    0% { transform: translateX(0); }
-                    100% { transform: translateX(-50%); }
+                    from { transform: translate3d(0, 0, 0); }
+                    to { transform: translate3d(var(--recovery-scroll-shift, -100%), 0, 0); }
                 }
                 @media (prefers-reduced-motion: reduce) {
                     .recovery-history-track.recovery-scroll { animation: none; }
+                }
+                /* PWA：独立窗口/全屏下把底部安全区让出来（iPhone Home 条、安卓手势条），
+                   否则卡片压在系统手势区上、点击关闭按钮会误触。id 选择器压过 Tailwind。 */
+                @media (display-mode: standalone), (display-mode: fullscreen) {
+                    #recovery-status-toast {
+                        bottom: calc(6rem + env(safe-area-inset-bottom, 0px)) !important;
+                    }
+                }
+                @media (min-width: 768px) {
+                    #recovery-status-toast {
+                        bottom: calc(7rem + env(safe-area-inset-bottom, 0px)) !important;
+                    }
+                }
+                /* 横屏手机可用高度很矮，隐藏轨迹行避免卡片溢出屏幕 */
+                @media (max-height: 480px) {
+                    #recovery-status-toast .recovery-history { display: none; }
                 }
             `;
             document.head.appendChild(style);
@@ -14197,6 +14268,7 @@ const RecoveryToast = {
             document.body.appendChild(container);
         }
         this.el = container;
+        this.bindVisibilityPause();
         return this.el;
     },
 
@@ -14248,28 +14320,8 @@ const RecoveryToast = {
             }
         }
 
-        // 试错轨迹：单行横向跑马灯。候选平台多的时候不再换行堆成好几行。
-        // 轨道内容渲染两遍并用 translateX(-50%) 循环，衔接处无缝；
-        // 内容没超出容器宽度时去掉动画类，保持静止（不空转）。
-        let historyHtml = '';
-        if (this.triedHistory.length > 0) {
-            const chipHtml = this.triedHistory.map((item) => {
-                if (item.status === 'failed') {
-                    return `<span class="px-1.5 py-0.5 rounded bg-red-50 text-red-500 border border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30 line-through text-[10px]">${item.platformName}</span>`;
-                } else if (item.status === 'success') {
-                    return `<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30 font-bold text-[10px]">${item.platformName}</span>`;
-                }
-                return `<span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/30 font-medium animate-pulse text-[10px]">${item.platformName}</span>`;
-            }).join('<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>');
-            const label = `<span class="text-gray-400 dark:text-gray-500 text-[10px] shrink-0">尝试轨迹:</span>`;
-            historyHtml = `
-                <div class="recovery-history-viewport mt-1 text-[11px]">
-                    <div class="recovery-history-track" data-history-track>
-                        ${label}${chipHtml}<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>${label}${chipHtml}
-                    </div>
-                </div>
-            `;
-        }
+        // 试错轨迹：单行横向跑马灯，渲染逻辑见 renderHistoryHtml()
+        const historyHtml = this.renderHistoryHtml();
 
         // 样式：完全使用语义化主题类，自适应 Light / Dark 与当前主题色 (emerald/blue/amber/violet/rose)
         this.el.className = 'fixed right-4 bottom-24 md:bottom-28 z-[1005] w-80 md:w-96 max-w-[92vw] rounded-2xl shadow-2xl border transition-all duration-300 transform translate-y-0 opacity-100 pointer-events-auto overflow-hidden flex flex-col backdrop-blur-md bg-white/95 dark:bg-gray-900/95 text-gray-800 dark:text-gray-100 border-emerald-500/40 shadow-emerald-500/10 dark:border-emerald-500/40 dark:shadow-black/60';
@@ -14305,22 +14357,51 @@ const RecoveryToast = {
     },
 
     /**
-     * 跑马灯是否需要滚动，取决于「单份内容宽度」是否超过视口。
-     * 模板里放了两份内容做无缝循环，所以拿 track 的一半宽度去比。
-     * 用 rAF 推迟到布局完成后再量，否则刚插入 DOM 时宽度还是 0。
+     * 决定跑马灯是否滚动，并按视口宽度补足单位副本。
+     *
+     * 之所以要「先量再克隆」而不是在 HTML 里写死两份：单位宽度取决于
+     * 平台名长度（中英文）、字号、是否深色模式，只能在插入 DOM 后实测。
+     * 用 rAF 推迟一帧，等布局完成再量，否则量到的宽度是 0。
      */
     syncHistoryScroll() {
         const viewport = this.el?.querySelector('.recovery-history-viewport');
         const track = this.el?.querySelector('[data-history-track]');
         if (!viewport || !track) return;
         track.classList.remove('recovery-scroll');
+        const seed = track.querySelector('.recovery-history-unit');
+        if (!seed) return;
+        // 每次重渲染都从单个种子重建，避免上一轮的副本累积
+        track.replaceChildren(seed.cloneNode(true));
+
         requestAnimationFrame(() => {
-            const halfWidth = track.scrollWidth / 2;
-            if (halfWidth > viewport.clientWidth + 2) {
-                // 时长按内容长度缩放，速度恒定（约 26px/s），条目越多滚动越久但不加快
-                track.style.setProperty('--recovery-scroll-dur', `${Math.max(9, halfWidth / 26)}s`);
-                track.classList.add('recovery-scroll');
-            }
+            const unit = track.firstElementChild;
+            if (!unit) return;
+            const unitW = unit.getBoundingClientRect().width;
+            const viewW = viewport.clientWidth;
+            // 装得下就静止，不空转
+            if (!unitW || unitW <= viewW) return;
+            // 铺满视口再多留一份，保证位移一整个单位后右侧仍有内容，不露空白
+            const copies = Math.ceil(viewW / unitW) + 1;
+            const frag = document.createDocumentFragment();
+            for (let i = 0; i < copies; i++) frag.appendChild(unit.cloneNode(true));
+            track.replaceChildren(...Array.from(frag.childNodes));
+            // 触摸设备放慢一点：手指常在屏幕上，滚动太快不好读
+            const coarse = window.matchMedia?.('(pointer: coarse)')?.matches
+            const speed = coarse ? 18 : 26; // px/s
+            track.style.setProperty('--recovery-scroll-shift', `${-unitW}px`);
+            track.style.setProperty('--recovery-scroll-dur', `${unitW / speed}s`);
+            track.classList.add('recovery-scroll');
+        });
+    },
+
+    /** PWA 切到后台时暂停跑马灯：不可见的动画纯属耗电，回到前台再继续 */
+    bindVisibilityPause() {
+        if (this._visBound) return;
+        this._visBound = true;
+        document.addEventListener('visibilitychange', () => {
+            const track = this.el?.querySelector('.recovery-history-track.recovery-scroll');
+            if (!track) return;
+            track.style.animationPlayState = document.hidden ? 'paused' : 'running';
         });
     },
 
@@ -14355,6 +14436,11 @@ const RecoveryToast = {
 
         const songName = this.currentSong?.name || '当前歌曲';
 
+// 成功卡片也要保留轨迹：否则最后一个平台的「成功」状态无处呈现，
+        // 上面那句 status='success' 就是死代码。复用 show() 的渲染逻辑，
+        // 只是外层配色不同。
+        const successHistoryHtml = this.renderHistoryHtml();
+
         // 成功状态自适应明暗模式与主题色
         this.el.className = 'fixed right-4 bottom-24 md:bottom-28 z-[1005] w-80 md:w-96 max-w-[92vw] rounded-2xl shadow-2xl border transition-all duration-300 transform translate-y-0 opacity-100 pointer-events-auto overflow-hidden flex flex-col backdrop-blur-md bg-emerald-50/95 dark:bg-emerald-950/90 text-emerald-950 dark:text-emerald-100 border-emerald-400/80 dark:border-emerald-500/60 shadow-emerald-500/20';
 
@@ -14376,10 +14462,13 @@ const RecoveryToast = {
                 </div>
                 <div class="text-xs text-emerald-700 dark:text-emerald-300 font-medium flex items-center gap-1.5">
                     <i class="fas fa-play-circle text-emerald-600 dark:text-emerald-400"></i>
-                    <span>${message}</span>
+                    <span class="truncate">${message}</span>
                 </div>
+                ${successHistoryHtml}
             </div>
         `;
+
+        this.syncHistoryScroll();
 
         if (this.hideTimer) clearTimeout(this.hideTimer);
         this.hideTimer = setTimeout(() => {
@@ -14393,6 +14482,9 @@ const RecoveryToast = {
         this.cleanupConflictingToasts();
 
         const songName = this.currentSong?.name || '当前歌曲';
+        // 失败时保留轨迹：这时「试过哪些平台、各自报了什么」正是排查的关键信息，
+        // 反而比成功时更需要看见。
+        const errorHistoryHtml = this.renderHistoryHtml();
 
         // 失败状态自适应明暗模式
         this.el.className = 'fixed right-4 bottom-24 md:bottom-28 z-[1005] w-80 md:w-96 max-w-[92vw] rounded-2xl shadow-2xl border transition-all duration-300 transform translate-y-0 opacity-100 pointer-events-auto overflow-hidden flex flex-col backdrop-blur-md bg-red-50/95 dark:bg-red-950/95 text-red-900 dark:text-red-100 border-red-300 dark:border-red-500/40 shadow-red-500/10';
@@ -14416,8 +14508,11 @@ const RecoveryToast = {
                 <div class="text-xs text-red-600 dark:text-red-300 font-medium">
                     ${message}
                 </div>
+                ${errorHistoryHtml}
             </div>
         `;
+
+        this.syncHistoryScroll();
 
         if (this.hideTimer) clearTimeout(this.hideTimer);
         this.hideTimer = setTimeout(() => {
