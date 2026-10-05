@@ -14142,28 +14142,40 @@ const RecoveryToast = {
     currentSong: null,
     currentStatus: 'loading', // 'loading' | 'success' | 'error'
     triedHistory: [], // 记录本次试错轨迹：[{ platform, platformName, qualityName, status }]
+    scrollTop: 0,   // 堆栈滚轮翻看位置：0 = 最新在最前
+    expanded: false, // 悬停时整叠散开
 
-    /** 渲染「尝试轨迹」单行跑马灯。show() 与 success() 共用，避免两处逻辑分叉。 */
+    /**
+     * 渲染纵深卡片堆栈。每条提示一张卡，最新的在 Z 轴最前（--d:0），
+     * 越旧越往后推并缩小变暗；容器高度锁死，堆再���也不长高。
+     * scrollTop 用于滚轮翻看历史——往上是看更新的，往下是看更旧的。
+     */
     renderHistoryHtml() {
         if (this.triedHistory.length === 0) return '';
-        const sep = '<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>';
-        const chips = this.triedHistory.map((item) => {
-            if (item.status === 'failed') {
-                return `<span class="px-1.5 py-0.5 rounded bg-red-50 text-red-500 border border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30 line-through text-[10px]">${item.platformName}</span>`;
-            }
-            if (item.status === 'success') {
-                return `<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30 font-bold text-[10px]">${item.platformName}</span>`;
-            }
-            return `<span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/30 font-medium animate-pulse text-[10px]">${item.platformName}</span>`;
-        }).join(sep);
-        return `
-            <div class="recovery-history text-[11px]">
-                <span class="recovery-history-label">尝试轨迹</span>
-                <div class="recovery-history-viewport">
-                    <div class="recovery-history-track" data-history-track>
-                        <span class="recovery-history-unit">${chips}${sep}</span>
-                    </div>
+        const items = this.triedHistory;
+        const n = items.length;
+        // 滚轮翻看：scrollTop 为 0 时显示最新一条；往下滚逐条回看历史
+        const maxScroll = Math.max(0, n - 1);
+        const offset = Math.min(Math.max(this.scrollTop || 0, 0), maxScroll);
+        const cards = items.map((item, i) => {
+            // depth：0 = 最前（在 viewport 顶部），越大越靠后
+            const depth = i - offset;
+            // 已经在视口上方的卡片不再绘制
+            if (depth < -1) return '';
+            const d = Math.max(0, depth);
+            const label = item.platformName;
+            return `
+                <div class="recovery-stack-card" data-kind="${item.status === 'success' ? 'success' : item.status === 'failed' ? 'fail' : 'trying'}"
+                     style="--d:${d}; z-index:${100 - d}; opacity:${depth < 0 ? 0 : Math.max(0.12, 1 - d * 0.22)}; transform:translateY(${d * 9}px) scale(${1 - d * 0.045})">
+                    <span class="recovery-stack-dot"></span>
+                    <span class="recovery-stack-text">${label}</span>
                 </div>
+            `;
+        }).reverse().join('');
+        return `
+            <div class="recovery-stack" data-recovery-stack data-expanded="${this.expanded ? 1 : 0}" data-scroll="${offset}">
+                ${cards}
+                <span class="recovery-stack-scroll-hint">滚轮查看历史 · ${offset + 1}/${n}</span>
             </div>
         `;
     },
@@ -14180,65 +14192,93 @@ const RecoveryToast = {
                 .animate-recovery-flow {
                     animation: recoveryProgressFlow 1.6s infinite ease-in-out;
                 }
-                /* 尝试轨迹：单行横向跑马灯。候选平台多的时候不再换行堆叠成
-                   好几行（flex-wrap 会把卡片撑高、显得杂乱），而是一条轨道
-                   匀速左移；内容不超出时不滚动，超出时循环滚动。 */
-                /* 尝试轨迹：单行横向跑马灯。候选平台多的时候不再换行堆叠成好几行
-                   （flex-wrap 会把卡片撑高、显得杂乱），而是一条轨道匀速左移。
-                   无缝做法：轨道里放 N 个「完全相同」的单位，位移正好一个单位的
-                   宽度——内容以单位宽度为周期，移满一个周期后画面与起点完全一致，
-                   所以看不出接缝。早前用 translateX(-50%) 是错的：轨道内容并非
-                   两等分（分隔符只出现一次），-50% 落不到接缝上，每次循环都会跳。 */
-                .recovery-history {
+                /* ==== 换源提示：纵深卡片堆栈 ====
+                   用户诉求是「有深度的前后堆叠」：新提示在 Z 轴最前，旧提示依次
+                   向后推、缩小、变暗，而不是一条条往下追加把卡片撑高。所以这里用
+                   一叠绝对定位的卡片，每张按 --depth 在 translateY/scale/opacity
+                   上分级，形成透视纵深；容器高度锁死，堆多少张都不长高。 */
+                .recovery-stack {
+                    position: relative;
+                    height: 58px;
+                    perspective: 700px;
+                    perspective-origin: 50% 0%;
+                    touch-action: pan-y;
+                }
+                .recovery-stack-card {
+                    position: absolute;
+                    inset: 0;
                     display: flex;
                     align-items: center;
-                    gap: 6px;
-                    min-width: 0;
-                    margin-top: 4px;
+                    gap: 8px;
+                    padding: 8px 10px;
+                    border-radius: 12px;
+                    border: 1px solid rgb(209 213 219);
+                    background: rgb(255 255 255 / 0.9);
+                    color: rgb(31 41 55);
+                    font-size: 12px;
+                    will-change: transform, opacity;
+                    transition: transform .34s cubic-bezier(.22,.75,.24,1), opacity .28s ease;
+                    overflow: hidden;
                 }
-                .recovery-history-label {
+                .dark .recovery-stack-card {
+                    border-color: rgb(55 65 81);
+                    background: rgb(31 41 55 / 0.9);
+                    color: rgb(229 231 235);
+                }
+                .recovery-stack-card[data-kind="fail"] {
+                    border-color: rgb(252 165 165);
+                    background: rgb(254 242 242 / 0.9);
+                    color: rgb(153 27 27);
+                }
+                .dark .recovery-stack-card[data-kind="fail"] {
+                    border-color: rgb(127 29 29);
+                    background: rgb(69 10 10 / 0.75);
+                    color: rgb(254 202 202);
+                }
+                .recovery-stack-card[data-kind="success"] {
+                    border-color: rgb(110 231 183);
+                    background: rgb(236 253 245 / 0.92);
+                    color: rgb(4 120 87);
+                }
+                .dark .recovery-stack-card[data-kind="success"] {
+                    border-color: rgb(6 78 59);
+                    background: rgb(6 78 59 / 0.7);
+                    color: rgb(167 243 208);
+                }
+                .recovery-stack-dot {
                     flex: 0 0 auto;
-                    font-size: 10px;
-                    color: rgb(156 163 175);
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 9999px;
+                    background: currentColor;
+                    opacity: .65;
                 }
-                .dark .recovery-history-label { color: rgb(107 114 128); }
-                .recovery-history-viewport {
+                .recovery-stack-text {
                     flex: 1 1 auto;
                     min-width: 0;
                     overflow: hidden;
-                    position: relative;
-                    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
-                    mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
-                }
-                .recovery-history-track {
-                    display: flex;
-                    align-items: center;
+                    text-overflow: ellipsis;
                     white-space: nowrap;
-                    width: max-content;
-                    will-change: transform;
                 }
-                .recovery-history-unit {
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 4px;
-                    padding-right: 4px;
+                /* 悬停时整叠散开，露出更多历史卡片 */
+                .recovery-stack[data-expanded="1"] .recovery-stack-card {
+                    transform: translateY(calc(var(--d) * 30px)) scale(calc(1 - var(--d) * .05)) !important;
+                    opacity: calc(1 - var(--d) * .16) !important;
                 }
-                .recovery-history-track.recovery-scroll {
-                    animation: recoveryHistoryScroll var(--recovery-scroll-dur, 9s) linear infinite;
+                .recovery-stack-scroll-hint {
+                    position: absolute;
+                    right: 8px;
+                    bottom: -1px;
+                    font-size: 10px;
+                    color: rgb(156 163 175);
+                    opacity: 0;
+                    transition: opacity .2s ease;
+                    pointer-events: none;
                 }
-                /* 桌面端悬停暂停。触摸设备没有 hover，不做:hover 规则——否则部分
-                   移动浏览器会在点按瞬间误判成 hover，卡住动画。 */
-                @media (hover: hover) and (pointer: fine) {
-                    .recovery-history-viewport:hover .recovery-history-track.recovery-scroll {
-                        animation-play-state: paused;
-                    }
-                }
-                @keyframes recoveryHistoryScroll {
-                    from { transform: translate3d(0, 0, 0); }
-                    to { transform: translate3d(var(--recovery-scroll-shift, -100%), 0, 0); }
-                }
+                .dark .recovery-stack-scroll-hint { color: rgb(107 114 128); }
+                .recovery-stack[data-expanded="1"] .recovery-stack-scroll-hint { opacity: 1; }
                 @media (prefers-reduced-motion: reduce) {
-                    .recovery-history-track.recovery-scroll { animation: none; }
+                    .recovery-stack-card { transition: none; }
                 }
                 /* PWA：独立窗口/全屏下把底部安全区让出来（iPhone Home 条、安卓手势条），
                    否则卡片压在系统手势区上、点击关闭按钮会误触。id 选择器压过 Tailwind。 */
@@ -14252,9 +14292,9 @@ const RecoveryToast = {
                         bottom: calc(7rem + env(safe-area-inset-bottom, 0px)) !important;
                     }
                 }
-                /* 横屏手机可用高度很矮，隐藏轨迹行避免卡片溢出屏幕 */
+                /* 横屏手机可用高度很矮，压缩堆栈高度避免卡片溢出屏幕 */
                 @media (max-height: 480px) {
-                    #recovery-status-toast .recovery-history { display: none; }
+                    #recovery-status-toast .recovery-stack { height: 46px; }
                 }
             `;
             document.head.appendChild(style);
@@ -14269,31 +14309,7 @@ const RecoveryToast = {
         }
         this.el = container;
         this.bindVisibilityPause();
-        this.bindResizeRemeasure();
         return this.el;
-    },
-
-    /**
-     * 视口尺寸变化后必须重量轨道：单位副本数、是否滚动、滚动时长都依赖
-     * 「视口宽 vs 单位宽」的比值。只在渲染时测一次的话，用户旋转手机或
-     * 拖动窗口后卡片变窄/变宽，跑马灯的判断就停留在旧尺寸上——实测从 1280px
-     * 缩到 390px 后单位宽 255 > 视口 244 已经溢出，但动画没启动。
-     */
-    bindResizeRemeasure() {
-        if (this._resizeBound) return;
-        this._resizeBound = true;
-        let timer = null;
-        const onResize = () => {
-            clearTimeout(timer);
-            // 旋转屏幕/拖窗口会连续触发，节流到一帧之后再测
-            timer = setTimeout(() => {
-                if (this.el && document.body.contains(this.el) && this.isActive()) {
-                    this.syncHistoryScroll();
-                }
-            }, 150);
-        };
-        window.addEventListener('resize', onResize);
-        window.addEventListener('orientationchange', onResize);
     },
 
     // 清理底层露出的普通播放类 toast
@@ -14324,6 +14340,8 @@ const RecoveryToast = {
         if (this.currentSong?.name !== songName) {
             this.currentSong = song;
             this.triedHistory = [];
+            this.scrollTop = 0;
+            this.expanded = false;
         }
 
         if (details.triedPlatform) {
@@ -14377,7 +14395,7 @@ const RecoveryToast = {
             </div>
         `;
 
-        this.syncHistoryScroll();
+        this.bindStackInteractions();
     },
 
     /**
@@ -14387,44 +14405,47 @@ const RecoveryToast = {
      * 平台名长度（中英文）、字号、是否深色模式，只能在插入 DOM 后实测。
      * 用 rAF 推迟一帧，等布局完成再量，否则量到的宽度是 0。
      */
-    syncHistoryScroll() {
-        const viewport = this.el?.querySelector('.recovery-history-viewport');
-        const track = this.el?.querySelector('[data-history-track]');
-        if (!viewport || !track) return;
-        // 上一帧的 rAF 还没跑就先记下来，避免连续调用时多次克隆、动画被打断闪烁
-        if (this._scrollRaf) cancelAnimationFrame(this._scrollRaf);
-        const seed = track.querySelector('.recovery-history-unit');
-        if (!seed) return;
-        track.classList.remove('recovery-scroll');
-        // 每次都从单个种子重建，副本数随视口宽度变化，不累积
-        track.replaceChildren(seed.cloneNode(true));
+    /**
+     * 绑定堆栈交互：悬停散开、滚轮翻看历史、离开自动回到最新。
+     * 监听挂在容器上（事件委托），innerHTML 重建后无需重新绑定。
+     */
+    bindStackInteractions() {
+        const stack = this.el?.querySelector('[data-recovery-stack]');
+        if (!stack) return;
 
-        this._scrollRaf = requestAnimationFrame(() => {
-            const unit = track.firstElementChild;
-            if (!unit) return;
-            const unitW = unit.getBoundingClientRect().width;
-            const viewW = viewport.clientWidth;
-            // 装得下就静止，不空转
-            if (!unitW || unitW <= viewW) {
-                track.style.removeProperty('--recovery-scroll-shift');
-                track.style.removeProperty('--recovery-scroll-dur');
-                return;
-            }
-            // 铺满视口再多留一份，保证位移一整个单位后右侧仍有内容，不露空白
-            const copies = Math.ceil(viewW / unitW) + 1;
-            const frag = document.createDocumentFragment();
-            for (let i = 0; i < copies; i++) frag.appendChild(unit.cloneNode(true));
-            track.replaceChildren(...Array.from(frag.childNodes));
-            // 触摸设备放慢一点：手指常在屏幕上，滚动太快不好读
-            const coarse = window.matchMedia?.('(pointer: coarse)')?.matches;
-            const speed = coarse ? 18 : 26; // px/s
-            track.style.setProperty('--recovery-scroll-shift', `${-unitW}px`);
-            track.style.setProperty('--recovery-scroll-dur', `${unitW / speed}s`);
-            track.classList.add('recovery-scroll');
-        });
+        stack.onmouseenter = () => { this.expanded = true; stack.dataset.expanded = '1'; };
+        stack.onmouseleave = () => { this.expanded = false; stack.dataset.expanded = '0'; this.scrollTop = 0; this.refresh(); };
+
+        // 滚轮翻看：向上看更新的，向下看更旧的。throttle 防止一次滚动手势跨太多条。
+        let wheelLock = false;
+        stack.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (wheelLock) return;
+            const maxScroll = Math.max(0, this.triedHistory.length - 1);
+            const next = Math.min(Math.max((this.scrollTop || 0) + (e.deltaY > 0 ? 1 : -1), 0), maxScroll);
+            if (next === (this.scrollTop || 0)) return;
+            this.scrollTop = next;
+            wheelLock = true;
+            setTimeout(() => { wheelLock = false; }, 80);
+            this.refresh();
+        }, { passive: false });
     },
 
-    /** PWA 切到后台时暂停跑马灯：不可见的动画纯属耗电，回到前台再继续 */
+    /** 重绘卡片内容（不重建容器，保留焦点和交互状态） */
+    refresh() {
+        if (!this.el || !document.body.contains(this.el) || !this.isActive()) return;
+        const old = this.el.querySelector('[data-recovery-stack]');
+        if (!old) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = this.renderHistoryHtml();
+        const next = tmp.firstElementChild;
+        if (next && old.parentNode) {
+            old.parentNode.replaceChild(next, old);
+            this.bindStackInteractions();
+        }
+    },
+
+    /** PWA 切到后台时暂停动画：不可见的动画纯属耗电，回到前台再继续 */
     bindVisibilityPause() {
         if (this._visBound) return;
         this._visBound = true;
@@ -14498,7 +14519,7 @@ const RecoveryToast = {
             </div>
         `;
 
-        this.syncHistoryScroll();
+        this.bindStackInteractions();
 
         if (this.hideTimer) clearTimeout(this.hideTimer);
         this.hideTimer = setTimeout(() => {
@@ -14542,7 +14563,7 @@ const RecoveryToast = {
             </div>
         `;
 
-        this.syncHistoryScroll();
+        this.bindStackInteractions();
 
         if (this.hideTimer) clearTimeout(this.hideTimer);
         this.hideTimer = setTimeout(() => {
@@ -14565,6 +14586,8 @@ const RecoveryToast = {
             this.el = null;
             this.currentSong = null;
             this.triedHistory = [];
+            this.scrollTop = 0;
+            this.expanded = false;
             this.currentStatus = 'loading';
         }, 300);
     },
