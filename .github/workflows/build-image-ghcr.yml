@@ -31,6 +31,15 @@ on:
       - 'version' # 只改版本文件（cut 一个里程碑）也要触发发布
       - '.github/workflows/build-image-ghcr.yml'
 
+# 串行化同一仓库的所有构建（排队,不取消）。版本号的 bump 判据是"GHCR 上是否
+# 已存在该 tag",而 merge-manifest 要到构建末尾才把版本 tag 推上去——两个构建
+# 并行跑会算出同一个版本号,后完成的一方把先完成方已发布的 :X.Y.Z 静默覆盖,
+# "版本 tag 不可变"就不成立了。排队后第二次构建的 prepare 一定能看到第一次
+# 已发布的版本 tag。
+concurrency:
+  group: build-image-ghcr
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/lxserver
@@ -145,8 +154,8 @@ jobs:
           labels: |
             org.opencontainers.image.title=lxserver
             org.opencontainers.image.description=LX Music Sync Server (Enhanced Edition)
-            org.opencontainers.image.source=${{ github.serverUrl }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.serverUrl }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ needs.prepare.outputs.build_date }}
