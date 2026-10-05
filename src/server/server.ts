@@ -446,18 +446,41 @@ const getMime = (filename: string) => {
   const mimeTypes: Record<string, string> = {
     '.txt': 'text/plain',
     '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
     '.json': 'application/json',
+    '.webmanifest': 'application/manifest+json',
     '.html': 'text/html',
     '.css': 'text/css',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.png': 'image/png',
     '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.avif': 'image/avif',
+    '.ico': 'image/x-icon',
     '.svg': 'image/svg+xml',
     '.pdf': 'application/pdf',
     '.zip': 'application/zip',
+    '.wasm': 'application/wasm',
+    // 字体：缺 woff2 会让浏览器拒收（当前按 octet-stream 发），
+    // 前端构建产物里带字体，不补的话会有跨域字体静默失败
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.otf': 'font/otf',
+    // 音频：本地音乐库会扫到任意容器格式，缺失时全部退化成
+    // application/octet-stream，浏览器按类型猜解码会失败
     '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.flac': 'audio/flac',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.oga': 'audio/ogg',
+    '.opus': 'audio/opus',
+    '.wma': 'audio/x-ms-wma',
     '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
   }
   return mimeTypes[ext] || 'application/octet-stream'
 }
@@ -865,10 +888,17 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
     return
   }
   const contentType = getMime(filePath)
-  // HTML 必须每次回源，否则前端更新后用户拿到的还是旧页面；
-  // 其余静态资源（JS/CSS/字体/图片）走长缓存，浏览器不再重复校验。
+  // HTML 必须每次回源，否则前端更新后用户拿到的还是旧页面。
+  //
+  // 应用代码（js/css）同样必须每次回源：这些文件名不带内容哈希（是 app.js 而不是
+  // app.4051d96.js），长缓存会让 UI 更新后用户最长 7 天看不到变化——实测改完换源提示
+  // 组件，浏览器仍在跑旧版，验证时一度以为部署失败。ETag 让「未变更」时只回 304、
+  // 不传 body，多一次条件请求换来的是「发版立刻生效」，这个交换是值的。
+  //
+  // 图片/音频/字体仍走长缓存：它们带内容哈希或本身就是大文件，回源成本高。
   const isHtml = /\.html?$/i.test(filePath)
-  const cacheControl = isHtml
+  const isAppCode = /\.(js|mjs|css)$/i.test(filePath)
+  const cacheControl = (isHtml || isAppCode)
     ? 'no-cache'
     : 'public, max-age=604800, must-revalidate'
 
@@ -898,7 +928,9 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
       } else {
         // Gzip text-based responses > 1KB when client accepts gzip
         const acceptEncoding = req.headers['accept-encoding'] || ''
-        const isText = /^(text\/|application\/javascript|application\/json|.*css|.*xml|.*svg|.*html)/.test(contentType)
+        // 注意这是前缀匹配，漏掉的类型会静默不压缩（前端包会白涨传输量）。
+        // wasm/字体/manifest 都必须在内：它们都是文本友好的资源。
+        const isText = /^(text\/|application\/(javascript|json|manifest\+json|xml|wasm)|image\/svg|font\/)|\.(css|svg|html|xml)$/.test(contentType)
         const shouldGzip = acceptEncoding.includes('gzip') && isText && content.length > 1024
 
         if (shouldGzip) {

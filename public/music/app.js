@@ -14217,8 +14217,10 @@ const RecoveryToast = {
                     color: rgb(31 41 55);
                     font-size: 12px;
                     will-change: transform, opacity;
-                    transition: transform .34s cubic-bezier(.22,.75,.24,1), opacity .28s ease;
+                    transition: transform var(--recovery-dur, .34s) cubic-bezier(.22,.75,.24,1),
+                                opacity .28s ease;
                     overflow: hidden;
+                    animation-play-state: var(--recovery-anim, running);
                 }
                 .dark .recovery-stack-card {
                     border-color: rgb(55 65 81);
@@ -14445,14 +14447,15 @@ const RecoveryToast = {
         }
     },
 
-    /** PWA 切到后台时暂停动画：不可见的动画纯属耗电，回到前台再继续 */
+    /** PWA 切到后台时暂停堆栈动画：不可见的动画纯属耗电，回到前台再继续 */
     bindVisibilityPause() {
         if (this._visBound) return;
         this._visBound = true;
         document.addEventListener('visibilitychange', () => {
-            const track = this.el?.querySelector('.recovery-history-track.recovery-scroll');
-            if (!track) return;
-            track.style.animationPlayState = document.hidden ? 'paused' : 'running';
+            const stack = this.el?.querySelector('[data-recovery-stack]');
+            if (!stack) return;
+            stack.style.setProperty('--recovery-anim', document.hidden ? 'paused' : 'running');
+            stack.style.setProperty('--recovery-dur', document.hidden ? '0ms' : '');
         });
     },
 
