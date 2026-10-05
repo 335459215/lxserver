@@ -14209,7 +14209,14 @@ const RecoveryToast = {
                 }
                 .recovery-stack-card {
                     position: absolute;
-                    inset: 0;
+                    /* 关键：不能用 inset:0 撑满整个堆栈——那样后层只向下偏移一点，
+                       其余部分被前层完全覆盖，静止态渲染出来就是一张实心卡（实测截图
+                       如此：7 张卡只看得见最前一张，纵深等于没做）。高度取堆栈的 55%，
+                       每层下缘都会露出后面一层的顶部，横条排列才有「一叠」的纵深。 */
+                    left: 0;
+                    right: 0;
+                    top: 0;
+                    height: 46px;
                     display: flex;
                     align-items: center;
                     gap: 8px;
@@ -14271,7 +14278,7 @@ const RecoveryToast = {
                     transition: height .26s cubic-bezier(.22,.75,.24,1);
                 }
                 .recovery-stack[data-expanded="1"] {
-                    height: 190px;
+                    height: 210px;
                 }
                 .recovery-stack[data-expanded="1"] .recovery-stack-card {
                     transform: translateY(calc(var(--d) * 27px)) scale(calc(1 - var(--d) * .04)) !important;
