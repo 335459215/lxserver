@@ -446,24 +446,43 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
         dirty = false
     }
     const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+    // 本次解析内「链接 → 完整校验结果」的缓存。内部竞速筛死链时探过一次，
+    // runCandidate 后面还要再判一次 ok/probeError 来决定它是赢家还是次选，
+    // 不缓存就得对同一条链接探两遍（各 1.2s，白白多等）。
+    const innerProbeCache = new Map<string, { ok: boolean, probeError?: boolean, url: string, reason?: string }>()
 
-    const runCandidate = async (index: number, quality: string) => {
-        const c = candidates[index]
-        const slot = attemptSlots[index]
-        try {
-            const r = await callUserApiGetMusicUrl(
-                c.platform,
-                c.song,
-                quality,
-                username,
-                (att: any) => {
-                    // 标注来自哪个平台/是否跨平台，前端的尝试列表才看得出「换源」发生过
-                    void opts.onProgress?.({ ...att, source: c.platform, cross: c.cross })
-                },
-                opts.enableAutoSwitchApiSource !== false,
-                failedSourceIds.size ? [...failedSourceIds] : opts.excludeApiSources,
-                { signal: outerAbort, recordBreakerSuccess: false },
-            )
+const runCandidate = async (index: number, quality: string) => {
+    const c = candidates[index]
+    const slot = attemptSlots[index]
+    try {
+        const r = await callUserApiGetMusicUrl(
+            c.platform,
+            c.song,
+            quality,
+            username,
+            (att: any) => {
+                // 标注来自哪个平台/是否跨平台，前端的尝试列表才看得出「换源」发生过
+                void opts.onProgress?.({ ...att, source: c.platform, cross: c.cross })
+            },
+            opts.enableAutoSwitchApiSource !== false,
+            failedSourceIds.size ? [...failedSourceIds] : opts.excludeApiSources,
+            {
+                signal: outerAbort,
+                recordBreakerSuccess: false,
+                // 内部竞速不能只看「脚本调用没抛异常」就算赢：音源排在前面的源后端
+                // 挂掉时照样返回一个死链，会把同平台真正能播的源全部中止。这里把探测
+                // 下放给内部竞速做第一道筛，死链当场落选、让后面的源顶上。
+                // 校验结果缓存下来给下面复用，避免同一条链接探两次。
+                validateLink: validate ? async (url: string) => {
+                    const cached = innerProbeCache.get(url)
+                    if (cached) return cached.ok
+                    const v = await resolveAndValidateUrl(url)
+                    innerProbeCache.set(url, v)
+                    if (!v.ok) console.warn(`[音源解析] 内部竞速筛掉死链 ${c.platform}: ${v.reason}`)
+                    return v.ok
+                } : undefined,
+            },
+        )
             if (!r?.url) throw new Error('音源未返回可用链接')
             // 逐源尝试明细要并进本候选的槽位。否则响应里的 attempts 只剩一条
             // 「最终成功」，哪个源试了几次、报了什么就全丢了，排障只能靠翻日志。
@@ -477,7 +496,8 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             // 重定向必须无条件跟随。music.url.validate 只决定「链接是否可用」的判定，
             // 不是「要不要解析重定向」——早期把两者绑在一起，关掉校验就会把带
             // 重定向的原始链接直接交给客户端，等于悄悄关了一个原有能力。
-            const v = await resolveAndValidateUrl(r.url)
+            // 内部竞速可能已经探过这条链接（validateLink），复用结果别探第二遍。
+            const v = innerProbeCache.get(r.url) ?? await resolveAndValidateUrl(r.url)
             if (!v.ok && validate) {
                 const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
                 console.warn(`[音源解析] 链接校验未通过 ${reason}`)

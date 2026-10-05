@@ -554,6 +554,17 @@ export interface MusicUrlRaceOptions {
     recordBreakerSuccess?: boolean
     /** 关闭后回退到串行轮询（仅用于排障/对比） */
     race?: boolean
+    /**
+     * 候选链接的可播性校验。返回 false 表示这个链接不能用（死链/网关屏蔽），
+     * 该候选不算赢，竞速继续让后面的源上。
+     *
+     * 为什么需要：音源脚本「调用成功」不等于「链接能播」。长青这类聚合源排在
+     * order.json 前面，后端挂掉时依然会成功返回一个 522 死链——内部竞速一见
+     * 脚本返回就判它赢，把同平台真正能播的源（野花/野草/全豆要）全部中止，
+     * 死链就这么被交到播放器手上，缓冲十几秒才失败（实测每首等 4~10s）。
+     * 由解析器（唯一持有探测能力的一方）来裁决，内部竞速只管「拿到几个候选」。
+     */
+    validateLink?: (url: string) => Promise<boolean>
     /** 相邻候选的错峰启动间隔(ms) */
     staggerMs?: number
     /** 已有低序号候选成功时，给更靠前在途候选反超的宽限时间(ms) */
@@ -870,6 +881,20 @@ export async function callUserApiGetMusicUrl(
                         type: quality
                     })
                     if (accepted) return
+                    // 链接可播性由调用方裁决（见 MusicUrlRaceOptions.validateLink）。
+                    // 校验不通过不算赢：这个源不算成功，竞速继续让后面的源上，
+                    // 死链就不会因为「脚本调用没抛异常」而挤掉真正能播的源。
+                    if (opts?.validateLink) {
+                        const linkOk = await opts.validateLink(url)
+                        if (accepted) return
+                        if (!linkOk) {
+                            console.warn(`[自定义源] ✗ ${api.info.name} 返回的链接不可用, 该源落选`)
+                            recordSourceResult(api.info.id, false)
+                            emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: '音源返回的链接不可用' })
+                            changed()
+                            continue
+                        }
+                    }
                     console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
                     // 成功记账可由调用方关闭：解析器会对链接做可用性探测并自行记账，
                     // 两边都记会让「成功清零」抵消掉随后的「校验失败」。
