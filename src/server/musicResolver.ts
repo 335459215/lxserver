@@ -249,18 +249,23 @@ const probeUrl = async (url: string): Promise<{ status?: number, location?: stri
 }
 
 /**
- * 深度探测：给更长的超时（4s），用来在「短探测超时」之后补一刀。
- * Cloudflare 522 要等 CF 等完源站（10~30s）才返回——4s 也等不到完整的 522，
- * 但能等到一部分快的 5xx；更重要的是能等到部分 CDN 对非浏览器 UA 的 RST
- * 在更长窗口里返回的状态码。仍然探不通就维持「次选」身份交给播放器。
+ * 深度探测：给更长的超时（2.5s），用来在「短探测超时」之后补一刀。
+ *
+ * 超时定 2.5s 的依据：能播的网关/CDN 在这个窗口内一定会回一个状态码（哪怕是
+ * 302 或 206），而真正挂掉的源——Cloudflare 522 要等 CF 等完源站才返回，10~30s，
+ * 无论等多久都探不到；等 4s、10s 只是把播放延迟等长，不改变结论。所以这里只做
+ * 「快速判死/确认」，不做「等它彻底死透」。
+ *
+ * 探不通就维持「次选」身份交给播放器，真正的死链由播放器的失败报告
+ * （按歌黑名单 + 源级熔断）去补——那是唯一能分辨「屏蔽探针」和「真死」的信号。
  */
 const probeUrlDeep = async (url: string): Promise<{ status?: number, location?: string } | null> => {
     try {
         const resp = await needle('get', url, null, {
             follow_max: 0,
-            open_timeout: 4000,
-            response_timeout: 4000,
-            read_timeout: 4000,
+            open_timeout: 2500,
+            response_timeout: 2500,
+            read_timeout: 2500,
             agent: await getProxyAgent(url, 'music'),
             headers: {
                 'User-Agent': UA,
@@ -654,58 +659,73 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                     await Promise.race([nextChange(), sleep(1000)])
                     continue
                 }
-                // 所有候选（含跨平台替身）都跑完了，才有必要深探测次选候选：
+// 所有候选（含跨平台替身）都跑完了，才有必要深探测次选候选：
                 // 短探测超时的链接有可能是 Cloudflare 522（源站挂了，CF 要
-                // 10~30s 才返回 522）——交给播放器只会缓冲半天再失败。用 4s
-                // 深探测补一刀：拿到明确 4xx/5xx 就判死；确认 2xx/3xx 就提升
-                // 为确认可用；仍然超时的才维持次选身份兜底。
+                // 10~30s 才返回 522）——交给播放器只会缓冲半天再失败。深探测
+                // 补一刀：拿到明确 4xx/5xx 就判死；确认 2xx/3xx 就提升为确认可用。
+                //
+                // 必须「全部并发跑完再统一看结果」，不能一个个串行 await：
+                // 长青这类聚合源会同时产出 kw/tx/kg/mg 四个次选候选，串行的话
+                // 4s × N 直接把一次解析拖到十几秒（实测 15s），而这些候选多半
+                // 是同一个后端、同样探不通，串行等纯属白等。并发后总耗时封顶在
+                // 一个 DEEP_PROBE_BUDGET_MS 之内，与候选数无关。
+                //
                 // validate=false 时用户已明确关掉链接校验，不跑深探测，直接兜底。
-                if (successes.size === 0 && validate) {
-                    for (const idx of [...unconfirmed.keys()].sort()) {
+                if (successes.size === 0 && validate && unconfirmed.size > 0) {
+                    const idxs = [...unconfirmed.keys()].sort()
+                    console.log(`[音源解析] 深度探测 ${idxs.length} 个次选候选(并发): ${idxs.map(i => `#${i}/${unconfirmed.get(i)?.platform}/${unconfirmed.get(i)?.result.sourceName || '未知源'}`).join(', ')}`)
+                    const verdicts = await Promise.all(idxs.map(async (idx) => {
                         const uc = unconfirmed.get(idx)
-                        if (!uc) continue
-                        console.log(`[音源解析] 深度探测次选候选 #${idx} (${uc.platform}): ${uc.result.sourceName || '未知源'}`)
+                        if (!uc) return { idx, confirmed: false, dead: false }
                         // tri-state: confirmed / dead / unknown(仍超时)
-                        let deepConfirmed = false
-                        let deepDead = false
+                        let confirmed = false
+                        let dead = false
                         try {
                             const dp = await probeUrlDeep(uc.url)
                             if (dp) {
                                 const status = dp.status ?? 0
                                 if (status >= 400) {
-                                    deepDead = true
-                                    console.warn(`[音源解析] 深度探测确认链接不可用(HTTP ${status}): ${uc.platform}/${uc.result.sourceName || '未知源'}`)
+                                    dead = true
                                 } else if ([301, 302, 303, 307, 308].includes(status) && dp.location) {
                                     let next = String(dp.location)
-                                    if (!next.startsWith('http')) { try { next = new URL(next, uc.url).href } catch { deepConfirmed = true } }
-                                    if (!deepConfirmed) {
+                                    if (!next.startsWith('http')) { try { next = new URL(next, uc.url).href } catch { confirmed = true } }
+                                    if (!confirmed) {
                                         // 重定向目标用短探测跟进——如果短探测也超时(probeError)，
                                         // 不能判死：跟原始链接一样「探针拿不到真相」，维持次选身份。
                                         const v2 = await resolveAndValidateUrl(next)
-                                        if (v2.ok && !v2.probeError) deepConfirmed = true
-                                        else if (!v2.ok) { deepDead = true; console.warn(`[音源解析] 深度探测重定向后不可用: ${v2.reason}`) }
+                                        if (v2.ok && !v2.probeError) confirmed = true
+                                        else if (!v2.ok) dead = true
                                         // v2.probeError → 既不确认也不判死，维持次选
                                     }
                                 } else {
-                                    deepConfirmed = true
+                                    confirmed = true
                                 }
                             }
                         } catch { /* null = 仍超时，维持次选 */ }
-                        if (deepConfirmed) {
-                            console.log(`[音源解析] 深度探测确认链接可用: ${uc.platform}/${uc.result.sourceName || '未知源'}`)
+                        return { idx, confirmed, dead }
+                    }))
+                    // 按候选序号升序处理，保证「序号小的优先胜出」的语义不变
+                    for (const v of verdicts) {
+                        const uc = unconfirmed.get(v.idx)
+                        if (!uc) continue
+                        const label = `${uc.platform}/${uc.result.sourceName || '未知源'}`
+                        if (v.confirmed) {
+                            console.log(`[音源解析] 深度探测确认链接可用: ${label}`)
                             uc.confirmed = true
-                            successes.set(idx, uc)
-                            // 找到一个确认可用的就够了，回到循环顶部走 successes 分支选它
+                            successes.set(v.idx, uc)
+                            // 序号最小的确认可用候选即为赢家，剩下的深探测结果不必再看
                             break
-                        } else if (deepDead) {
+                        }
+                        if (v.dead) {
+                            console.warn(`[音源解析] 深度探测确认链接不可用: ${label}`)
                             // 深探测确认死链——判死，避免把死链交给播放器
                             reportSourceResult(String(uc.result.sourceId ?? ''), false)
-                            unconfirmed.delete(idx)
+                            unconfirmed.delete(v.idx)
                             failedSourceIds.add(String(uc.result.sourceId ?? ''))
                             // 把这个源记入「本次解析失败」，避免后续音质档再试
-                            errors.push(`${uc.platform}/${uc.result.sourceName || '未知源'}: 深度探测确认链接不可用`)
+                            errors.push(`${label}: 深度探测确认链接不可用`)
                         }
-                        // 既不 confirmed 也不 dead → 维持次选，继续看下一个候选
+                        // 既不 confirmed 也不 dead → 维持次选
                     }
                     if (successes.size > 0) {
                         // 深探测把某个次选提升为确认可用——回到循环顶部，走 successes 分支选赢家

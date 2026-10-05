@@ -14155,6 +14155,36 @@ const RecoveryToast = {
                 .animate-recovery-flow {
                     animation: recoveryProgressFlow 1.6s infinite ease-in-out;
                 }
+                /* 尝试轨迹：单行横向跑马灯。候选平台多的时候不再换行堆叠成
+                   好几行（flex-wrap 会把卡片撑高、显得杂乱），而是一条轨道
+                   匀速左移；内容不超出时不滚动，超出时循环滚动。 */
+                .recovery-history-track {
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                    white-space: nowrap;
+                    width: max-content;
+                    will-change: transform;
+                }
+                .recovery-history-viewport {
+                    overflow: hidden;
+                    position: relative;
+                    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+                    mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+                }
+                .recovery-history-track.recovery-scroll {
+                    animation: recoveryHistoryScroll var(--recovery-scroll-dur, 9s) linear infinite;
+                }
+                .recovery-history-viewport:hover .recovery-history-track.recovery-scroll {
+                    animation-play-state: paused;
+                }
+                @keyframes recoveryHistoryScroll {
+                    0% { transform: translateX(0); }
+                    100% { transform: translateX(-50%); }
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    .recovery-history-track.recovery-scroll { animation: none; }
+                }
             `;
             document.head.appendChild(style);
         }
@@ -14218,20 +14248,25 @@ const RecoveryToast = {
             }
         }
 
-        // 生成试错历史脚印标签 (完全适配明亮/暗黑模式与主题色)
+        // 试错轨迹：单行横向跑马灯。候选平台多的时候不再换行堆成好几行。
+        // 轨道内容渲染两遍并用 translateX(-50%) 循环，衔接处无缝；
+        // 内容没超出容器宽度时去掉动画类，保持静止（不空转）。
         let historyHtml = '';
         if (this.triedHistory.length > 0) {
-            historyHtml = `
-                <div class="flex flex-wrap items-center gap-1 mt-1 text-[11px]">
-                    <span class="text-gray-400 dark:text-gray-500 text-[10px]">尝试轨迹:</span>
-                    ${this.triedHistory.map((item) => {
+            const chipHtml = this.triedHistory.map((item) => {
                 if (item.status === 'failed') {
                     return `<span class="px-1.5 py-0.5 rounded bg-red-50 text-red-500 border border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30 line-through text-[10px]">${item.platformName}</span>`;
                 } else if (item.status === 'success') {
                     return `<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30 font-bold text-[10px]">${item.platformName}</span>`;
                 }
                 return `<span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/30 font-medium animate-pulse text-[10px]">${item.platformName}</span>`;
-            }).join('<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>')}
+            }).join('<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>');
+            const label = `<span class="text-gray-400 dark:text-gray-500 text-[10px] shrink-0">尝试轨迹:</span>`;
+            historyHtml = `
+                <div class="recovery-history-viewport mt-1 text-[11px]">
+                    <div class="recovery-history-track" data-history-track>
+                        ${label}${chipHtml}<span class="text-gray-300 dark:text-gray-600 text-[10px]">➔</span>${label}${chipHtml}
+                    </div>
                 </div>
             `;
         }
@@ -14265,6 +14300,28 @@ const RecoveryToast = {
                 <div class="h-full bg-emerald-500 w-1/3 animate-recovery-flow"></div>
             </div>
         `;
+
+        this.syncHistoryScroll();
+    },
+
+    /**
+     * 跑马灯是否需要滚动，取决于「单份内容宽度」是否超过视口。
+     * 模板里放了两份内容做无缝循环，所以拿 track 的一半宽度去比。
+     * 用 rAF 推迟到布局完成后再量，否则刚插入 DOM 时宽度还是 0。
+     */
+    syncHistoryScroll() {
+        const viewport = this.el?.querySelector('.recovery-history-viewport');
+        const track = this.el?.querySelector('[data-history-track]');
+        if (!viewport || !track) return;
+        track.classList.remove('recovery-scroll');
+        requestAnimationFrame(() => {
+            const halfWidth = track.scrollWidth / 2;
+            if (halfWidth > viewport.clientWidth + 2) {
+                // 时长按内容长度缩放，速度恒定（约 26px/s），条目越多滚动越久但不加快
+                track.style.setProperty('--recovery-scroll-dur', `${Math.max(9, halfWidth / 26)}s`);
+                track.classList.add('recovery-scroll');
+            }
+        });
     },
 
     updateStatusText(msg) {
