@@ -14269,7 +14269,31 @@ const RecoveryToast = {
         }
         this.el = container;
         this.bindVisibilityPause();
+        this.bindResizeRemeasure();
         return this.el;
+    },
+
+    /**
+     * 视口尺寸变化后必须重量轨道：单位副本数、是否滚动、滚动时长都依赖
+     * 「视口宽 vs 单位宽」的比值。只在渲染时测一次的话，用户旋转手机或
+     * 拖动窗口后卡片变窄/变宽，跑马灯的判断就停留在旧尺寸上——实测从 1280px
+     * 缩到 390px 后单位宽 255 > 视口 244 已经溢出，但动画没启动。
+     */
+    bindResizeRemeasure() {
+        if (this._resizeBound) return;
+        this._resizeBound = true;
+        let timer = null;
+        const onResize = () => {
+            clearTimeout(timer);
+            // 旋转屏幕/拖窗口会连续触发，节流到一帧之后再测
+            timer = setTimeout(() => {
+                if (this.el && document.body.contains(this.el) && this.isActive()) {
+                    this.syncHistoryScroll();
+                }
+            }, 150);
+        };
+        window.addEventListener('resize', onResize);
+        window.addEventListener('orientationchange', onResize);
     },
 
     // 清理底层露出的普通播放类 toast
@@ -14367,26 +14391,32 @@ const RecoveryToast = {
         const viewport = this.el?.querySelector('.recovery-history-viewport');
         const track = this.el?.querySelector('[data-history-track]');
         if (!viewport || !track) return;
-        track.classList.remove('recovery-scroll');
+        // 上一帧的 rAF 还没跑就先记下来，避免连续调用时多次克隆、动画被打断闪烁
+        if (this._scrollRaf) cancelAnimationFrame(this._scrollRaf);
         const seed = track.querySelector('.recovery-history-unit');
         if (!seed) return;
-        // 每次重渲染都从单个种子重建，避免上一轮的副本累积
+        track.classList.remove('recovery-scroll');
+        // 每次都从单个种子重建，副本数随视口宽度变化，不累积
         track.replaceChildren(seed.cloneNode(true));
 
-        requestAnimationFrame(() => {
+        this._scrollRaf = requestAnimationFrame(() => {
             const unit = track.firstElementChild;
             if (!unit) return;
             const unitW = unit.getBoundingClientRect().width;
             const viewW = viewport.clientWidth;
             // 装得下就静止，不空转
-            if (!unitW || unitW <= viewW) return;
+            if (!unitW || unitW <= viewW) {
+                track.style.removeProperty('--recovery-scroll-shift');
+                track.style.removeProperty('--recovery-scroll-dur');
+                return;
+            }
             // 铺满视口再多留一份，保证位移一整个单位后右侧仍有内容，不露空白
             const copies = Math.ceil(viewW / unitW) + 1;
             const frag = document.createDocumentFragment();
             for (let i = 0; i < copies; i++) frag.appendChild(unit.cloneNode(true));
             track.replaceChildren(...Array.from(frag.childNodes));
             // 触摸设备放慢一点：手指常在屏幕上，滚动太快不好读
-            const coarse = window.matchMedia?.('(pointer: coarse)')?.matches
+            const coarse = window.matchMedia?.('(pointer: coarse)')?.matches;
             const speed = coarse ? 18 : 26; // px/s
             track.style.setProperty('--recovery-scroll-shift', `${-unitW}px`);
             track.style.setProperty('--recovery-scroll-dur', `${unitW / speed}s`);
