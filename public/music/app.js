@@ -14166,7 +14166,7 @@ const RecoveryToast = {
             const label = item.platformName;
             return `
                 <div class="recovery-stack-card" data-kind="${item.status === 'success' ? 'success' : item.status === 'failed' ? 'fail' : 'trying'}"
-                     style="--d:${d}; z-index:${100 - d}; opacity:${Math.max(0.1, 1 - d * 0.2)}; transform:translateY(${d * 9}px) scale(${1 - d * 0.045})">
+                     style="--d:${d}; z-index:${100 - d}; opacity:${Math.max(0.12, 0.92 - d * 0.14)}; transform:translateY(${d * 12}px) scale(${1 - d * 0.05})">
                     <span class="recovery-stack-dot"></span>
                     <span class="recovery-stack-text">${label}</span>
                 </div>
@@ -14200,8 +14200,9 @@ const RecoveryToast = {
                 .recovery-stack {
                     position: relative;
                     /* 高度锁死：堆多少条都不长高，只在悬停散开时露出更多。
-                       62px 配 9px 的层间距，静态能看到 5~6 层纵深。 */
-                    height: 62px;
+                       84px 配 12px 层间距 —— 62/9 的组合实测下来最前的卡会整块
+                       盖住后面所有层，纵深等于没做（截图里只看得见一张红卡）。 */
+                    height: 84px;
                     perspective: 700px;
                     perspective-origin: 50% 0%;
                     touch-action: pan-y;
