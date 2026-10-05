@@ -14237,6 +14237,18 @@ const RecoveryToast = {
                     background: rgb(31 41 55 / 0.9);
                     color: rgb(229 231 235);
                 }
+                /* trying 态必须显式定义：缺失时落回默认白底，整叠里后层 fail 的
+                   红边透上来，看起来就像「正在尝试」这张卡是红的。 */
+                .recovery-stack-card[data-kind="trying"] {
+                    border-color: rgb(147 197 253);
+                    background: rgb(239 246 255 / 0.96);
+                    color: rgb(29 78 216);
+                }
+                .dark .recovery-stack-card[data-kind="trying"] {
+                    border-color: rgb(30 64 175);
+                    background: rgb(30 58 138 / 0.75);
+                    color: rgb(191 219 254);
+                }
                 .recovery-stack-card[data-kind="fail"] {
                     border-color: rgb(252 165 165);
                     background: rgb(254 242 242 / 0.9);
