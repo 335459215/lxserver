@@ -62,6 +62,7 @@ const SOURCES = [
   { id: 'wy-src', name: '网易源', delayMs: 200, fail: true, platforms: ['wy'] },
   { id: 'tx-src', name: 'QQ源', delayMs: 200, fail: true, platforms: ['tx'] },
   { id: 'mg-fast', name: '咪咕快源', delayMs: 50, fail: false, platforms: ['mg'] },
+  { id: 'mg-backup', name: '咪咕备源', delayMs: 100, fail: false, platforms: ['mg'] },
   { id: 'mg-dead', name: '咪咕死源', delayMs: 20, fail: true, platforms: ['mg'] },
 ]
 
@@ -203,6 +204,41 @@ async function main() {
   results.F_breaker = { names: lastAttempts.map(a => `${a.name}:${a.status}`) }
   check(!lastAttempts.some(a => a.name === '咪咕死源'),
     `F 死源熔断：连续失败后「咪咕死源」已从竞速中剔除（最后一次参与: ${results.F_breaker.names.join(', ')}）`)
+
+  // H) 源级播放熔断：播放器报告同一源在 2 首不同歌上播不了后，该源应被全局跳过。
+  //    这是「常青 SVIP」场景的核心防线——某个源的一个网关挂了，短探测(1.2s)探不出
+  //    死链(522 要 10~30s)，死链被交给播放器，播放器缓冲失败后带 excludeApiSources
+  //    重试。2 首不同歌都报同一个源失败 → 熔断，后续歌曲直接跳过该源。
+  //    之前的 bug：isPlaybackTripped/getPlaybackTrippedSources 会把 openUntil=0
+  //    （累计中、尚未触发）的条目当过期删掉，第二首歌上报时第一首的记录已没了，
+  //    永远凑不齐 MIN_SONGS，熔断形同虚设。
+  const pbA = song('mg', 'pb_a_' + Date.now(), { name: '播放熔断A' })
+  const pbB = song('mg', 'pb_b_' + Date.now(), { name: '播放熔断B' })
+  const pbC = song('mg', 'pb_c_' + Date.now(), { name: '播放熔断C' })
+  // A 首次解析 → 咪咕快源胜出（order.json 排第一）
+  const hA = await post({ songInfo: pbA, quality: '128k' })
+  const hAsrc = hA.sourceName
+  // 播放器报告 A 播不了这个源 → 带 exclude 重试（喂给熔断第 1 首歌）
+  await post({ songInfo: pbA, quality: '128k', excludeApiSources: [hAsrc] })
+  // B 首次解析 → 咪咕快源应已被跳过（G 测试的青花瓷 + A 的重试已凑齐 2 首歌，
+  // 熔断已触发——这正是真实场景下的正确行为：任何 2 首歌报告同一源失败即熔断）
+  const hB = await post({ songInfo: pbB, quality: '128k' })
+  const hBsrc = hB.sourceName
+
+  // 播放器报告 B 也播不了这个源 → 带 exclude 重试
+  await post({ songInfo: pbB, quality: '128k', excludeApiSources: [hBsrc] })
+  // C 首次解析（不带 exclude）→ 咪咕快源应仍被熔断跳过，由咪咕备源胜出
+  const hC = await post({ songInfo: pbC, quality: '128k' })
+  results.H_playbackBreaker = {
+    songA_src: hAsrc,
+    songB_src: hBsrc,
+    songC_src: hC.sourceName,
+    songC_error: (hC.error || '').slice(0, 80),
+  }
+  check(hB.sourceName && hB.sourceName !== hAsrc,
+    `H 源级播放熔断：A 报「${hAsrc}」失败后（含 G 测试预存的失败），B 即跳过它改由「${hB.sourceName || '失败'}」解析`)
+  check(hC.sourceName && hC.sourceName !== hAsrc,
+    `H 熔断持续生效：C 仍跳过「${hAsrc}」（C=${hC.sourceName || '失败:' + results.H_playbackBreaker.songC_error}）`)
 
   console.log('\n===== RESULTS =====')
   console.log(JSON.stringify(results, null, 2))

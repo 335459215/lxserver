@@ -182,24 +182,34 @@ const recordPlaybackFailure = (rawId: string, songKey: string): boolean => {
     return false
 }
 
-/** 该源是否已被「播放失败」熔断 */
+/** 该源是否已被「播放失败」熔断。
+ *  注意：不能像通常的熔断那样「过期就删条目」——这里的条目有两种状态：
+ *  openUntil>0 是已熔断（冷却中），openUntil=0 是还在累计失败歌曲数（尚未触发）。
+ *  若把累计中的条目删掉，第二首歌上报失败时就只剩它自己那一条记录，永远凑不齐
+ *  MIN_SONGS，熔断形同虚设。清理只交给 getPlaybackTrippedSources 按冷却到期做。
+ */
 const isPlaybackTripped = (rawId: string): boolean => {
     const st = playbackBreakers.get(playbackBreakerKey(rawId))
     if (!st) return false
-    if (st.openUntil > Date.now()) return true
-    playbackBreakers.delete(playbackBreakerKey(rawId))
-    return false
+    return st.openUntil > Date.now()
 }
 
 export const resetAllPlaybackBreakers = () => { playbackBreakers.clear() }
 
-/** 当前所有被播放失败熔断中的源（id 或名称，匹配规则与 excludeApiSources 一致） */
+/** 当前所有被播放失败熔断中的源（id 或名称，匹配规则与 excludeApiSources 一致）。
+ *  只清理「冷却已到期」的条目（openUntil>0 但已过期）；openUntil=0 的累计中条目保留。
+ */
 const getPlaybackTrippedSources = (): string[] => {
     const now = Date.now()
     const out: string[] = []
     for (const [key, st] of playbackBreakers) {
-        if (st.openUntil > now) out.push(key)
-        else playbackBreakers.delete(key)
+        if (st.openUntil > now) {
+            out.push(key)
+        } else if (st.openUntil > 0) {
+            // 冷却到期，清理；下次失败会重新累计
+            playbackBreakers.delete(key)
+        }
+        // openUntil === 0 → 仍在累计失败歌曲数，必须保留
     }
     return out
 }
@@ -225,6 +235,32 @@ const probeUrl = async (url: string): Promise<{ status?: number, location?: stri
             response_timeout: 1200,
             read_timeout: 1200,
             // 探测的是音乐平台链接，归 music 分类（NAS 上该分类不走代理）
+            agent: await getProxyAgent(url, 'music'),
+            headers: {
+                'User-Agent': UA,
+                Referer: new URL(url).origin,
+                Range: 'bytes=0-1',
+            },
+        })
+        return { status: resp.statusCode, location: resp.headers.location }
+    } catch {
+        return null
+    }
+}
+
+/**
+ * 深度探测：给更长的超时（6s），用来在「短探测超时」之后补一刀。
+ * Cloudflare 522 要等 CF 等完源站（10~30s）才返回——6s 也等不到完整的 522，
+ * 但能等到一部分快的 5xx；更重要的是能等到部分 CDN 对非浏览器 UA 的 RST
+ * 在更长窗口里返回的状态码。仍然探不通就维持「次选」身份交给播放器。
+ */
+const probeUrlDeep = async (url: string): Promise<{ status?: number, location?: string } | null> => {
+    try {
+        const resp = await needle('get', url, null, {
+            follow_max: 0,
+            open_timeout: 4000,
+            response_timeout: 4000,
+            read_timeout: 4000,
             agent: await getProxyAgent(url, 'music'),
             headers: {
                 'User-Agent': UA,
@@ -607,6 +643,63 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 if (confirmedStillPossible && crossGraceMs > 0 && Date.now() < graceDeadline) {
                     await Promise.race([nextChange(), sleep(graceDeadline - Date.now())])
                     continue
+                }
+                // 宽限期到，仍没有确认可用的候选。短探测超时的链接有可能是
+                // Cloudflare 522（源站挂了，CF 要 10~30s 才返回 522）——这种链接
+                // 交给播放器只会缓冲半天再失败。用 6s 深探测补一刀：拿到明确
+                // 4xx/5xx 就判死，换下一个候选；仍然超时的才降为次选兜底。
+                if (successes.size === 0) {
+                    for (const idx of [...unconfirmed.keys()].sort()) {
+                        const uc = unconfirmed.get(idx)
+                        if (!uc) continue
+                        console.log(`[音源解析] 深度探测次选候选 #${idx} (${uc.platform}): ${uc.result.sourceName || '未知源'}`)
+                        let deepOk = false
+                        try {
+                            const dp = await probeUrlDeep(uc.url)
+                            if (dp) {
+                                const status = dp.status ?? 0
+                                if (status >= 400) {
+                                    console.warn(`[音源解析] 深度探测确认链接不可用(HTTP ${status}): ${uc.platform}/${uc.result.sourceName || '未知源'}`)
+                                } else if ([301, 302, 303, 307, 308].includes(status) && dp.location) {
+                                    let next = String(dp.location)
+                                    if (!next.startsWith('http')) { try { next = new URL(next, uc.url).href } catch { deepOk = true } }
+                                    if (!deepOk) {
+                                        const v2 = await resolveAndValidateUrl(next)
+                                        if (v2.ok && !v2.probeError) deepOk = true
+                                        else if (!v2.ok) console.warn(`[音源解析] 深度探测重定向后不可用: ${v2.reason}`)
+                                    }
+                                } else {
+                                    deepOk = true
+                                }
+                            }
+                        } catch { /* null = 仍超时，保持次选 */ }
+                        if (deepOk) {
+                            console.log(`[音源解析] 深度探测确认链接可用: ${uc.platform}/${uc.result.sourceName || '未知源'}`)
+                            uc.confirmed = true
+                            successes.set(idx, uc)
+                            // 找到一个确认可用的就够了，回到循环顶部走 successes 分支选它
+                            break
+                        } else {
+                            // 深探测也没通过——判死，避免把死链交给播放器
+                            reportSourceResult(String(uc.result.sourceId ?? ''), false)
+                            unconfirmed.delete(idx)
+                            failedSourceIds.add(String(uc.result.sourceId ?? ''))
+                            // 把这个源记入「本次解析失败」，避免后续音质档再试
+                            errors.push(`${uc.platform}/${uc.result.sourceName || '未知源'}: 深度探测确认链接不可用`)
+                        }
+                    }
+                    if (successes.size > 0) {
+                        // 深探测把某个次选提升为确认可用——回到循环顶部，走 successes 分支选赢家
+                        continue
+                    }
+                    // unconfirmed 可能在深探测中被全部判死清空
+                    if (unconfirmed.size === 0) {
+                        if (searchDone && finished >= candidates.length) break
+                        ensureSearchStarted()
+                        if (Date.now() > arbiterDeadline) break
+                        await Promise.race([nextChange(), sleep(1000)])
+                        continue
+                    }
                 }
                 const idx = Math.min(...unconfirmed.keys())
                 winner = { index: idx, value: unconfirmed.get(idx) }
