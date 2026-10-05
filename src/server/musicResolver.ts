@@ -739,12 +739,36 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                         await Promise.race([nextChange(), sleep(1000)])
                         continue
                     }
+                    // 深探测后仍没有任何候选被确认可用，且剩下的次选都没被判死：
+                    // 这说明它们的链接服务端探针拿不到真相（网关屏蔽探针 / CF 522 等 10s+）。
+                    // 此时**不能无条件采纳序号最小的次选**——那通常就是 order.json 里
+                    // 排最前的那个源，而它恰恰最可能是死链（长青的 haitangw.net 522：
+                    // 它排第 3，每次都先返回死链，把真正能播的野花/野草挤掉）。
+                    //
+                    // 权衡：给一个死链 → 播放器缓冲 10~30s 才失败，用户体感极差；
+                    // 直接报错 → 播放器立刻带 excludeApiSources 换源，实测 200~600ms
+                    // 就能拿到可播链接。宁可让客户端换源，也不要把死链交出去。
+                    const remaining = [...unconfirmed.keys()].sort((a, b) => a - b)
+                    if (remaining.length > 1) {
+                        const names = remaining.map(i => unconfirmed.get(i)?.result.sourceName || '未知源').join('、')
+                        console.warn(`[音源解析] ${names} 的链接均无法确认可用, 改报失败交由播放器换源: ${song.name} - ${song.singer}`)
+                        for (const i of remaining) {
+                            const uc = unconfirmed.get(i)
+                            if (uc?.result?.sourceId) failedSourceIds.add(String(uc.result.sourceId))
+                            unconfirmed.delete(i)
+                        }
+                        errors.push(`${names} 的链接均无法确认可用（网关屏蔽探测或源站故障），交由播放器换源`)
+                        break
+                    }
+                    if (remaining.length === 1) {
+                        // 只剩一条次选且仍探不通：它可能是唯一的机会，兜底采用
+                        const pickIdx = remaining[0]
+                        winner = { index: pickIdx, value: unconfirmed.get(pickIdx) }
+                        accepted = winner
+                        if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
+                        break
+                    }
                 }
-                const idx = Math.min(...unconfirmed.keys())
-                winner = { index: idx, value: unconfirmed.get(idx) }
-                accepted = winner
-                if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
-                break
             }
             // 必须等跨平台搜索也结束，否则可能在替身还没进来时就判定全军覆没
             if (searchDone && finished >= candidates.length) break
