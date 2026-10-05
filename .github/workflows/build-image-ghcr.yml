@@ -6,6 +6,17 @@ name: build-image-ghcr
 # 镜像内已包含全部修复（gzip 压缩、keep-alive 连接池、代理分类修复、
 # 前端 defer/SW 优化、音源切换缓存），NAS 侧只需拉取镜像 + 挂载数据目录，
 # 不需要任何补丁文件。
+#
+# 版本与发布（2026-10-05 重做，与 dockercopilot 同一套规范，见 README
+# 「镜像版本号与发布」）：
+#   每次构建先在 prepare job 落定一个版本号 X.Y.Z，构建后由 merge-manifest
+#   job 生成多架构 manifest list，挂到 :latest 与 :X.Y.Z 上 ——
+#   :latest 总是指向最新一次构建，拉它不需要记得版本号；:X.Y.Z 不可变，
+#   钉住某个版本部署/回滚都能复现。
+#   旧行为只有 :amd64 / :arm64 / :latest 三个滚动 tag，且 :latest 由两个
+#   并行的 matrix job 各自覆盖（最终指向哪个架构取决于谁后完成，曾长期
+#   指向 arm64），仓库里也从来没有任何版本号，检测镜像更新的工具只能
+#   看到一个没有语义的 tag。
 on:
   workflow_dispatch:
   push:
@@ -17,6 +28,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
+      - 'version' # 只改版本文件（cut 一个里程碑）也要触发发布
       - '.github/workflows/build-image-ghcr.yml'
 
 env:
@@ -24,7 +36,77 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/lxserver
 
 jobs:
+  # 版本号在这里落定。规则:
+  #   1. 唯一来源是仓库根的 version 文件（vX.Y.Z，见 README）;
+  #   2. 基准取 max(version 文件, GHCR 已发布的最高版本, 仓库已有最高版本
+  #      tag) —— 防止把版本号改小后发布出比线上更旧的镜像;
+  #   3. 该版本已被占用（GHCR tag 或 git tag）时自动递增 patch，保证每次
+  #      构建都有唯一且严格递增的版本号;
+  #   4. 读不到 GHCR 已发布 tag 列表时直接失败: 猜一个版本号有可能复用它，
+  #      把本该不可变的版本 tag 覆盖成滚动 tag。
+  # 需要 fetch-depth: 0 才能在 runner 上看到全部历史 tag。
+  # 注意这里不推 git tag: release.yml 监听 v* tag 推送，会引爆桌面端全平台
+  # 构建，镜像发布不该顺带触发它。
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      build_date: ${{ steps.ver.outputs.build_date }}
+    steps:
+      - name: Checkout (需要全量 tag 才能算出下一个版本号)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 计算版本号
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          base=$(tr -d ' \t\r\n' < version)
+          base=${base#v}
+          case "$base" in
+            ''|*[!0-9.]*) echo "::error::version 文件内容非法: '$base'"; exit 1 ;;
+          esac
+          if ! printf '%s' "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version 必须是三段数字 X.Y.Z（可带 v 前缀），实际 '$base'"; exit 1
+          fi
+
+          # 镜像 tag 不带 v 前缀, git tag 带。两种历史都只认规范版本号,
+          # 忽略 latest / amd64 / arm64 / bin-latest 之类的滚动 tag。
+          ver_no_v() { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; }
+          ver_with_v() { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
+
+          pkg="${IMAGE_NAME#*/}"
+          if ! gh api --paginate "/user/packages/container/${pkg}/versions" \
+              --jq '.[].metadata.container.tags[]?' > gh-tags.txt; then
+            echo "::error::无法读取 GHCR 已发布 tag 列表，放弃计算版本号"
+            exit 1
+          fi
+          published=$(ver_no_v < gh-tags.txt)
+          repo_tags=$(git tag -l 'v[0-9]*' | ver_with_v | tr -d 'v')
+
+          # 基准取三者最大值
+          highest=$(printf '%s\n' "$base" $published $repo_tags | grep -v '^$' | sort -V | tail -n1)
+          candidate=$highest
+          # 已存在的版本号（GHCR 或 git tag）就递增 patch
+          while printf '%s\n' "$published" | grep -qx "$candidate" \
+             || git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null 2>&1; do
+            candidate="${candidate%.*}.$((${candidate##*.} + 1))"
+          done
+
+          {
+            echo "version=${candidate}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+          echo "版本落定: ${candidate}（version 文件 ${base}）"
+
   build:
+    needs: [prepare]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -53,10 +135,54 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/${{ matrix.arch }}
+          # 只推 per-arch 标签。原先 :latest 也在这里推, 两个并行的 matrix job
+          # 各自覆盖一次 :latest, 最终它指向谁取决于谁后完成 —— amd64 机器拉到
+          # arm64 manifest 就会 "no matching manifest"。版本 tag 与 :latest 由
+          # 下面的 merge-manifest job 用真正的多架构 manifest list 生成。
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           push: true
+          labels: |
+            org.opencontainers.image.title=lxserver
+            org.opencontainers.image.description=LX Music Sync Server (Enhanced Edition)
+            org.opencontainers.image.source=${{ github.serverUrl }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.serverUrl }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.build_date }}
+            org.opencontainers.image.licenses=Apache-2.0
           # 构建耗时较长（GHC 需要拉 nodejs/g++/chromaprint），开缓存加速后续构建
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  # 把两个 per-arch 镜像合并成真正的多架构 manifest list, 挂到 :latest 与
+  # 版本号 tag (:X.Y.Z) 上。拉取方(docker pull)会自动选对架构。
+  # :latest 就是"最新版本"的入口: 用户/ NAS 拉它不需要记得版本号;
+  # :X.Y.Z 让部署方可以钉住具体版本, 也留档可回滚。
+  merge-manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Docker Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests (:latest 与 :${{ needs.prepare.outputs.version }})
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
+          echo "=== :latest manifest list ==="
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          echo "=== :${{ needs.prepare.outputs.version }} manifest list ==="
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}

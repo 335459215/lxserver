@@ -339,6 +339,29 @@ npm start
 
 ---
 
+## 🏷️ 镜像版本号与发布
+
+镜像由 GitHub Actions（`.github/workflows/build-image-ghcr.yml`）自动构建并推送到 `ghcr.io/335459215/lxserver`，tag 规范：
+
+| Tag | 含义 | 是否可变 |
+|---|---|---|
+| `:X.Y.Z`（如 `:2.1.2`） | 版本号，每次构建自动递增 | 不可变，留档可回滚 |
+| `:latest` | 多架构清单，总是指向最新一次构建 | 滚动 |
+| `:amd64` / `:arm64` | 单架构镜像 | 滚动 |
+
+**版本号算法**（`prepare` job）：
+
+1. 唯一来源是仓库根的 `version` 文件（`vX.Y.Z`）——要发里程碑版本就改这个文件；
+2. 基准取 `max(version 文件, GHCR 已发布的最高版本, 仓库已有最高版本 tag)`，把版本号改小也不会发出比线上更旧的镜像；
+3. 版本号已被占用（GHCR 或 git tag）时自动递增 patch，保证每次构建唯一且严格递增；
+4. 读不到 GHCR 已发布 tag 列表时构建**直接失败**——猜一个版本号有可能复用它，把本该不可变的版本 tag 覆盖成滚动 tag。
+
+CI 只推镜像 tag，**不推 git tag**：仓库的 `release.yml` 监听 `v*` tag 推送并会触发桌面端全平台构建，镜像发布不该顺带引爆它。要发带桌面产物的正式 release，仍由维护者手动打 tag。
+
+部署时 `docker compose pull && docker compose up -d` 拉 `:latest`（或 `:amd64`）即得最新版；钉具体版本可复现就把引用写成 `ghcr.io/335459215/lxserver:2.1.2`。镜像的版本/commit/构建时间同时写进 OCI label（`org.opencontainers.image.version` 等），`docker inspect` 可查。
+
+> ⚠️ `.github/workflows/docker.yml` 是另一条仅手动触发的老链路：读 `public/js/config.js` 里的版本号、额外推 Docker Hub，且推同名前会删掉 GHCR 上的旧版本。自动发布只用 `build-image-ghcr.yml`，日常不要手动触发 `docker.yml`，否则会把旧版本号贴到新镜像上。
+
 ## 🤝 贡献与致谢
 
 - 修改自 [lyswhut/lx-music-sync-server](https://github.com/lyswhut/lx-music-sync-server)。
