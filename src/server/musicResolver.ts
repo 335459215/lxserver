@@ -644,11 +644,21 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                     await Promise.race([nextChange(), sleep(graceDeadline - Date.now())])
                     continue
                 }
-                // 宽限期到，仍没有确认可用的候选。短探测超时的链接有可能是
-                // Cloudflare 522（源站挂了，CF 要 10~30s 才返回 522）——这种链接
-                // 交给播放器只会缓冲半天再失败。用 4s 深探测补一刀：拿到明确
-                // 4xx/5xx 就判死，换下一个候选；确认 2xx/3xx 就提升为确认可用；
-                // 仍然超时的才维持次选身份兜底。
+                // 宽限期到，仍没有确认可用的候选。但跨平台搜索可能还在跑——
+                // 如果搜索还没结束，可能还有替身候选要进来，先等搜索，不急着
+                // 跑 4s 深探测（深探测会同步阻塞裁决循环，新成功的候选要等
+                // 深探测完才能被选中，白白多等几秒）。
+                if (!searchDone && successes.size === 0) {
+                    ensureSearchStarted()
+                    if (Date.now() > arbiterDeadline) break
+                    await Promise.race([nextChange(), sleep(1000)])
+                    continue
+                }
+                // 所有候选（含跨平台替身）都跑完了，才有必要深探测次选候选：
+                // 短探测超时的链接有可能是 Cloudflare 522（源站挂了，CF 要
+                // 10~30s 才返回 522）——交给播放器只会缓冲半天再失败。用 4s
+                // 深探测补一刀：拿到明确 4xx/5xx 就判死；确认 2xx/3xx 就提升
+                // 为确认可用；仍然超时的才维持次选身份兜底。
                 // validate=false 时用户已明确关掉链接校验，不跑深探测，直接兜底。
                 if (successes.size === 0 && validate) {
                     for (const idx of [...unconfirmed.keys()].sort()) {
