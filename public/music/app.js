@@ -14147,26 +14147,26 @@ const RecoveryToast = {
 
     /**
      * 渲染纵深卡片堆栈。每条提示一张卡，最新的在 Z 轴最前（--d:0），
-     * 越旧越往后推并缩小变暗；容器高度锁死，堆再���也不长高。
-     * scrollTop 用于滚轮翻看历史——往上是看更新的，往下是看更旧的。
+     * 越旧越往后推并缩小变暗；容器高度锁死，堆再多也不长高。
+     * scrollTop 用于滚轮翻看历史：0 = 最新在最前，往下滚逐条回看更旧的。
      */
     renderHistoryHtml() {
         if (this.triedHistory.length === 0) return '';
         const items = this.triedHistory;
         const n = items.length;
-        // 滚轮翻看：scrollTop 为 0 时显示最新一条；往下滚逐条回看历史
         const maxScroll = Math.max(0, n - 1);
         const offset = Math.min(Math.max(this.scrollTop || 0, 0), maxScroll);
+        // triedHistory 是插入序（末尾最新），但「最前」应该是最新的那条，
+        // 所以 depth 要按 (n-1-i) 反过来算，而不是直接用 i —— 直接用 i 会让
+        // 最旧的一条占据最前、新的全被压在后面，方向正好反了。
         const cards = items.map((item, i) => {
-            // depth：0 = 最前（在 viewport 顶部），越大越靠后
-            const depth = i - offset;
-            // 已经在视口上方的卡片不再绘制
-            if (depth < -1) return '';
-            const d = Math.max(0, depth);
+            const depth = (n - 1 - i) - offset;
+            if (depth < 0) return '';
+            const d = depth;
             const label = item.platformName;
             return `
                 <div class="recovery-stack-card" data-kind="${item.status === 'success' ? 'success' : item.status === 'failed' ? 'fail' : 'trying'}"
-                     style="--d:${d}; z-index:${100 - d}; opacity:${depth < 0 ? 0 : Math.max(0.12, 1 - d * 0.22)}; transform:translateY(${d * 9}px) scale(${1 - d * 0.045})">
+                     style="--d:${d}; z-index:${100 - d}; opacity:${Math.max(0.1, 1 - d * 0.2)}; transform:translateY(${d * 9}px) scale(${1 - d * 0.045})">
                     <span class="recovery-stack-dot"></span>
                     <span class="recovery-stack-text">${label}</span>
                 </div>
@@ -14199,7 +14199,9 @@ const RecoveryToast = {
                    上分级，形成透视纵深；容器高度锁死，堆多少张都不长高。 */
                 .recovery-stack {
                     position: relative;
-                    height: 58px;
+                    /* 高度锁死：堆多少条都不长高，只在悬停散开时露出更多。
+                       62px 配 9px 的层间距，静态能看到 5~6 层纵深。 */
+                    height: 62px;
                     perspective: 700px;
                     perspective-origin: 50% 0%;
                     touch-action: pan-y;
@@ -14262,10 +14264,17 @@ const RecoveryToast = {
                     text-overflow: ellipsis;
                     white-space: nowrap;
                 }
-                /* 悬停时整叠散开，露出更多历史卡片 */
+                /* 悬停时整叠散开，露出更多历史卡片。容器同步增高，否则散开的卡片会被
+                   外层 overflow-hidden 裁掉——只在 transform 上做散开是没用的。 */
+                .recovery-stack {
+                    transition: height .26s cubic-bezier(.22,.75,.24,1);
+                }
+                .recovery-stack[data-expanded="1"] {
+                    height: 190px;
+                }
                 .recovery-stack[data-expanded="1"] .recovery-stack-card {
-                    transform: translateY(calc(var(--d) * 30px)) scale(calc(1 - var(--d) * .05)) !important;
-                    opacity: calc(1 - var(--d) * .16) !important;
+                    transform: translateY(calc(var(--d) * 27px)) scale(calc(1 - var(--d) * .04)) !important;
+                    opacity: calc(1 - var(--d) * .11) !important;
                 }
                 .recovery-stack-scroll-hint {
                     position: absolute;
