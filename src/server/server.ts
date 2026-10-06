@@ -892,7 +892,12 @@ const isPathInside = (child: string, parent: string): boolean => {
   return resolvedChild.startsWith(withSep)
 }
 
-const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, filePath: string) => {
+const serveStatic = async (
+  req: IncomingMessage,
+  res: http.ServerResponse,
+  filePath: string,
+  opts: { immutable?: boolean } = {},
+) => {
   // Prevent path traversal: ensure the resolved file path stays within staticPath
   if (!isPathInside(filePath, global.lx.staticPath)) {
     res.writeHead(403)
@@ -908,11 +913,17 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
   // 不传 body，多一次条件请求换来的是「发版立刻生效」，这个交换是值的。
   //
   // 图片/音频/字体仍走长缓存：它们带内容哈希或本身就是大文件，回源成本高。
+  //
+  // 例外：构建工具（Vite/Rollup）产出的内容哈希文件名（如 index-BiDyV6vo.js）由
+  // 调用方显式传 opts.immutable 打开一年 immutable 缓存——文件名即指纹，内容变
+  // 名字必变，不需要回源确认。
   const isHtml = /\.html?$/i.test(filePath)
   const isAppCode = /\.(js|mjs|css)$/i.test(filePath)
-  const cacheControl = (isHtml || isAppCode)
-    ? 'no-cache'
-    : 'public, max-age=604800, must-revalidate'
+  const cacheControl = opts.immutable
+    ? 'public, max-age=31536000, immutable'
+    : (isHtml || isAppCode)
+      ? 'no-cache'
+      : 'public, max-age=604800, must-revalidate'
 
   try {
     // Use async stat to avoid blocking the event loop on slow NAS disks
@@ -926,6 +937,40 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
       res.writeHead(304)
       res.end()
       return
+    }
+
+    // 构建期预压缩（.br/.gz 兄弟文件，由 web/scripts/compress.mjs 生成）：命中直接发文件。
+    // 老前端产物没有这些兄弟文件 → 行为完全不变；省掉的是新前端 bundle
+    // "每次请求现压 gzip"在 NAS 弱 CPU 上的 30~80ms 与无谓的 CPU 占用。
+    const acceptEncoding = String(req.headers['accept-encoding'] || '')
+    const preferredEncodings: Array<{ ext: string; name: string }> = []
+    if (/\bbr\b/.test(acceptEncoding)) preferredEncodings.push({ ext: '.br', name: 'br' })
+    if (/\bgzip\b/.test(acceptEncoding)) preferredEncodings.push({ ext: '.gz', name: 'gzip' })
+    for (const enc of preferredEncodings) {
+      const precompressedPath = filePath + enc.ext
+      if (!fs.existsSync(precompressedPath)) continue
+      try {
+        const preStats = await fs.promises.stat(precompressedPath)
+        // 预压缩表示是独立的资源变体，ETag 必须与原文不同（304 才不会串表示）
+        const preEtag = `W/"${preStats.size}-${preStats.mtime.getTime()}-${enc.name}"`
+        if (req.headers['if-none-match'] === preEtag) {
+          res.writeHead(304)
+          res.end()
+          return
+        }
+        const preContent = await fs.promises.readFile(precompressedPath)
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'ETag': preEtag,
+          'Last-Modified': lastModified,
+          'Cache-Control': cacheControl,
+          'Content-Encoding': enc.name,
+          'Content-Length': preContent.length,
+          'Vary': 'Accept-Encoding',
+        })
+        res.end(preContent)
+        return
+      } catch { /* 预压缩文件读不到就回落到原文件，静默降级 */ }
     }
 
     fs.readFile(filePath, (err, content) => {
@@ -989,6 +1034,38 @@ const serveStatic = async (req: IncomingMessage, res: http.ServerResponse, fileP
       res.writeHead(500)
       res.end('Server Error')
     }
+  }
+}
+
+/** 前端运行时配置。两个消费方：旧版 /js/config.js 注入 window.CONFIG（叠加
+ * 正则抠出的 version/buildHash）；新版 /app/config.json（版本来自 version 文件） */
+const getFrontendConfig = () => ({
+  serverName: global.lx.config.serverName,
+  disableTelemetry: global.lx.config.disableTelemetry || false,
+  'proxy.enabled': global.lx.config['proxy.enabled'],
+  'user.enablePath': global.lx.config['user.enablePath'],
+  'user.enableRoot': global.lx.config['user.enableRoot'],
+  'user.enablePublicRestriction': global.lx.config['user.enablePublicRestriction'] || false,
+  'user.enablePublicNonAdminBrowserDownload': global.lx.config['user.enablePublicNonAdminBrowserDownload'] ?? true,
+  'user.enablePublicNonAdminServerCache': global.lx.config['user.enablePublicNonAdminServerCache'] ?? false,
+  'user.enableLoginCacheRestriction': global.lx.config['user.enableLoginCacheRestriction'] || false,
+  'user.enableCacheSizeLimit': global.lx.config['user.enableCacheSizeLimit'] || false,
+  'user.cacheSizeLimit': global.lx.config['user.cacheSizeLimit'] || 2000,
+  maxSnapshotNum: global.lx.config.maxSnapshotNum,
+  'list.addMusicLocationType': global.lx.config['list.addMusicLocationType'],
+  'player.enableAuth': global.lx.config['player.enableAuth'] || false,
+  port: global.lx.config.port,
+  bindIP: global.lx.config.bindIP,
+  'admin.path': global.lx.config['admin.path'] ?? '/admin',
+  'player.path': global.lx.config['player.path'] ?? '/',
+})
+
+/** 版本号单一来源：仓库根 / 镜像内的 version 文件（与镜像 tag 同源，见 CI） */
+const readAppVersion = (): string => {
+  try {
+    return fs.readFileSync(path.join(process.cwd(), 'version'), 'utf8').trim() || 'unknown'
+  } catch {
+    return 'unknown'
   }
 }
 
@@ -1141,6 +1218,44 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
     }
 
+    // ===== 新前端管理台（阶段 A）：挂在 /app，旧版播放器继续占 / =====
+    // 注意 /app 是保留路径：若把 player.path 配置成 /app，播放器分支会先命中。
+    if (pathname === '/app' || pathname.startsWith('/app/')) {
+      if (pathname === '/app') {
+        res.writeHead(301, { 'Location': '/app/' })
+        res.end()
+        return
+      }
+      // 运行时配置动态返回（no-cache）。新前端不再依赖"正则改写 config.js"通道
+      if (pathname === '/app/config.json') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        })
+        res.end(JSON.stringify({ ...getFrontendConfig(), version: readAppVersion() }))
+        return
+      }
+      const appSubPath = pathname.slice('/app'.length) // 恒以 / 开头
+      const appRel = appSubPath === '/' ? 'app/index.html' : 'app/' + appSubPath.replace(/^\/+/, '')
+      if (!appRel.includes('..')) {
+        const appFilePath = path.join(global.lx.staticPath, appRel)
+        if (fs.existsSync(appFilePath) && fs.statSync(appFilePath).isFile()) {
+          // Vite 产物带内容哈希文件名，assets 下开 immutable 长缓存
+          serveStatic(req, res, appFilePath, { immutable: appRel.startsWith('app/assets/') })
+          return
+        }
+      }
+      // SPA 回退：未知子路径回 index.html（客户端路由就绪后生效）
+      const appIndexPath = path.join(global.lx.staticPath, 'app', 'index.html')
+      if (fs.existsSync(appIndexPath)) {
+        serveStatic(req, res, appIndexPath)
+        return
+      }
+      res.writeHead(404)
+      res.end('Not Found')
+      return
+    }
+
     // [动态配置注入] 优先拦截 /js/config.js 请求，确保后端配置能注入到前端 window.CONFIG
     if (pathname === '/js/config.js') {
       // 从静态文件读取版本号和构建哈希
@@ -1156,30 +1271,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       } catch { }
 
       // 构造前端配置 暴露给前端
-      const frontendConfig = {
-        version,
-        buildHash,
-        serverName: global.lx.config.serverName,
-        disableTelemetry: global.lx.config.disableTelemetry || false,
-        'proxy.enabled': global.lx.config['proxy.enabled'],
-        'user.enablePath': global.lx.config['user.enablePath'],
-        'user.enableRoot': global.lx.config['user.enableRoot'],
-        'user.enablePublicRestriction': global.lx.config['user.enablePublicRestriction'] || false,
-        'user.enablePublicNonAdminBrowserDownload': global.lx.config['user.enablePublicNonAdminBrowserDownload'] ?? true,
-        'user.enablePublicNonAdminServerCache': global.lx.config['user.enablePublicNonAdminServerCache'] ?? false,
-        'user.enableLoginCacheRestriction': global.lx.config['user.enableLoginCacheRestriction'] || false,
-        'user.enableCacheSizeLimit': global.lx.config['user.enableCacheSizeLimit'] || false,
-        'user.cacheSizeLimit': global.lx.config['user.cacheSizeLimit'] || 2000,
-        maxSnapshotNum: global.lx.config.maxSnapshotNum,
-        'list.addMusicLocationType': global.lx.config['list.addMusicLocationType'],
-        'player.enableAuth': global.lx.config['player.enableAuth'] || false,
-        port: global.lx.config.port,
-        bindIP: global.lx.config.bindIP,
-        'admin.path': global.lx.config['admin.path'] ?? '/admin',
-        'player.path': global.lx.config['player.path'] ?? '/',
-      }
-
-      const configJs = `window.CONFIG = ${JSON.stringify(frontendConfig, null, 2)};`
+      const frontendConfig = getFrontendConfig()
+      const configJs = `window.CONFIG = ${JSON.stringify({ ...frontendConfig, version, buildHash }, null, 2)};`
       res.writeHead(200, {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cache-Control': 'no-cache, no-store, must-revalidate',

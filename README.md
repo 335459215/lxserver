@@ -365,6 +365,8 @@ CI 只推镜像 tag，**不推 git tag**：仓库的 `release.yml` 监听 `v*` t
 
 部署时 `docker compose pull && docker compose up -d` 拉 `:latest`（或 `:amd64`）即得最新版；钉具体版本可复现就把引用写成 `ghcr.io/335459215/lxserver:2.1.2`。镜像的版本/commit/构建时间同时写进 OCI label（`org.opencontainers.image.version` 等），`docker inspect` 可查。
 
+> 🆕 **v2.3.0 起新版管理台挂在 `/app`**（旧版播放器/后台仍在原路径）：React 19 + Vite 构建，构建期预压缩（brotli/gzip）+ 哈希文件名长缓存。当前为阶段 A 脚手架，功能逐步迁移中。
+
 > ⚠️ `.github/workflows/docker.yml` 是另一条仅手动触发的老链路：读 `public/js/config.js` 里的版本号、额外推 Docker Hub，且推同名前会删掉 GHCR 上的旧版本。自动发布只用 `build-image-ghcr.yml`，日常不要手动触发 `docker.yml`，否则会把旧版本号贴到新镜像上。
 
 ## 🤝 贡献与致谢

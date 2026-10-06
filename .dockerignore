@@ -1,6 +1,8 @@
 .git
 .gitignore
 node_modules
+web/node_modules
+web/dist
 data
 logs
 lx-music-desktop-master

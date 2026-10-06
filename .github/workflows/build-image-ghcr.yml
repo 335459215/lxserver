@@ -23,6 +23,7 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'web/**' # 新前端（阶段A）：源码或构建配置变更也触发镜像发布
       - 'public/**'
       - 'Dockerfile'
       - 'package.json'
