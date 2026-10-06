@@ -13,7 +13,7 @@ const CollapseItem = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <AccordionPrimitive.Item
     ref={ref}
-    className={cn('border-b border-slate-800', className)}
+    className={cn('border-b border-line', className)}
     {...props}
   />
 ))
@@ -27,14 +27,14 @@ const CollapseTrigger = React.forwardRef<
     <AccordionPrimitive.Trigger
       ref={ref}
       className={cn(
-        'flex flex-1 items-center justify-between py-3 text-sm font-medium text-slate-200 transition-all',
-        'hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500',
+        'flex flex-1 items-center justify-between py-3 text-sm font-medium text-ink transition-all',
+        'hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         className,
       )}
       {...props}
     >
       {children}
-      <ChevronDown className="size-4 shrink-0 text-slate-500 transition-transform duration-200 [[data-state=open]>&]:rotate-180" />
+      <ChevronDown className="size-4 shrink-0 text-faint transition-transform duration-200 [[data-state=open]>&]:rotate-180" />
     </AccordionPrimitive.Trigger>
   </AccordionPrimitive.Header>
 ))
@@ -49,7 +49,7 @@ const CollapseContent = React.forwardRef<
     className="overflow-hidden text-sm data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down"
     {...props}
   >
-    <div className={cn('pb-3 pt-0 text-slate-400', className)}>{children}</div>
+    <div className={cn('pb-3 pt-0 text-dim', className)}>{children}</div>
   </AccordionPrimitive.Content>
 ))
 CollapseContent.displayName = 'CollapseContent'

@@ -4,16 +4,16 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0',
   {
     variants: {
       variant: {
-        default: 'bg-sky-600 text-white hover:bg-sky-500',
-        secondary: 'bg-slate-800 text-slate-100 hover:bg-slate-700',
-        outline: 'border border-slate-700 bg-transparent hover:bg-slate-800',
-        ghost: 'hover:bg-slate-800',
-        destructive: 'bg-red-600 text-white hover:bg-red-500',
-        link: 'text-sky-400 underline-offset-4 hover:underline',
+        default: 'bg-accent text-white hover:bg-accent-hover',
+        secondary: 'bg-panel2 text-ink hover:bg-line',
+        outline: 'border border-line bg-panel text-ink hover:bg-panel2',
+        ghost: 'text-dim hover:text-ink hover:bg-panel2',
+        destructive: 'bg-danger text-white hover:bg-danger/90',
+        link: 'text-accent underline-offset-4 hover:underline',
       },
       size: {
         default: 'h-9 px-4 py-2',

@@ -1,3 +1,82 @@
+@import '@fontsource/spline-sans/400.css';
+@import '@fontsource/spline-sans/500.css';
+@import '@fontsource/spline-sans/600.css';
+@import '@fontsource/spline-sans/700.css';
+@import '@fontsource/spline-sans-mono/400.css';
+@import '@fontsource/spline-sans-mono/500.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ===== 设计令牌（明亮清爽版）=====
+   参考当下最主流的浅色管理台范式（shadcn/ui light / Vercel / 系统设置页）：
+   白卡片 + 细灰线 + 单一靛蓝强调 + 大留白。语义色全部走 CSS 变量。 */
+:root {
+  --bg: #fafafa;            /* 页面底：极浅灰 */
+  --panel: #ffffff;         /* 卡片：纯白 */
+  --panel-2: #f4f4f5;       /* 次级面/输入底 */
+  --line: #e4e4e7;          /* 发丝线 */
+  --line-strong: #d4d4d8;
+  --ink: #18181b;           /* 主文字 */
+  --dim: #71717a;           /* 次级文字 */
+  --faint: #a1a1aa;         /* 弱化/占位 */
+  --accent: #4f46e5;        /* 靛蓝：唯一强调色 */
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;   /* 选中底（靛蓝 50） */
+  --ok: #16a34a;
+  --danger: #dc2626;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  font-family: 'Spline Sans', -apple-system, 'PingFang SC', 'HarmonyOS Sans SC',
+    'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  background: var(--bg);
+}
+
+/* 数字与代码一律等宽 */
+.font-mono, code, kbd {
+  font-family: 'Spline Sans Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+::selection {
+  background: rgba(79, 70, 229, 0.15);
+}
+
+/* 登录页的轻氛围：极淡的靛蓝雾面，不加噪点保持清爽 */
+.login-atmos {
+  background:
+    radial-gradient(900px 420px at 50% -8%, rgba(79, 70, 229, 0.07), transparent 62%),
+    radial-gradient(700px 380px at 88% 108%, rgba(16, 185, 129, 0.05), transparent 60%),
+    var(--bg);
+}
+
+/* 页面加载：一次性 staggered fade-up */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rise {
+  animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}

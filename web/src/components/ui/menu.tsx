@@ -14,7 +14,7 @@ const MenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 min-w-[8rem] overflow-hidden rounded-lg border border-slate-800 bg-slate-900 p-1 shadow-xl',
+        'z-50 min-w-[8rem] overflow-hidden rounded-lg border border-line bg-panel p-1 shadow-pop',
         className,
       )}
       {...props}
@@ -31,7 +31,7 @@ const MenuItem = React.forwardRef<
     ref={ref}
     className={cn(
       'relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none',
-      'focus:bg-slate-800 data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      'focus:bg-panel2 data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       '[&_svg]:size-4 [&_svg]:shrink-0',
       className,
     )}
@@ -46,7 +46,7 @@ const MenuSeparator = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DropdownMenuPrimitive.Separator
     ref={ref}
-    className={cn('-mx-1 my-1 h-px bg-slate-800', className)}
+    className={cn('-mx-1 my-1 h-px bg-panel2', className)}
     {...props}
   />
 ))
@@ -58,7 +58,7 @@ const MenuLabel = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DropdownMenuPrimitive.Label
     ref={ref}
-    className={cn('px-2 py-1.5 text-xs text-slate-500', className)}
+    className={cn('px-2 py-1.5 text-xs text-faint', className)}
     {...props}
   />
 ))

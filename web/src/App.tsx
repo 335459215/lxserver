@@ -1,274 +1,163 @@
-import { useEffect, useState } from 'react'
-import { Info, Settings, Trash2 } from 'lucide-react'
-import {
-  Button,
-  Collapse,
-  CollapseContent,
-  CollapseItem,
-  CollapseTrigger,
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  HStack,
-  Input,
-  Menu,
-  MenuContent,
-  MenuItem,
-  MenuSeparator,
-  MenuTrigger,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Sheet,
-  SheetClose,
-  SheetContent,
-  SheetDescription,
-  SheetTitle,
-  SheetTrigger,
-  Stack,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-  ToastHost,
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-  useToast,
-} from '@/components/ui'
+import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Home, LogOut, Menu, Shapes, X } from 'lucide-react'
+import { useState } from 'react'
+import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
+import { SETTINGS_GROUPS } from '@/lib/groups'
+import { ToastHost } from '@/components/ui'
+import Dashboard from '@/pages/Dashboard'
+import Login from '@/pages/Login'
+import SettingsShell from '@/pages/settings/SettingsShell'
+import UiShowcase from '@/pages/UiShowcase'
 
-declare const __APP_VERSION__: string
-
-interface RuntimeConfig {
-  version?: string
-  serverName?: string
-  'player.enableAuth'?: boolean
-  'admin.path'?: string
+/** 身份徽章：管理员 > 用户 > 播放器 */
+function RoleBadge() {
+  const { auth } = useAuth()
+  const role = primaryRole(auth)
+  if (role === 'admin')
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
+        <span className="size-1.5 rounded-full bg-accent" /> 管理员
+      </span>
+    )
+  if (role === 'user')
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
+        <span className="size-1.5 rounded-full bg-ok" /> {auth.user.username}
+      </span>
+    )
+  if (role === 'player')
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
+        <span className="size-1.5 rounded-full bg-ok" /> 播放器
+      </span>
+    )
+  return null
 }
 
-/** 运行时配置：动态接口（no-cache），不再依赖旧版的正则改写 config.js 通道 */
-function useRuntimeConfig(): RuntimeConfig | null {
-  const [cfg, setCfg] = useState<RuntimeConfig | null>(null)
-  useEffect(() => {
-    let alive = true
-    fetch('config.json', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (alive) setCfg(data)
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [])
-  return cfg
-}
-
-function ServerInfoCard() {
-  const cfg = useRuntimeConfig()
+function NavItems({ onNavigate }: { onNavigate?: () => void }) {
+  const nav = ({ isActive }: { isActive: boolean }) =>
+    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
+      isActive ? 'bg-accent-soft font-medium text-accent' : 'text-dim hover:bg-panel2 hover:text-ink'
+    }`
   return (
-    <main className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-      <h1 className="text-lg font-semibold tracking-wide">lxserver 管理台</h1>
-      <p className="mt-1 text-sm text-slate-400">阶段 A · 新前端地基（组件库展示页）</p>
-      <dl className="mt-5 space-y-2 text-sm">
-        <div className="flex justify-between border-b border-slate-800 pb-2">
-          <dt className="text-slate-400">前端构建版本</dt>
-          <dd className="font-mono">{__APP_VERSION__}</dd>
-        </div>
-        <div className="flex justify-between border-b border-slate-800 pb-2">
-          <dt className="text-slate-400">服务端版本</dt>
-          <dd className="font-mono">{cfg?.version ?? '…'}</dd>
-        </div>
-        <div className="flex justify-between border-b border-slate-800 pb-2">
-          <dt className="text-slate-400">服务器名称</dt>
-          <dd>{cfg?.serverName ?? '…'}</dd>
-        </div>
-      </dl>
-      <a
-        href="/"
-        className="mt-6 inline-block rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500"
-      >
-        返回旧版播放器
-      </a>
-    </main>
+    <>
+      <NavLink to="/" end className={nav} onClick={onNavigate}>
+        <Home className="size-4" /> 首页
+      </NavLink>
+      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">设置中心</p>
+      {SETTINGS_GROUPS.map((g) => (
+        <NavLink key={g.key} to={`/settings/${g.key}`} className={nav} onClick={onNavigate}>
+          <g.icon className="size-4" /> {g.label}
+        </NavLink>
+      ))}
+      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">开发</p>
+      <NavLink to="/dev" className={nav} onClick={onNavigate}>
+        <Shapes className="size-4" /> 组件展示
+      </NavLink>
+    </>
   )
 }
 
-function Showcase() {
-  const { toast } = useToast()
-  const [text, setText] = useState('')
-  const [quality, setQuality] = useState('flac')
+/** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动） */
+function Shell() {
+  const { auth, refresh } = useAuth()
+  const navigate = useNavigate()
+  const [drawer, setDrawer] = useState(false)
+
   return (
-    <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-      <h2 className="text-base font-semibold">组件库展示</h2>
-      <p className="mt-1 text-xs text-slate-500">
-        11 件 Radix 组件的真实行为验证，阶段 B 的设置中心/外壳将直接使用
-      </p>
-      <Tabs defaultValue="base" className="mt-4">
-        <TabsList>
-          <TabsTrigger value="base">基础</TabsTrigger>
-          <TabsTrigger value="feedback">反馈</TabsTrigger>
-          <TabsTrigger value="nav">导航</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="base" className="space-y-4">
-          <HStack gap={2} className="flex-wrap">
-            <Button onClick={() => toast({ title: '默认按钮', description: 'variant=default' })}>
-              默认
-            </Button>
-            <Button variant="secondary">次要</Button>
-            <Button variant="outline">描边</Button>
-            <Button variant="ghost">幽灵</Button>
-            <Button variant="destructive">危险</Button>
-          </HStack>
-          <Stack gap={1}>
-            <label className="text-xs text-slate-400" htmlFor="demo-input">
-              Input
-            </label>
-            <Input
-              id="demo-input"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="输入点什么…"
-            />
-          </Stack>
-          <Stack gap={1}>
-            <span className="text-xs text-slate-400">Select</span>
-            <Select value={quality} onValueChange={setQuality}>
-              <SelectTrigger className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="flac">无损 FLAC</SelectItem>
-                <SelectItem value="320k">320kbps</SelectItem>
-                <SelectItem value="128k">128kbps</SelectItem>
-              </SelectContent>
-            </Select>
-          </Stack>
-        </TabsContent>
-
-        <TabsContent value="feedback" className="space-y-4">
-          <HStack gap={2} className="flex-wrap">
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="outline">打开 Dialog</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>确认操作</DialogTitle>
-                  <DialogDescription>这是 Radix Dialog 的标准内容区。</DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <DialogClose asChild>
-                    <Button variant="ghost">取消</Button>
-                  </DialogClose>
-                  <DialogClose asChild>
-                    <Button onClick={() => toast({ title: '已确认', variant: 'success' })}>
-                      确认
-                    </Button>
-                  </DialogClose>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="outline">打开 Sheet</Button>
-              </SheetTrigger>
-              <SheetContent>
-                <SheetHeader>
-                  <SheetTitle>侧滑面板</SheetTitle>
-                  <SheetDescription>移动端会大量用到的抽屉形态。</SheetDescription>
-                </SheetHeader>
-                <SheetClose asChild>
-                  <Button variant="secondary" className="mt-4 w-full">
-                    收起
-                  </Button>
-                </SheetClose>
-              </SheetContent>
-            </Sheet>
-
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label="关于">
-                    <Info />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Tooltip 提示</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </HStack>
-          <HStack gap={2}>
-            <Button
-              variant="secondary"
-              onClick={() => toast({ title: '普通提示', description: '4 秒自动消失，可右滑关闭' })}
-            >
-              Toast 默认
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => toast({ title: '失败示例', description: 'destructive 变体', variant: 'destructive' })}
-            >
-              Toast 危险
-            </Button>
-          </HStack>
-        </TabsContent>
-
-        <TabsContent value="nav" className="space-y-4">
-          <Menu>
-            <MenuTrigger asChild>
-              <Button variant="outline">
-                <Settings /> 下拉菜单
-              </Button>
-            </MenuTrigger>
-            <MenuContent>
-              <MenuItem onSelect={() => toast({ title: '菜单项一' })}>重新扫描</MenuItem>
-              <MenuItem onSelect={() => toast({ title: '菜单项二' })}>导出配置</MenuItem>
-              <MenuSeparator />
-              <MenuItem
-                className="text-red-400 focus:text-red-300"
-                onSelect={() => toast({ title: '删除', variant: 'destructive' })}
+    <div className="min-h-screen">
+      {/* 顶栏 */}
+      <header className="sticky top-0 z-40 border-b border-line bg-panel/90 backdrop-blur">
+        <div className="flex h-14 items-center gap-3 px-4 md:px-6">
+          <button
+            className="rounded-lg p-2 text-dim hover:bg-panel2 hover:text-ink lg:hidden"
+            onClick={() => setDrawer(true)}
+            aria-label="打开导航"
+          >
+            <Menu className="size-5" />
+          </button>
+          <NavLink to="/" className="flex items-center gap-2 lg:hidden">
+            <span className="size-2.5 rounded-full bg-accent" />
+            <span className="font-semibold tracking-tight text-ink">lxserver</span>
+            <span className="hidden text-xs text-faint sm:inline">管理台</span>
+          </NavLink>
+          <div className="ml-auto flex items-center gap-2">
+            <RoleBadge />
+            {(auth.admin.ok || auth.user.ok) && (
+              <button
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-dim hover:bg-panel2 hover:text-ink"
+                onClick={async () => {
+                  await api.logoutAll()
+                  await refresh()
+                  navigate('/')
+                }}
               >
-                <Trash2 /> 删除
-              </MenuItem>
-            </MenuContent>
-          </Menu>
-          <Collapse type="single" collapsible>
-            <CollapseItem value="c1">
-              <CollapseTrigger>可折叠分区（设置中心将用它）</CollapseTrigger>
-              <CollapseContent>组内内容的折叠区，阶段 B 的九宫格 → Tab 分组会直接复用。</CollapseContent>
-            </CollapseItem>
-            <CollapseItem value="c2">
-              <CollapseTrigger>第二个分区</CollapseTrigger>
-              <CollapseContent>动画由 tailwindcss-animate + Radix 高度变量驱动。</CollapseContent>
-            </CollapseItem>
-          </Collapse>
-        </TabsContent>
-      </Tabs>
+                <LogOut className="size-3.5" /> 退出
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto flex w-full max-w-6xl">
+        {/* 桌面侧边栏 */}
+        <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
+          <NavItems />
+        </aside>
+
+        {/* 移动抽屉 */}
+        {drawer && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setDrawer(false)} />
+            <div className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-semibold">导航</span>
+                <button className="rounded-md p-1.5 text-faint hover:text-ink" onClick={() => setDrawer(false)}>
+                  <X className="size-4" />
+                </button>
+              </div>
+              <NavItems onNavigate={() => setDrawer(false)} />
+            </div>
+          </div>
+        )}
+
+        <main className="min-w-0 flex-1 p-4 md:p-8">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/settings" element={<SettingsShell />} />
+            <Route path="/settings/:group" element={<SettingsShell />} />
+            <Route path="/dev" element={<UiShowcase />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   )
 }
 
-function SheetHeader({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-col gap-1.5">{children}</div>
+function Gate() {
+  const { auth } = useAuth()
+  if (auth.loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="flex items-center gap-2 text-sm text-dim">
+          <span className="size-2 animate-pulse rounded-full bg-accent" />
+          正在连接服务器…
+        </div>
+      </div>
+    )
+  }
+  // 首访即登录：未持有任何有效身份时不露出任何导航
+  if (primaryRole(auth) === 'none') return <Login />
+  return <Shell />
 }
 
 export default function App() {
   return (
-    <ToastHost>
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-start justify-center gap-6 p-6 flex-wrap lg:flex-nowrap lg:items-center">
-        <ServerInfoCard />
-        <Showcase />
-      </div>
-    </ToastHost>
+    <AuthProvider>
+      <ToastHost>
+        <Gate />
+      </ToastHost>
+    </AuthProvider>
   )
 }

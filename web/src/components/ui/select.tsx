@@ -14,8 +14,9 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm',
-      'placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-50',
+      'flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-ink',
+      'placeholder:text-faint focus:outline-none focus:border-accent-deep focus:ring-2 focus:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-50',
+      'transition-colors',
       className,
     )}
     {...props}
@@ -37,7 +38,7 @@ const SelectContent = React.forwardRef<
       ref={ref}
       position={position}
       className={cn(
-        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-lg border border-slate-800 bg-slate-900 shadow-xl',
+        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-lg border border-line-strong bg-panel shadow-[0_16px_48px_rgba(0,0,0,0.55)]',
         className,
       )}
       {...props}
@@ -54,7 +55,7 @@ const SelectLabel = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SelectPrimitive.Label
     ref={ref}
-    className={cn('px-2 py-1.5 text-xs text-slate-500', className)}
+    className={cn('px-2 py-1.5 text-xs tracking-wide text-faint', className)}
     {...props}
   />
 ))
@@ -67,15 +68,15 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-2 pr-8 text-sm outline-none',
-      'focus:bg-slate-800 data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      'relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-2 pr-8 text-sm text-dim outline-none',
+      'focus:bg-panel2 focus:text-ink data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}
     {...props}
   >
     <span className="absolute right-2 flex size-3.5 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
-        <Check className="size-4" />
+        <Check className="size-4 text-accent" />
       </SelectPrimitive.ItemIndicator>
     </span>
     <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>

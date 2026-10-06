@@ -5,7 +5,7 @@ import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // Sheet = 侧滑面板（复用 Radix Dialog，改定位与进出动画）
-const sheetVariants = cva('fixed z-50 gap-4 bg-slate-900 p-6 shadow-xl border-slate-800', {
+const sheetVariants = cva('fixed z-50 gap-4 bg-panel p-6 shadow-pop border-line', {
   variants: {
     side: {
       right: 'inset-y-0 right-0 h-full w-3/4 max-w-md border-l data-[state=open]:animate-in data-[state=closed]:animate-out',
@@ -33,7 +33,7 @@ const SheetContent = React.forwardRef<
     <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/70" />
     <DialogPrimitive.Content ref={ref} className={cn(sheetVariants({ side }), className)} {...props}>
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-slate-400 opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-dim opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-accent/40">
         <X className="size-4" />
         <span className="sr-only">关闭</span>
       </DialogPrimitive.Close>
@@ -46,7 +46,7 @@ const SheetTitle = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold text-slate-100', className)} {...props} />
+  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold text-ink', className)} {...props} />
 ))
 SheetTitle.displayName = 'SheetTitle'
 
@@ -54,7 +54,7 @@ const SheetDescription = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn('text-sm text-slate-400', className)} {...props} />
+  <DialogPrimitive.Description ref={ref} className={cn('text-sm text-dim', className)} {...props} />
 ))
 SheetDescription.displayName = 'SheetDescription'
 
