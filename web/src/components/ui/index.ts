@@ -24,6 +24,7 @@ export {
 export { Tabs, TabsList, TabsTrigger, TabsContent } from './tabs'
 export { Collapse, CollapseItem, CollapseTrigger, CollapseContent } from './collapse'
 export { Switch } from './switch'
+export { Field, SwitchField, InputField } from './field'
 export {
   Toast,
   ToastAction,

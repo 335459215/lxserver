@@ -8,6 +8,7 @@ import SystemGroup from './groups/SystemGroup'
 import UsersGroup from './groups/UsersGroup'
 import DataGroup from './groups/DataGroup'
 import AboutGroup from './groups/AboutGroup'
+import LogsGroup from './groups/LogsGroup'
 
 /** 管理员登录卡：验证走服务端 /api/login（与旧后台同一信任模型：密码留存浏览器） */
 function AdminGate() {
@@ -65,6 +66,8 @@ function GroupPage() {
       return <UsersGroup />
     case 'data':
       return <DataGroup />
+    case 'logs':
+      return <LogsGroup />
     case 'about':
       return <AboutGroup />
     default:
