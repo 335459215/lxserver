@@ -16,6 +16,7 @@ import needle from 'needle'
 import { getProxyAgent } from '@/modules/utils/proxy.js'
 import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult } from '@/server/userApi'
 import { findServerSourceMatches, normalizeSongInfo, AUTO_SOURCE_ORDER } from '@/server/musicMatch'
+import { debugLog } from '@/server/utils/debugLog'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -366,7 +367,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             }
             const fresh = Date.now() - hit.createdAt < STICKY_TRUST_MS
             if (fresh || !validate) {
-                console.log(`[音源解析] 命中粘滞缓存: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
+                debugLog(`[音源解析] 命中粘滞缓存: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
                 return {
                     url: hit.url,
                     type: hit.type,
@@ -384,7 +385,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             const v = await resolveAndValidateUrl(hit.url)
             if (v.ok) {
                 hit.url = v.url
-                console.log(`[音源解析] 粘滞缓存链接仍可用: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
+                debugLog(`[音源解析] 粘滞缓存链接仍可用: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
                 return {
                     url: hit.url,
                     type: hit.type,
@@ -595,7 +596,7 @@ const runCandidate = async (index: number, quality: string) => {
                     candidates.push({ song: cand, platform: cand.source, cross: true })
                 }
                 if (candidates.length > 1) {
-                    console.log(`[音源解析] ${song.name} - ${song.singer} 不分平台竞速, 候选平台: ${candidates.map(c => c.platform).join(', ')}`)
+                    debugLog(`[音源解析] ${song.name} - ${song.singer} 不分平台竞速, 候选平台: ${candidates.map(c => c.platform).join(', ')}`)
                 }
             } catch (err: any) {
                 console.warn(`[音源解析] 跨平台候选筛选失败: ${err?.message || err}`)
@@ -693,7 +694,7 @@ const runCandidate = async (index: number, quality: string) => {
                 // validate=false 时用户已明确关掉链接校验，不跑深探测，直接兜底。
                 if (successes.size === 0 && validate && unconfirmed.size > 0) {
                     const idxs = [...unconfirmed.keys()].sort()
-                    console.log(`[音源解析] 深度探测 ${idxs.length} 个次选候选(并发): ${idxs.map(i => `#${i}/${unconfirmed.get(i)?.platform}/${unconfirmed.get(i)?.result.sourceName || '未知源'}`).join(', ')}`)
+                    debugLog(`[音源解析] 深度探测 ${idxs.length} 个次选候选(并发): ${idxs.map(i => `#${i}/${unconfirmed.get(i)?.platform}/${unconfirmed.get(i)?.result.sourceName || '未知源'}`).join(', ')}`)
                     const verdicts = await Promise.all(idxs.map(async (idx) => {
                         const uc = unconfirmed.get(idx)
                         if (!uc) return { idx, confirmed: false, dead: false }
@@ -730,7 +731,7 @@ const runCandidate = async (index: number, quality: string) => {
                         if (!uc) continue
                         const label = `${uc.platform}/${uc.result.sourceName || '未知源'}`
                         if (v.confirmed) {
-                            console.log(`[音源解析] 深度探测确认链接可用: ${label}`)
+                            debugLog(`[音源解析] 深度探测确认链接可用: ${label}`)
                             uc.confirmed = true
                             successes.set(v.idx, uc)
                             // 序号最小的确认可用候选即为赢家，剩下的深探测结果不必再看
@@ -827,7 +828,7 @@ const runCandidate = async (index: number, quality: string) => {
                 expiresAt: Date.now() + stickyTtlMs,
             })
         }
-        console.log(`[音源解析] ✓ ${song.name} - ${song.singer} (${requestedQualityLabel(opts.quality, usedQuality)}) 命中 ${platform}/${result.sourceName}`)
+        debugLog(`[音源解析] ✓ ${song.name} - ${song.singer} (${requestedQualityLabel(opts.quality, usedQuality)}) 命中 ${platform}/${result.sourceName}`)
         // 拿到了确认可用的链接：这首歌之前的失败记录不再有参考价值
         if (confirmed) clearSongBlacklist(username, song)
         return {

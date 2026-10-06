@@ -16,6 +16,11 @@ try {
 // 新前端挂在 /app，旧版播放器继续占 /（阶段 A 决策，配置开关切回见阶段 B）
 export default defineConfig({
   base: '/app/',
+  resolve: {
+    alias: {
+      '@': path.resolve(here, 'src'),
+    },
+  },
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),

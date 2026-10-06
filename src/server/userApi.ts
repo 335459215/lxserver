@@ -9,6 +9,7 @@ import { promisify } from 'util'
 
 import * as tunnel from 'tunnel'
 import { getProxyAgent } from '../modules/utils/proxy.js'
+import { debugLog } from '@/server/utils/debugLog'
 const inflate = promisify(zlib.inflate)
 const deflate = promisify(zlib.deflate)
 
@@ -874,7 +875,7 @@ export async function callUserApiGetMusicUrl(
                 if (accepted) return
                 if (opts?.signal?.aborted) return
                 try {
-                    console.log(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner}, 优先级: ${index + 1}/${candidates.length})`)
+                    debugLog(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner}, 优先级: ${index + 1}/${candidates.length})`)
                     const url = await api.callRequest('musicUrl', source, {
                         musicInfo: normalizedSongInfo,
                         quality: quality,
@@ -895,7 +896,7 @@ export async function callUserApiGetMusicUrl(
                             continue
                         }
                     }
-                    console.log(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
+                    debugLog(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
                     // 成功记账可由调用方关闭：解析器会对链接做可用性探测并自行记账，
                     // 两边都记会让「成功清零」抵消掉随后的「校验失败」。
                     if (opts?.recordBreakerSuccess !== false) recordSourceResult(api.info.id, true)

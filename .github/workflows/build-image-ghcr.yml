@@ -115,6 +115,37 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "版本落定: ${candidate}（version 文件 ${base}）"
 
+  # 质量门禁：发布镜像前先跑测试（阶段 A 加入；此前 CI 只构建镜像不跑测试）。
+  # 与 build 并行，merge-manifest 需要三者都绿才会产出 :latest / :X.Y.Z。
+  # Playwright 关键路径用例等新前端有真实视图后再加（避免对着壳页面空转）。
+  test:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: 服务端单测（无 Redis，覆盖磁盘快照路径）
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run test:unit
+
+      - name: 新前端 lint + 类型检查 + 构建
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm run build
+
   build:
     needs: [prepare]
     runs-on: ubuntu-latest
@@ -170,7 +201,7 @@ jobs:
   # :latest 就是"最新版本"的入口: 用户/ NAS 拉它不需要记得版本号;
   # :X.Y.Z 让部署方可以钉住具体版本, 也留档可回滚。
   merge-manifest:
-    needs: [prepare, build]
+    needs: [prepare, build, test]
     runs-on: ubuntu-latest
     permissions:
       packages: write

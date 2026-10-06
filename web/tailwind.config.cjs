@@ -8,7 +8,19 @@ module.exports = {
       md: '768px',
       lg: '1024px',
     },
-    extend: {},
+    extend: {
+      keyframes: {
+        // Collapse（Radix Accordion）内容展开/收起；高度变量由 Radix 注入
+        'accordion-down': { from: { height: '0' }, to: { height: 'var(--radix-accordion-content-height)' } },
+        'accordion-up': { from: { height: 'var(--radix-accordion-content-height)' }, to: { height: '0' } },
+      },
+      animation: {
+        'accordion-down': 'accordion-down 0.2s ease-out',
+        'accordion-up': 'accordion-up 0.2s ease-out',
+      },
+    },
   },
-  plugins: [],
+  // Radix 组件的 data-[state=open/closed] 进出场动画依赖本插件
+  plugins: [require('tailwindcss-animate')],
 }
+
