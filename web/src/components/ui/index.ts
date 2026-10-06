@@ -23,6 +23,7 @@ export {
 } from './select'
 export { Tabs, TabsList, TabsTrigger, TabsContent } from './tabs'
 export { Collapse, CollapseItem, CollapseTrigger, CollapseContent } from './collapse'
+export { Switch } from './switch'
 export {
   Toast,
   ToastAction,

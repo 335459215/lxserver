@@ -1426,10 +1426,11 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           return
         }
         if (req.method === 'GET') {
-          // 修改：返回包含密码及自定义目录配置的用户列表
+          // [阶段B] 不再返回明文密码：旧版管理 UI 用密码预填编辑框，新 UI 改成
+          // "留空则不修改"，密码只在 POST/PUT 写入时接收，读路径一律不暴露。
+          // （与新用户管理面板同批上线，避免打断旧后台的用户编辑流程。）
           const users = global.lx.config.users.map(u => ({
             name: u.name,
-            password: u.password,
             enableCustomMusicDir: u.enableCustomMusicDir ?? false,
             customMusicDir: u.customMusicDir || '',
             allowOperateCustomMusicDir: u.allowOperateCustomMusicDir ?? false,
@@ -1437,7 +1438,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             enableAutoDownload: u.enableAutoDownload ?? false,
           }))
           if (global.lx.config['user.enablePublicFavorites']) {
-            users.unshift({ name: '_open', password: '', enableCustomMusicDir: false, customMusicDir: '', allowOperateCustomMusicDir: false, allowWriteCustomMusicDir: false, enableAutoDownload: false })
+            users.unshift({ name: '_open', enableCustomMusicDir: false, customMusicDir: '', allowOperateCustomMusicDir: false, allowWriteCustomMusicDir: false, enableAutoDownload: false })
           }
           res.writeHead(200, {
             'Content-Type': 'application/json',

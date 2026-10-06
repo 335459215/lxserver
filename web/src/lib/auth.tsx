@@ -71,9 +71,16 @@ export const api = {
   status: () => adminFetchJson<Record<string, unknown>>('/api/status'),
   stats: () => adminFetchJson<Record<string, unknown>>('/api/stats'),
   users: () =>
-    adminFetchJson<Array<{ name: string; enableCustomMusicDir?: boolean; allowOperateCustomMusicDir?: boolean }>>(
-      '/api/users',
-    ),
+    adminFetchJson<
+      Array<{
+        name: string
+        enableCustomMusicDir?: boolean
+        customMusicDir?: string
+        allowOperateCustomMusicDir?: boolean
+        allowWriteCustomMusicDir?: boolean
+        enableAutoDownload?: boolean
+      }>
+    >('/api/users'),
   backups: () =>
     adminFetchJson<Array<{ name: string; size: number; time: number; type: 'auto' | 'manual' }>>(
       '/api/config/backups',
