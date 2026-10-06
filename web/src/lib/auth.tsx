@@ -85,6 +85,46 @@ export const api = {
     adminFetchJson<Array<{ name: string; size: number; time: number; type: 'auto' | 'manual' }>>(
       '/api/config/backups',
     ),
+  sources: {
+    list: () =>
+      adminFetchJson<
+        Array<{
+          id: string
+          name: string
+          enabled: boolean
+          isPublic?: boolean
+          owner?: string
+          version?: string
+          platforms?: string[]
+          url?: string
+        }>
+      >('/api/custom-source/list?username=default'),
+    validate: (script: string, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/validate', {
+        method: 'POST',
+        body: JSON.stringify({ script, username: 'open', allowUnsafeVM }),
+      }),
+    import: (script: string, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/import', {
+        method: 'POST',
+        body: JSON.stringify({ script, username: 'open', allowUnsafeVM }),
+      }),
+    toggle: (id: string, enabled: boolean) =>
+      adminFetch('/api/custom-source/toggle', {
+        method: 'POST',
+        body: JSON.stringify({ id, enabled, username: 'open' }),
+      }),
+    delete: (id: string) =>
+      adminFetch('/api/custom-source/delete', {
+        method: 'POST',
+        body: JSON.stringify({ id, username: 'open' }),
+      }),
+    reorder: (sourceIds: string[]) =>
+      adminFetch('/api/custom-source/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ sourceIds, username: 'open' }),
+      }),
+  },
   userVerify: async (): Promise<{ ok: boolean; username: string | null }> => {
     const token = getUserToken()
     if (!token) return { ok: false, username: null }

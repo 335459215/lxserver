@@ -11,6 +11,8 @@ import AboutGroup from './groups/AboutGroup'
 import LogsGroup from './groups/LogsGroup'
 import PlaybackGroup from './groups/PlaybackGroup'
 import NetworkGroup from './groups/NetworkGroup'
+import SourcesGroup from './groups/SourcesGroup'
+import AppearanceGroup from './groups/AppearanceGroup'
 
 /** 管理员登录卡：验证走服务端 /api/login（与旧后台同一信任模型：密码留存浏览器） */
 function AdminGate() {
@@ -74,6 +76,10 @@ function GroupPage() {
       return <PlaybackGroup />
     case 'network':
       return <NetworkGroup />
+    case 'sources':
+      return <SourcesGroup />
+    case 'appearance':
+      return <AppearanceGroup />
     case 'about':
       return <AboutGroup />
     default:
