@@ -30,6 +30,7 @@ import { findServerSourceMatches, getSongMatchScore, normalizeSongMatchText, nor
 import * as customSourceHandlers from './customSourceHandlers'
 import { resolveMusicUrl, clearStickyCache, resetAllPlaybackBreakers } from './musicResolver'
 import * as fileCache from './fileCache'
+import * as sessionStore from './sessionStore'
 import * as customMusicManager from './customMusicManager'
 import * as serverDownloadQueue from './serverDownloadQueue'
 import * as remasterQueue from './remasterQueue'
@@ -241,9 +242,15 @@ const checkPlayerAuth = (req: IncomingMessage): boolean => {
 /** 定期清理过期 Session（每小时） */
 setInterval(() => {
   const now = Date.now()
+  let expired = 0
   for (const [id, session] of playerSessions) {
-    if (now - session.createdAt > SESSION_TTL) playerSessions.delete(id)
+    if (now - session.createdAt > SESSION_TTL) {
+      playerSessions.delete(id)
+      expired++
+    }
   }
+  // 有清理才让快照瘦身；Redis 键靠 TTL 自过期，无需处理
+  if (expired) sessionStore.scheduleSnapshotWrite()
 }, 60 * 60 * 1000)
 // ===== End Player Session Store =====
 
@@ -426,9 +433,13 @@ const getCacheRequestUsername = (req: IncomingMessage): string | null => {
 /** 定期清理过期用户 Token（每小时） */
 setInterval(() => {
   const now = Date.now()
+  let expired = 0
   // 清理内存 Session
   for (const [token, session] of userSessions) {
-    if (now - session.createdAt > USER_SESSION_TTL) userSessions.delete(token)
+    if (now - session.createdAt > USER_SESSION_TTL) {
+      userSessions.delete(token)
+      expired++
+    }
   }
   // 清理加载到内存的过期 API Token（直接走内存 meta，不读磁盘）
   for (const [token, meta] of persistentTokenMeta) {
@@ -437,6 +448,7 @@ setInterval(() => {
       persistentTokenMeta.delete(token)
     }
   }
+  if (expired) sessionStore.scheduleSnapshotWrite()
 }, 60 * 60 * 1000)
 // ===== End User Session Token Store =====
 
@@ -2045,7 +2057,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             const user = global.lx.config.users.find((u: any) => u.name === username && u.password === password)
             if (user) {
               const token = generateSessionId()
-              userSessions.set(token, { username, createdAt: Date.now() })
+              const session = { username, createdAt: Date.now() }
+              userSessions.set(token, session)
+              sessionStore.persistSession('user', token, session)
               loginLog.info(`User token issued: ${username} from ${ip}`)
               res.writeHead(200, { 'Content-Type': 'application/json' })
               res.end(JSON.stringify({ success: true, token, username }))
@@ -2065,7 +2079,10 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // [新增] 用户登出 - 注销 Token
       if (pathname === '/api/user/logout' && req.method === 'POST') {
         const token = req.headers['x-user-token'] as string
-        if (token) userSessions.delete(token)
+        if (token) {
+          userSessions.delete(token)
+          sessionStore.unpersistSession('user', token)
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: true }))
         return
@@ -5687,7 +5704,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
             if (password === correctPassword) {
               const sessionId = generateSessionId()
-              playerSessions.set(sessionId, { createdAt: Date.now() })
+              const session = { createdAt: Date.now() }
+              playerSessions.set(sessionId, session)
+              sessionStore.persistSession('player', sessionId, session)
               loginLog.info(`Player login success from ${ip}`)
               res.writeHead(200, {
                 'Content-Type': 'application/json',
@@ -5711,7 +5730,10 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/music/auth/logout' && req.method === 'POST') {
         const cookies = parseCookies(req.headers['cookie'])
         const sessionId = cookies[SESSION_COOKIE_NAME]
-        if (sessionId) playerSessions.delete(sessionId)
+        if (sessionId) {
+          playerSessions.delete(sessionId)
+          sessionStore.unpersistSession('player', sessionId)
+        }
         res.writeHead(200, {
           'Content-Type': 'application/json',
           'Set-Cookie': `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`
@@ -8554,6 +8576,14 @@ const startSubsonicStandaloneServer = () => {
 // }
 
 export const startServer = async (port: number, ip: string) => {
+  // 阶段0 Redis 会话层：启动时把持久层（Redis 主存 / 磁盘快照兜底）里的会话回灌
+  // 进内存，容器重启后登录不再丢。校验路径（verifyUserAuth / checkPlayerAuth）
+  // 保持同步读内存不变，Redis 只解决"重启恢复"，不在请求热路径上。
+  await sessionStore.initSessionStores({
+    user: { map: userSessions, ttlSeconds: USER_SESSION_TTL / 1000 },
+    player: { map: playerSessions, ttlSeconds: SESSION_TTL / 1000 },
+  })
+
   // Initialize file cache settings from global config
   if (global.lx.config) {
     if (global.lx.config.serverCacheLocation) fileCache.setCacheLocation(global.lx.config.serverCacheLocation)

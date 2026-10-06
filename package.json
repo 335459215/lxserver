@@ -46,6 +46,7 @@
     "crypto-js": "^4.2.0",
     "file-type": "^22.1.0",
     "formidable": "^3.5.4",
+    "ioredis": "^6.0.0",
     "log4js": "^6.9.1",
     "lru-cache": "10.4.3",
     "message2call": "0.1.3",

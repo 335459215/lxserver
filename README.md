@@ -318,10 +318,15 @@ npm start
 | `CACHE_NAMING_PATTERN`                | `cache.namingPattern`              | 缓存文件命名规则 (`simple` / `custom`)                            | `simple`         |
 | `SYSTEM_ALLOW_UNSAFE_VM`              | `system.allowUnsafeVM`             | 是否允许运行 VM 模式自定义源脚本 (需注意安全风险)                  | `false`          |
 | `LX_USER_<用户名>`                    | `users` 数组                       | 快速添加用户，值为该用户的密码 (如 `LX_USER_test=123`)           | -                  |
+| `REDIS_URL`                           | -                                  | Redis 会话层地址 (如 `redis://:密码@infra-redis:6379`)，见下方「会话持久化」 | -                  |
 
 > **高级用户配置说明**：环境变量 `LX_USER_<用户名>` 仅用于快速添加用户及设置密码。若需为特定用户配置独立的高级选项（如开启个人自定义音乐目录、分配操作权限 `allowOperateCustomMusicDir` 或写入权限 `allowWriteCustomMusicDir`、调整快照数量等），请直接在 `config.js` 的 `users` 数组中手动配置对应字段，或者在后台管理界面的“用户管理”面板中通过图形界面修改。
 
 > **布尔类型环境变量说明**：所有布尔类型的环境变量支持灵活的写法（不区分大小写），开启支持 `true` / `1` / `yes` / `y` / `on`；关闭支持 `false` / `0` / `no` / `n` / `off`。
+
+### 💾 会话持久化（Redis 会话层）
+
+网页登录的用户 Token 与播放器 Cookie 会话持久化在 `data/runtime/sessions.json` 快照里，**容器重启/更新后登录不再失效**。配置 `REDIS_URL` 后以 Redis 为主存（全键自动 TTL，多实例可共享会话），Redis 不可达或未配置时自动降级读磁盘快照——任何一层故障都不会把已登录用户踢下线。用户 API Token（`data/users/<用户>/token.json`）本就落盘持久化，不受进程重启影响。
 
 > **提示**：目前服务支持 `启用根路径` (URL配置为 `ip:port`) 和 `启用用户路径` (URL配置为 `ip:port/username`) 两种数据同步连接方式。如果没有启用用户路径，则必须保证每一个同步用户的鉴权密码不重复。
 
