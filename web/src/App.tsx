@@ -1,13 +1,32 @@
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import { Home, LogOut, Menu, Shapes, X } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  ExternalLink,
+  FileMusic,
+  Heart,
+  Home,
+  ListMusic,
+  LogOut,
+  Menu,
+  Search,
+  Shapes,
+  Trophy,
+  X,
+} from 'lucide-react'
 import { useState } from 'react'
 import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { ToastHost } from '@/components/ui'
+import PlayerBar from '@/components/player/PlayerBar'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
 import SettingsShell from '@/pages/settings/SettingsShell'
 import UiShowcase from '@/pages/UiShowcase'
+import SearchPage from '@/pages/player/SearchPage'
+import PlaylistPage from '@/pages/player/PlaylistPage'
+import PlaylistDetailPage from '@/pages/player/PlaylistDetailPage'
+import NowPlayingPage from '@/pages/player/NowPlayingPage'
+import { FavoritesPage, LeaderboardPage, LocalMusicPage } from '@/pages/player/PlannedPages'
 
 /** 身份徽章：管理员 > 用户 > 播放器 */
 function RoleBadge() {
@@ -34,6 +53,17 @@ function RoleBadge() {
   return null
 }
 
+/** 音乐段导航（阶段 C：先壳与路由，页面按序接入） */
+const MUSIC_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }> = [
+  { to: '/', label: '首页', icon: Home, end: true },
+  { to: '/search', label: '搜索', icon: Search },
+  { to: '/playlist', label: '歌单', icon: ListMusic },
+  { to: '/leaderboard', label: '排行榜', icon: Trophy },
+  { to: '/favorites', label: '我的收藏', icon: Heart },
+  { to: '/local', label: '本地音乐', icon: FileMusic },
+]
+
+/** 侧栏双段：上「音乐」/ 下「管理」（桌面固定侧栏与移动抽屉共用） */
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const nav = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
@@ -41,24 +71,35 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     }`
   return (
     <>
-      <NavLink to="/" end className={nav} onClick={onNavigate}>
-        <Home className="size-4" /> 首页
-      </NavLink>
-      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">设置中心</p>
+      <p className="px-3 text-[11px] font-medium tracking-widest text-faint">音乐</p>
+      {MUSIC_NAV.map((m) => (
+        <NavLink key={m.to} to={m.to} end={m.end} className={nav} onClick={onNavigate}>
+          <m.icon className="size-4" /> {m.label}
+        </NavLink>
+      ))}
+
+      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">管理</p>
       {SETTINGS_GROUPS.map((g) => (
         <NavLink key={g.key} to={`/settings/${g.key}`} className={nav} onClick={onNavigate}>
           <g.icon className="size-4" /> {g.label}
         </NavLink>
       ))}
-      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">开发</p>
       <NavLink to="/dev" className={nav} onClick={onNavigate}>
         <Shapes className="size-4" /> 组件展示
       </NavLink>
+
+      <a
+        href="/"
+        className="mt-6 flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-faint transition-colors hover:bg-panel2 hover:text-ink"
+        title="旧版播放器（功能最全，仍在 /）"
+      >
+        <ExternalLink className="size-3.5" /> 旧版播放器
+      </a>
     </>
   )
 }
 
-/** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动） */
+/** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动）+ 底部播放栏 */
 function Shell() {
   const { auth, refresh } = useAuth()
   const navigate = useNavigate()
@@ -79,7 +120,7 @@ function Shell() {
           <NavLink to="/" className="flex items-center gap-2 lg:hidden">
             <span className="size-2.5 rounded-full bg-accent" />
             <span className="font-semibold tracking-tight text-ink">lxserver</span>
-            <span className="hidden text-xs text-faint sm:inline">管理台</span>
+            <span className="hidden text-xs text-faint sm:inline">音乐</span>
           </NavLink>
           <div className="ml-auto flex items-center gap-2">
             <RoleBadge />
@@ -99,9 +140,10 @@ function Shell() {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-6xl">
+      {/* 内容区：底部给常驻播放栏让位（--playerbar-h 与 PlayerBar 同源） */}
+      <div className="mx-auto flex w-full max-w-6xl pb-[var(--playerbar-h)]">
         {/* 桌面侧边栏 */}
-        <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
+        <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
           <NavItems />
         </aside>
 
@@ -124,6 +166,13 @@ function Shell() {
         <main className="min-w-0 flex-1 p-4 md:p-8">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/playlist" element={<PlaylistPage />} />
+            <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
+            <Route path="/leaderboard" element={<LeaderboardPage />} />
+            <Route path="/favorites" element={<FavoritesPage />} />
+            <Route path="/local" element={<LocalMusicPage />} />
+            <Route path="/now-playing" element={<NowPlayingPage />} />
             <Route path="/settings" element={<SettingsShell />} />
             <Route path="/settings/:group" element={<SettingsShell />} />
             <Route path="/dev" element={<UiShowcase />} />
@@ -131,6 +180,8 @@ function Shell() {
           </Routes>
         </main>
       </div>
+
+      <PlayerBar />
     </div>
   )
 }

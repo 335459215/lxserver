@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Heart, ListMusic, Search, Trophy } from 'lucide-react'
 import { api, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { HStack, Stack } from '@/components/ui'
@@ -39,6 +39,14 @@ interface StatusShape {
   platform?: string
 }
 
+/** 音乐入口（阶段 C）：首页先把听歌的去处摆在最前 */
+const MUSIC_ENTRIES = [
+  { to: '/search', icon: Search, label: '搜索', hint: '五平台聚合' },
+  { to: '/playlist', icon: ListMusic, label: '歌单', hint: '同步账号' },
+  { to: '/leaderboard', icon: Trophy, label: '排行榜', hint: '五平台榜单' },
+  { to: '/favorites', icon: Heart, label: '我的收藏', hint: '喜欢与收藏' },
+] as const
+
 /** 仪表盘：登录后首屏。管理员可见运行状态卡；九宫格即设置中心入口 */
 export default function Dashboard() {
   const { auth } = useAuth()
@@ -68,10 +76,32 @@ export default function Dashboard() {
         </h1>
         <p className="mt-1 text-sm text-dim">
           {auth.admin.ok
-            ? '以下是实例的实时状态，分组管理在左侧导航。'
-            : '以当前身份登录，可用的管理功能在左侧导航中。'}
+            ? '听歌入口在下方，实例状态与分组管理在左侧导航。'
+            : '听歌入口在下方，可用的管理功能在左侧导航中。'}
         </p>
       </header>
+
+      <section>
+        <h2 className="text-sm font-medium text-ink">音乐</h2>
+        <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {MUSIC_ENTRIES.map((m, i) => (
+            <Link
+              key={m.to}
+              to={m.to}
+              className="group rise flex items-center gap-3 rounded-xl border border-line bg-panel p-4 shadow-card transition-all hover:border-accent/40 hover:shadow-pop"
+              style={{ animationDelay: `${i * 40}ms` }}
+            >
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+                <m.icon className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-ink">{m.label}</span>
+                <span className="block truncate text-xs text-faint">{m.hint}</span>
+              </span>
+            </Link>
+          ))}
+        </div>
+      </section>
 
       {auth.admin.ok && (
         <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">

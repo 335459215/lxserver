@@ -26,6 +26,15 @@
   --accent-soft: #eef2ff;   /* 选中底（靛蓝 50） */
   --ok: #16a34a;
   --danger: #dc2626;
+
+  /* 底部常驻播放栏高度：Shell 的内容避让/侧栏 sticky 高度与 PlayerBar 共用同一来源 */
+  --playerbar-h: 4rem;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --playerbar-h: 5rem;
+  }
 }
 
 html {
