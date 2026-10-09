@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
+import { PlayerProvider, usePlayer } from '@/lib/player'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { ToastHost } from '@/components/ui'
 import PlayerBar from '@/components/player/PlayerBar'
@@ -102,6 +103,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
 /** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动）+ 底部播放栏 */
 function Shell() {
   const { auth, refresh } = useAuth()
+  const player = usePlayer()
   const navigate = useNavigate()
   const [drawer, setDrawer] = useState(false)
 
@@ -128,6 +130,9 @@ function Shell() {
               <button
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-dim hover:bg-panel2 hover:text-ink"
                 onClick={async () => {
+                  // 退出即停播：否则音频元素（挂在 App 根部，跨登录态存活）
+                  // 会在登录页背后继续出声，且没有任何可见控件可以停它
+                  player.clear()
                   await api.logoutAll()
                   await refresh()
                   navigate('/')
@@ -206,9 +211,13 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
-      <ToastHost>
-        <Gate />
-      </ToastHost>
+      {/* 播放器内核挂在最外层：<audio> 元素（约束一）必须跨路由/登录态存活，
+          不能被任何条件渲染包住，否则切页就会把正在播的元素卸载掉 */}
+      <PlayerProvider>
+        <ToastHost>
+          <Gate />
+        </ToastHost>
+      </PlayerProvider>
     </AuthProvider>
   )
 }

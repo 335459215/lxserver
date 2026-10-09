@@ -11,6 +11,7 @@ import * as React from 'react'
 
 const ADMIN_KEY = 'lx.admin.password'
 const USER_TOKEN_KEY = 'lx.user.token'
+const USER_NAME_KEY = 'lx.user.name'
 
 export interface AuthState {
   loading: boolean
@@ -36,6 +37,30 @@ export function getUserToken(): string {
 export function setUserToken(token: string) {
   if (token) localStorage.setItem(USER_TOKEN_KEY, token)
   else localStorage.removeItem(USER_TOKEN_KEY)
+}
+
+export function getUserName(): string {
+  return localStorage.getItem(USER_NAME_KEY) ?? ''
+}
+
+export function setUserName(name: string) {
+  if (name) localStorage.setItem(USER_NAME_KEY, name)
+  else localStorage.removeItem(USER_NAME_KEY)
+}
+
+/**
+ * 播放接口（/api/music/url）的用户鉴权头。
+ *
+ * 为什么必须有：自定义音源按用户名归属落盘（data/users/source/<user>/），服务端在该
+ * 接口上做「具名用户必须带有效 token」的校验，再把 verifiedUsername 交给解析器去挑
+ * 这个人自己的源。不带这个头就退化成公开用户 `open`，而 `_open` 目录通常没有源——
+ * 表现为搜索一切正常、点歌却一律「未找到支持 X 平台的自定义源」。旧版播放器同样用这套头。
+ */
+export function userAuthHeaders(): Record<string, string> {
+  const token = getUserToken()
+  const name = getUserName()
+  if (!token || !name) return {}
+  return { 'x-user-name': name, 'x-user-token': token }
 }
 
 /** 管理 API 包装：自动带 x-frontend-auth；401 时清除本地密码并抛出 */
@@ -131,7 +156,14 @@ export const api = {
     const res = await fetch('/api/user/auth/verify', { headers: { 'x-user-token': token } })
     if (!res.ok) return { ok: false, username: null }
     const data = (await res.json()) as { valid?: boolean; username?: string }
-    return { ok: !!data.valid, username: data.valid ? (data.username ?? null) : null }
+    if (!data.valid) {
+      setUserName('')
+      return { ok: false, username: null }
+    }
+    // 用户名要落盘：/api/music/url 的用户鉴权头需要它（见 userAuthHeaders）
+    const username = data.username ?? null
+    setUserName(username ?? '')
+    return { ok: true, username }
   },
   playerVerify: async (): Promise<boolean> => {
     // 播放器认证未开启时服务端恒放行（checkPlayerAuth 直接 true），
@@ -173,6 +205,7 @@ export const api = {
     const data = (await res.json()) as { token?: string }
     if (data.token) {
       setUserToken(data.token)
+      setUserName(username)
       return true
     }
     return false
@@ -183,6 +216,7 @@ export const api = {
       await fetch('/api/user/logout', { method: 'POST', headers: { 'x-user-token': token } }).catch(() => {})
     }
     setUserToken('')
+    setUserName('')
     setAdminPassword('')
   },
 }
