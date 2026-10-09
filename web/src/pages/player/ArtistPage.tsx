@@ -4,6 +4,7 @@ import { ArrowLeft, Disc3, Play, TriangleAlert, UserRound } from 'lucide-react'
 import { Button, Stack, useToast } from '@/components/ui'
 import { sourceLabel } from '@/lib/music'
 import {
+  ARTIST_SOURCES,
   supportsArtistPages,
   useArtistAlbums,
   useArtistDetail,
@@ -144,8 +145,17 @@ export default function ArtistPage() {
         </section>
       )}
 
-      {detail.status === 'error' && (
-        <ErrorPanel message={detail.error} onRetry={detail.reload} />
+      {/* 简介区块已在上方按「有 desc 才渲染」自动降级，这里只在实际拿不到时提示。
+          各接口是独立降级的：实测曾出现 artistDetail 单独 500 而 artistSongs/artistAlbums
+          正常的情况，所以不要用 detail 的状态去代表整个页面。 */}
+      {detail.status === 'error' && (songs.status === 'ready' || albums.status === 'ready') && (
+        <p className="rounded-xl border border-line bg-panel/60 px-4 py-2 text-xs text-dim">
+          歌手简介暂时取不到（{detail.error}），歌曲与专辑不受影响。
+        </p>
+      )}
+
+      {songs.status === 'error' && (
+        <ArtistFallback error={songs.error} source={source} name={detail.data?.name ?? ''} onRetry={songs.reload} />
       )}
 
       {/* 歌曲 */}
@@ -188,7 +198,6 @@ export default function ArtistPage() {
         </div>
 
         {songs.status === 'loading' && <RowsSkeleton />}
-        {songs.status === 'error' && <ErrorPanel message={songs.error} onRetry={songs.reload} />}
         {songs.status === 'ready' && allSongs.length === 0 && (
           <EmptyBox text="这位歌手暂无可用曲目。" />
         )}
@@ -310,6 +319,49 @@ function ErrorPanel({ message, onRetry }: { message: string | null; onRetry: () 
       <Button variant="outline" size="sm" className="mt-3" onClick={onRetry}>
         重试
       </Button>
+    </div>
+  )
+}
+
+/** 歌手页加载失败时的兜底：除了重试，还给出**换平台**的出路。
+ *
+ *  必要性：网易云的歌手详情类接口（artistDetail / artistAlbums / artistSongs）会不定期
+ *  被上游拒掉（返回 `Network Error` → 服务端 500），而此时同平台搜索、以及 QQ音乐的
+ *  同名接口都还正常（2026-10-09 实测）。原来的错误面板只说「加载失败」，用户无从下手。 */
+function ArtistFallback({
+  error,
+  source,
+  name,
+  onRetry,
+}: {
+  error: string | null
+  source: string
+  name: string
+  onRetry: () => void
+}) {
+  const alt = ARTIST_SOURCES.find((s) => s !== source)
+  return (
+    <div className="rounded-2xl border border-dashed border-danger/40 bg-danger/5 p-6 text-center">
+      <span className="mx-auto flex size-9 items-center justify-center rounded-xl bg-panel2 text-danger">
+        <TriangleAlert className="size-4" />
+      </span>
+      <p className="mt-2 text-sm font-medium text-ink">歌手信息加载失败</p>
+      <p className="mx-auto mt-1 max-w-md break-words text-xs text-dim">{error}</p>
+      <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-faint">
+        这类接口偶尔会被上游临时拒绝，稍后重试通常即可恢复；也可以换到另一个平台查找这位歌手。
+      </p>
+      <div className="mt-3 flex flex-wrap justify-center gap-2">
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          重试
+        </Button>
+        {alt && name && (
+          <Button asChild variant="outline" size="sm">
+            <Link to={`/artist-name/${encodeURIComponent(name)}?source=${alt}`}>
+              换到{sourceLabel(alt)}找「{name}」
+            </Link>
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
