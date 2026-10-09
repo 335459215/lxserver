@@ -27,7 +27,8 @@ import SearchPage from '@/pages/player/SearchPage'
 import PlaylistPage from '@/pages/player/PlaylistPage'
 import PlaylistDetailPage from '@/pages/player/PlaylistDetailPage'
 import NowPlayingPage from '@/pages/player/NowPlayingPage'
-import { FavoritesPage, LeaderboardPage, LocalMusicPage } from '@/pages/player/PlannedPages'
+import { LeaderboardPage, LocalMusicPage } from '@/pages/player/PlannedPages'
+import FavoritesPage from '@/pages/player/FavoritesPage'
 
 /** 身份徽章：管理员 > 用户 > 播放器 */
 function RoleBadge() {

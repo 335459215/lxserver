@@ -130,6 +130,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const reqSeqRef = React.useRef(0)
   const abortRef = React.useRef<AbortController | null>(null)
 
+  /** 音频层失败（链接失效/格式不支持）的自动换源计数，按曲目隔离 */
+  const audioFailRef = React.useRef<{ key: string; count: number }>({ key: '', count: 0 })
+  /** 由下面的 recoverFromAudioFailure 填充；挂载期的事件监听通过它回调 */
+  const recoverRef = React.useRef<() => void>(() => {})
+
   const patch = React.useCallback((p: Partial<PlayerState>) => {
     setState((s) => ({ ...s, ...p }))
   }, [])
@@ -146,18 +151,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const d = Number.isFinite(el.duration) ? el.duration : 0
         return s.duration === d ? s : { ...s, duration: d }
       })
-    const onPlay = () => setState((s) => (s.status === 'playing' ? s : { ...s, status: 'playing', error: null }))
+    const onPlay = () => {
+      // 真的播起来了：清掉本曲的自动换源计数，后续再失败仍有重试额度
+      audioFailRef.current = { key: songKey(stateRef.current.current), count: 0 }
+      setState((s) => (s.status === 'playing' ? s : { ...s, status: 'playing', error: null }))
+    }
     const onPause = () =>
       setState((s) => (s.status === 'idle' || s.status === 'error' ? s : { ...s, status: 'paused' }))
     const onWaiting = () => setState((s) => (s.status === 'playing' ? { ...s, ready: false } : s))
     const onCanPlay = () => setState((s) => (s.ready ? s : { ...s, ready: true }))
-    const onErr = () =>
+    const onErr = () => {
+      // 媒体元素自身错误 = 这条链接不可播（失效/格式不支持/源站返回非音频）
+      // 不直接落 error 态：交给自动换源重试，把刚失败的源排除掉再解析一次
+      // （对齐旧版播放器的「播放失败自动恢复」）
       setState((s) => ({
         ...s,
-        status: 'error',
-        error: s.error ?? '音频加载失败，可能是链接已失效',
+        error: s.error ?? '音频加载失败，正在换源重试…',
         ready: false,
       }))
+      recoverRef.current()
+    }
 
     el.addEventListener('timeupdate', onTime)
     el.addEventListener('durationchange', onDur)
@@ -215,7 +228,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const ac = new AbortController()
       abortRef.current = ac
 
-      const exclude = excludedRef.current.get(songKey(song)) ?? []
+      const key = songKey(song)
+      const exclude = excludedRef.current.get(key) ?? []
+      // 换到别的曲目时重置自动换源计数（同一曲目的重试会保留计数）
+      if (audioFailRef.current.key !== key) audioFailRef.current = { key, count: 0 }
 
       patch({
         status: 'loading',
@@ -268,6 +284,39 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     },
     [patch],
   )
+
+  /** 音频层失败后的自动换源：把刚失败的源排除，再解析一次。
+   *  这正是旧版播放器「播放失败自动恢复」的核心（清单第 13 项）——
+   *  自定义源里总有几个是返回死链/非音频内容的，没有这层恢复就会"解析成功但播不出声"。
+   *  有次数上限，避免所有源都坏时无限打转。 */
+  const MAX_AUDIO_RETRIES = 3
+  const recoverFromAudioFailure = React.useCallback(() => {
+    const s = stateRef.current
+    if (!s.current) return
+
+    const key = songKey(s.current)
+    if (audioFailRef.current.key !== key) audioFailRef.current = { key, count: 0 }
+
+    if (audioFailRef.current.count >= MAX_AUDIO_RETRIES) {
+      patch({
+        status: 'error',
+        error: s.error ?? '这首歌试过的音源都放不出来，换一首或稍后再试',
+      })
+      return
+    }
+    audioFailRef.current.count += 1
+
+    // 排除刚失败的那个源，下次解析换别的
+    if (s.sourceName) {
+      const prev = excludedRef.current.get(key) ?? []
+      excludedRef.current.set(key, Array.from(new Set([...prev, s.sourceName])))
+    }
+    void loadAndPlay(s.current)
+  }, [loadAndPlay, patch])
+
+  React.useEffect(() => {
+    recoverRef.current = recoverFromAudioFailure
+  }, [recoverFromAudioFailure])
 
   const next = React.useCallback(() => {
     const s = stateRef.current
@@ -368,6 +417,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const retry = React.useCallback(() => {
     const s = stateRef.current
     if (!s.current) return
+    // 手动重试 = 重置自动换源额度，并把当前这个源也排除掉
+    audioFailRef.current = { key: songKey(s.current), count: 0 }
+    if (s.sourceName) {
+      const key = songKey(s.current)
+      const prev = excludedRef.current.get(key) ?? []
+      excludedRef.current.set(key, Array.from(new Set([...prev, s.sourceName])))
+    }
     // 把这次失败的源加进排除清单，下次解析换别的源（对齐旧版播放器的换源恢复）
     const failed = s.attempts
       .filter((a) => a.status === 'fail' && (a.name || a.sourceName))

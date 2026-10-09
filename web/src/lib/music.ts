@@ -8,9 +8,11 @@
  */
 import { userAuthHeaders } from '@/lib/auth'
 
-/** 各平台搜索结果字段名不统一，这里只声明公共字段，其余透传 */
+/** 各平台搜索结果字段名不统一，这里只声明公共字段，其余透传。
+ *  歌单里的曲目（LX.Music.MusicInfo）也能被这个类型覆盖：它把封面/专辑放在
+ *  `meta` 下，故 coverUrl() 会一并兜底 meta.picUrl。 */
 export interface Song {
-  /** 平台标识：kw / wy / tx / kg / mg */
+  /** 平台标识：kw / wy / tx / kg / mg / local */
   source: string
   id?: string | number
   songmid?: string
@@ -18,10 +20,18 @@ export interface Song {
   singer: string
   albumName?: string
   albumId?: string | number
-  /** 时长，形如 "03:30" */
-  interval?: string
+  /** 时长，形如 "03:30"；歌单里可能是 null */
+  interval?: string | null
   img?: string
   picUrl?: string
+  /** 歌单曲目：服务端 meta（songId/picUrl/qualitys…） */
+  meta?: {
+    songId?: string | number
+    albumName?: string
+    picUrl?: string | null
+    qualitys?: Array<{ type?: string; size?: string | null }>
+    [key: string]: unknown
+  }
   /** 该曲可用的音质档位 */
   types?: Array<{ type?: string; size?: string | null }>
   [key: string]: unknown
@@ -140,28 +150,30 @@ export function formatTime(sec: number): string {
 }
 
 /** "03:30" → 210（解析不出来返回 0） */
-export function intervalToSeconds(interval?: string): number {
+export function intervalToSeconds(interval?: string | null): number {
   if (!interval) return 0
   const parts = interval.split(':').map((n) => Number.parseInt(n, 10))
   if (parts.some((n) => Number.isNaN(n))) return 0
   return parts.reduce((acc, n) => acc * 60 + n, 0)
 }
 
-/** 同一首歌的判定：同平台 + 同 songmid/id */
+/** 同一首歌的判定：同平台 + 同 songmid/id。
+ *  歌单曲目（meta.songId）与搜索结果（songmid）要能对上，故三级兜底。 */
 export function sameSong(a: Song | null, b: Song | null): boolean {
   if (!a || !b) return false
   if (a.source !== b.source) return false
-  const idA = a.songmid ?? a.id
-  const idB = b.songmid ?? b.id
+  const idA = a.songmid ?? a.id ?? a.meta?.songId
+  const idB = b.songmid ?? b.id ?? b.meta?.songId
   return idA != null && idB != null && String(idA) === String(idB)
 }
 
-/** 封面地址：各平台字段名不统一，统一兜底 */
+/** 封面地址：各平台字段名不统一，统一兜底（歌单曲目把封面放在 meta.picUrl） */
 export function coverUrl(song?: Song | null): string | undefined {
   if (!song) return undefined
   const candidates = [
     song.img,
     song.picUrl,
+    song.meta?.picUrl,
     (song.album as { cover?: string } | undefined)?.cover,
   ]
   return candidates.find((u): u is string => typeof u === 'string' && u.length > 0)

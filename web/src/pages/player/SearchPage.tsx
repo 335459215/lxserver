@@ -1,100 +1,21 @@
 import * as React from 'react'
-import { Disc3, Loader2, Pause, Play, Search, TriangleAlert } from 'lucide-react'
-import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Stack, useToast } from '@/components/ui'
+import { Loader2, Play, Search, TriangleAlert } from 'lucide-react'
 import {
-  coverUrl,
-  formatTime,
-  intervalToSeconds,
-  MUSIC_SOURCES,
-  sameSong,
-  searchMusic,
-  sourceLabel,
-  type Song,
-} from '@/lib/music'
+  Button,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Stack,
+  useToast,
+} from '@/components/ui'
+import { MUSIC_SOURCES, searchMusic, sourceLabel, type Song } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
-import { cn } from '@/lib/utils'
+import SongList from '@/components/player/SongList'
 
 type Phase = 'idle' | 'loading' | 'done' | 'error'
-
-/** 单条搜索结果行：点整行即播（入队为本次搜索结果） */
-function SongRow({
-  song,
-  index,
-  active,
-  playing,
-  loading,
-  onPlay,
-}: {
-  song: Song
-  index: number
-  active: boolean
-  playing: boolean
-  loading: boolean
-  onPlay: () => void
-}) {
-  const cover = coverUrl(song)
-  const duration = intervalToSeconds(song.interval)
-
-  return (
-    <button
-      type="button"
-      onClick={onPlay}
-      aria-label={`播放 ${song.name} - ${song.singer}`}
-      className={cn(
-        'group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors',
-        active
-          ? 'border-accent/40 bg-accent-soft'
-          : 'border-transparent hover:border-line hover:bg-panel2/60',
-      )}
-    >
-      <span className="w-6 shrink-0 text-center font-mono text-xs text-faint">
-        {active && loading ? (
-          <Loader2 className="mx-auto size-3.5 animate-spin text-accent" />
-        ) : active && playing ? (
-          <span className="mx-auto flex size-3.5 items-end justify-center gap-px" aria-hidden>
-            <span className="h-1.5 w-0.5 animate-pulse bg-accent" />
-            <span className="h-3 w-0.5 animate-pulse bg-accent [animation-delay:150ms]" />
-            <span className="h-2 w-0.5 animate-pulse bg-accent [animation-delay:300ms]" />
-          </span>
-        ) : (
-          <>
-            <span className="group-hover:hidden">{index + 1}</span>
-            <Play className="mx-auto hidden size-3.5 fill-current text-accent group-hover:block" />
-          </>
-        )}
-      </span>
-
-      {cover ? (
-        <img
-          src={cover}
-          alt=""
-          loading="lazy"
-          className="size-10 shrink-0 rounded-lg border border-line object-cover"
-        />
-      ) : (
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-line bg-panel2 text-faint">
-          <Disc3 className="size-4" />
-        </span>
-      )}
-
-      <span className="min-w-0 flex-1">
-        <span className={cn('block truncate text-sm', active ? 'font-medium text-accent' : 'text-ink')}>
-          {song.name}
-        </span>
-        <span className="block truncate text-xs text-faint">
-          {[song.singer, song.albumName].filter(Boolean).join(' · ')}
-        </span>
-      </span>
-
-      <span className="hidden shrink-0 rounded-md border border-line px-1.5 py-0.5 text-[10px] text-faint sm:block">
-        {sourceLabel(song.source)}
-      </span>
-      <span className="w-10 shrink-0 text-right font-mono text-xs tabular-nums text-faint">
-        {duration > 0 ? formatTime(duration) : '--:--'}
-      </span>
-    </button>
-  )
-}
 
 export default function SearchPage() {
   const player = usePlayer()
@@ -105,48 +26,36 @@ export default function SearchPage() {
   const [phase, setPhase] = React.useState<Phase>('idle')
   const [results, setResults] = React.useState<Song[]>([])
   const [error, setError] = React.useState<string | null>(null)
-  /** 上一次真正发起搜索的关键词，用于结果区标题 */
+  /** 上一次真正发起搜索的关键词，用于结果区标题与重试 */
   const [searchedFor, setSearchedFor] = React.useState('')
 
   const abortRef = React.useRef<AbortController | null>(null)
-  // 卸载时中止在途请求，避免 setState 到已卸载组件
   React.useEffect(() => () => abortRef.current?.abort(), [])
 
-  const runSearch = React.useCallback(
-    async (name: string, src: string) => {
-      const q = name.trim()
-      if (!q) return
+  const runSearch = React.useCallback(async (name: string, src: string) => {
+    const q = name.trim()
+    if (!q) return
 
-      abortRef.current?.abort()
-      const ac = new AbortController()
-      abortRef.current = ac
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
 
-      setPhase('loading')
-      setError(null)
-      setSearchedFor(q)
+    setPhase('loading')
+    setError(null)
+    setSearchedFor(q)
 
-      try {
-        const list = await searchMusic({ name: q, source: src, pages: 1, signal: ac.signal })
-        if (ac.signal.aborted) return
-        setResults(list)
-        setPhase('done')
-      } catch (e) {
-        if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
-        setResults([])
-        setError(e instanceof Error ? e.message : '搜索失败')
-        setPhase('error')
-      }
-    },
-    [],
-  )
-
-  const playFromResults = React.useCallback(
-    (song: Song) => {
-      player.playSong(song, results)
-      toast({ title: '正在解析播放地址…', description: `${song.name} - ${song.singer}` })
-    },
-    [player, results, toast],
-  )
+    try {
+      const list = await searchMusic({ name: q, source: src, pages: 1, signal: ac.signal })
+      if (ac.signal.aborted) return
+      setResults(list)
+      setPhase('done')
+    } catch (e) {
+      if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
+      setResults([])
+      setError(e instanceof Error ? e.message : '搜索失败')
+      setPhase('error')
+    }
+  }, [])
 
   const playAll = React.useCallback(() => {
     if (!results.length) return
@@ -189,16 +98,11 @@ export default function SearchPage() {
           </SelectContent>
         </Select>
         <Button type="submit" disabled={!keyword.trim() || phase === 'loading'}>
-          {phase === 'loading' ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Search className="size-4" />
-          )}
+          {phase === 'loading' ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
           搜索
         </Button>
       </form>
 
-      {/* 结果区 */}
       {phase === 'idle' && (
         <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
           <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 text-faint">
@@ -233,12 +137,7 @@ export default function SearchPage() {
           </span>
           <p className="mt-3 text-sm font-medium text-ink">搜索失败</p>
           <p className="mx-auto mt-1 max-w-md break-words text-xs leading-relaxed text-dim">{error}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-4"
-            onClick={() => void runSearch(searchedFor, source)}
-          >
+          <Button variant="outline" size="sm" className="mt-4" onClick={() => void runSearch(searchedFor, source)}>
             重试
           </Button>
         </div>
@@ -261,24 +160,11 @@ export default function SearchPage() {
               <Play className="size-3.5 fill-current" /> 播放全部
             </Button>
           </div>
-          <ul className="space-y-1">
-            {results.map((song, i) => (
-              <li key={`${song.source}-${song.songmid ?? song.id ?? i}`}>
-                <SongRow
-                  song={song}
-                  index={i}
-                  active={sameSong(song, player.current)}
-                  playing={player.status === 'playing'}
-                  loading={player.status === 'loading'}
-                  onPlay={() => playFromResults(song)}
-                />
-              </li>
-            ))}
-          </ul>
+          <SongList songs={results} showSource />
         </section>
       )}
 
-      {/* 当前播放提示条：搜索页内也能看到状态，不必回看底部栏 */}
+      {/* 失败提示条：搜索页内也能看到状态并一键换源 */}
       {player.current && player.status === 'error' && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel p-3 text-xs text-dim">
           <TriangleAlert className="size-4 shrink-0 text-danger" />
@@ -286,7 +172,12 @@ export default function SearchPage() {
             上一首解析失败：{player.error}
             {player.attempts.length > 0 && (
               <span className="text-faint">
-                （已尝试：{player.attempts.map((a) => a.name ?? a.sourceName).filter(Boolean).join('、')}）
+                （已尝试：
+                {player.attempts
+                  .map((a) => a.name ?? a.sourceName)
+                  .filter(Boolean)
+                  .join('、')}
+                ）
               </span>
             )}
           </span>
@@ -298,7 +189,7 @@ export default function SearchPage() {
 
       {player.current && player.status !== 'error' && (
         <div className="flex items-center gap-2 text-xs text-faint">
-          <Pause className="size-3.5" />
+          <span className="size-1.5 animate-pulse rounded-full bg-accent" />
           正在播放：<span className="text-dim">{player.current.name}</span>
           {player.sourceName && <span>· {player.sourceName}</span>}
         </div>
