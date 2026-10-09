@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { Pause, Play, SkipBack, SkipForward } from 'lucide-react'
+import { Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { usePlayer } from '@/lib/player'
+import { REPEAT_LABEL, usePlayer } from '@/lib/player'
 import { formatTime } from '@/lib/music'
 
 /** 可拖动进度条：点击/拖动皆可 seek；直播流（时长非有限）自动禁用 */
@@ -110,8 +110,64 @@ function ProgressBar({
   )
 }
 
-/** 传输控件：上一首/播放暂停/下一首。桌面与移动共用，只调尺寸。 */
-export function TransportControls({ size = 'md' }: { size?: 'md' | 'lg' }) {
+/** 随机开关 + 循环三态（Spotify 式：随机在左、循环在右，开启时点亮并带指示点）。
+ *  与旧版播放器「顺序/循环/单曲/随机 四选一」不同 —— 随机是独立开关，
+ *  可以和任意循环模式组合，这是主流音乐 App 的通行做法。 */
+export function PlayModeControls({ size = 'md' }: { size?: 'md' | 'lg' }) {
+  const { shuffle, repeat, toggleShuffle, cycleRepeat } = usePlayer()
+  const btn = size === 'lg' ? 'size-11' : 'size-9'
+  const icon = size === 'lg' ? 'size-5' : 'size-4'
+  const RepeatIcon = repeat === 'one' ? Repeat1 : Repeat
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={toggleShuffle}
+        aria-pressed={shuffle}
+        aria-label={shuffle ? '关闭随机播放' : '开启随机播放'}
+        title={shuffle ? '随机播放：开' : '随机播放：关'}
+        className={cn(
+          btn,
+          'relative flex items-center justify-center rounded-full transition-colors',
+          shuffle ? 'text-accent hover:bg-accent-soft' : 'text-dim hover:bg-panel2 hover:text-ink',
+        )}
+      >
+        <Shuffle className={icon} />
+        {shuffle && (
+          <span className="absolute bottom-1 size-1 rounded-full bg-accent" aria-hidden />
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={cycleRepeat}
+        aria-label={`循环模式：${REPEAT_LABEL[repeat]}（点击切换）`}
+        title={`循环：${REPEAT_LABEL[repeat]}`}
+        className={cn(
+          btn,
+          'relative flex items-center justify-center rounded-full transition-colors',
+          repeat !== 'off' ? 'text-accent hover:bg-accent-soft' : 'text-dim hover:bg-panel2 hover:text-ink',
+        )}
+      >
+        <RepeatIcon className={icon} />
+        {repeat !== 'off' && (
+          <span className="absolute bottom-1 size-1 rounded-full bg-accent" aria-hidden />
+        )}
+      </button>
+    </>
+  )
+}
+
+/** 传输控件：随机 / 上一首 / 播放暂停 / 下一首 / 循环。
+ *  桌面与移动共用，只调尺寸；showMode=false 时只保留核心三键（空间紧张处用）。 */
+export function TransportControls({
+  size = 'md',
+  showMode = false,
+}: {
+  size?: 'md' | 'lg'
+  showMode?: boolean
+}) {
   const { status, toggle, next, prev, queue, current } = usePlayer()
   const playing = status === 'playing'
   const loading = status === 'loading'
@@ -123,6 +179,8 @@ export function TransportControls({ size = 'md' }: { size?: 'md' | 'lg' }) {
 
   return (
     <div className="flex items-center gap-2">
+      {showMode && <PlayModeControls size={size} />}
+
       <button
         type="button"
         onClick={prev}

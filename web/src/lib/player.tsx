@@ -12,6 +12,22 @@ import {
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
+/** 循环三态（对齐 Spotify / Apple Music / YouTube Music 的模型）：
+ *  - off 不循环：播完最后一首停止
+ *  - all 列表循环：播完回到第一首
+ *  - one 单曲循环：自动播完重复本首（手动切歌仍换曲）
+ *  「随机」是独立开关，不参与这里的轮换 —— 这是大厂通行做法，
+ *  也是与旧版播放器「顺序/循环/单曲/随机 四选一」最大的区别。 */
+export type RepeatMode = 'off' | 'all' | 'one'
+
+export const REPEAT_ORDER: readonly RepeatMode[] = ['off', 'all', 'one'] as const
+
+export const REPEAT_LABEL: Record<RepeatMode, string> = {
+  off: '不循环',
+  all: '列表循环',
+  one: '单曲循环',
+}
+
 export interface PlayerState {
   current: Song | null
   queue: Song[]
@@ -23,6 +39,10 @@ export interface PlayerState {
   duration: number
   volume: number
   muted: boolean
+  /** 随机播放开关（持久化） */
+  shuffle: boolean
+  /** 循环模式（持久化） */
+  repeat: RepeatMode
   /** 是否已可播（首个 canplay 之后） */
   ready: boolean
   error: string | null
@@ -45,6 +65,10 @@ export interface PlayerApi extends PlayerState {
   seek: (seconds: number) => void
   setVolume: (v: number) => void
   toggleMute: () => void
+  /** 切换随机播放 */
+  toggleShuffle: () => void
+  /** 循环模式轮换：不循环 → 列表循环 → 单曲循环 */
+  cycleRepeat: () => void
   clear: () => void
   /** 失败后换源重试（把这次失败的源加入排除清单） */
   retry: () => void
@@ -54,6 +78,8 @@ export interface PlayerApi extends PlayerState {
 const PlayerContext = React.createContext<PlayerApi | null>(null)
 
 const STORAGE_VOLUME = 'lx.player.volume'
+const STORAGE_SHUFFLE = 'lx.player.shuffle'
+const STORAGE_REPEAT = 'lx.player.repeat'
 
 const initialState: PlayerState = {
   current: null,
@@ -64,6 +90,8 @@ const initialState: PlayerState = {
   duration: 0,
   volume: 1,
   muted: false,
+  shuffle: false,
+  repeat: 'all',
   ready: false,
   error: null,
   attempts: [],
@@ -76,6 +104,18 @@ function restoreVolume(): number {
   if (typeof localStorage === 'undefined') return 1
   const raw = Number.parseFloat(localStorage.getItem(STORAGE_VOLUME) ?? '')
   return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 1
+}
+
+function restoreShuffle(): boolean {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(STORAGE_SHUFFLE) === '1'
+}
+
+/** 读回上次循环模式，异常一律回落「列表循环」 */
+function restoreRepeat(): RepeatMode {
+  if (typeof localStorage === 'undefined') return 'all'
+  const raw = localStorage.getItem(STORAGE_REPEAT)
+  return REPEAT_ORDER.includes(raw as RepeatMode) ? (raw as RepeatMode) : 'all'
 }
 
 /** 曲目唯一键：用于记忆"哪些源已经试过且失败" */
@@ -116,6 +156,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<PlayerState>(() => ({
     ...initialState,
     volume: restoreVolume(),
+    shuffle: restoreShuffle(),
+    repeat: restoreRepeat(),
   }))
 
   /** state 的镜像：事件回调与动作里读它，避免闭包捕获陈旧值 */
@@ -215,6 +257,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 隐私模式下 localStorage 可能抛错
     }
   }, [state.volume])
+
+  // 随机 / 循环持久化
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_SHUFFLE, state.shuffle ? '1' : '0')
+      localStorage.setItem(STORAGE_REPEAT, state.repeat)
+    } catch {
+      // 同上
+    }
+  }, [state.shuffle, state.repeat])
 
   /** 解析并播放：按 QUALITY_FALLBACK 逐档降级，任一档成功即播 */
   const loadAndPlay = React.useCallback(
@@ -318,18 +370,54 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     recoverRef.current = recoverFromAudioFailure
   }, [recoverFromAudioFailure])
 
-  const next = React.useCallback(() => {
-    const s = stateRef.current
-    if (!s.queue.length) return
-    const idx = (s.index + 1) % s.queue.length
-    const song = s.queue[idx]
-    setState((prev) => ({ ...prev, index: idx, current: song, position: 0, duration: 0 }))
-    void loadAndPlay(song)
-  }, [loadAndPlay])
+  /** 切歌核心：随机开关 + 循环三态决定下一首。
+   *  auto=true 表示「本曲自然播完」触发的切换 —— 只有这种情况下单曲循环才重播本首、
+   *  不循环才会在最后一首停下；手动点上一首/下一首始终换曲，不会卡住。 */
+  const advance = React.useCallback(
+    (dir: 1 | -1, auto: boolean) => {
+      const s = stateRef.current
+      const len = s.queue.length
+      if (!len) return
+      const el = audioRef.current
+
+      if (auto && s.repeat === 'one') {
+        if (el) {
+          el.currentTime = 0
+          void el.play().catch(() => patch({ status: 'paused' }))
+        }
+        return
+      }
+
+      let idx: number
+      if (s.shuffle && len > 1) {
+        do {
+          idx = Math.floor(Math.random() * len)
+        } while (idx === s.index)
+      } else {
+        idx = s.index + dir
+        if (idx >= len) {
+          // 到底了：不循环则停下，否则回到开头
+          if (auto && s.repeat === 'off') {
+            el?.pause()
+            patch({ status: 'paused' })
+            return
+          }
+          idx = 0
+        } else if (idx < 0) {
+          idx = len - 1
+        }
+      }
+
+      const song = s.queue[idx]
+      setState((prev) => ({ ...prev, index: idx, current: song, position: 0, duration: 0 }))
+      void loadAndPlay(song)
+    },
+    [loadAndPlay, patch],
+  )
+
+  const next = React.useCallback(() => advance(1, false), [advance])
 
   const prev = React.useCallback(() => {
-    const s = stateRef.current
-    if (!s.queue.length) return
     const el = audioRef.current
     // 播放超过 3 秒：上一首 = 回到本曲开头（与主流播放器一致）
     if (el && el.currentTime > 3) {
@@ -337,11 +425,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       patch({ position: 0 })
       return
     }
-    const idx = (s.index - 1 + s.queue.length) % s.queue.length
-    const song = s.queue[idx]
-    setState((p) => ({ ...p, index: idx, current: song, position: 0, duration: 0 }))
-    void loadAndPlay(song)
-  }, [loadAndPlay, patch])
+    advance(-1, false)
+  }, [advance, patch])
 
   const playAt = React.useCallback(
     (index: number) => {
@@ -456,6 +541,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setState((s) => ({ ...s, muted: !s.muted }))
   }, [])
 
+  const toggleShuffle = React.useCallback(() => {
+    setState((s) => ({ ...s, shuffle: !s.shuffle }))
+  }, [])
+
+  const cycleRepeat = React.useCallback(() => {
+    setState((s) => {
+      const next = REPEAT_ORDER[(REPEAT_ORDER.indexOf(s.repeat) + 1) % REPEAT_ORDER.length]
+      return { ...s, repeat: next }
+    })
+  }, [])
+
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
     abortRef.current?.abort()
@@ -501,14 +597,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [loadAndPlay, stopAudio],
   )
 
-  // 播放自然结束 → 下一首
+  // 播放自然结束 → 按播放模式推进（单曲循环重播本首、顺序播放在末尾停下）
   React.useEffect(() => {
     const el = audioRef.current
     if (!el) return
-    const onEnded = () => next()
+    const onEnded = () => advance(1, true)
     el.addEventListener('ended', onEnded)
     return () => el.removeEventListener('ended', onEnded)
-  }, [next])
+  }, [advance])
 
   // 键盘：空格播放/暂停，Shift+←/→ 上下一首（输入框内不拦截）
   React.useEffect(() => {
@@ -540,6 +636,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       seek,
       setVolume,
       toggleMute,
+      toggleShuffle,
+      cycleRepeat,
       clear,
       retry,
       removeAt,
@@ -555,6 +653,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       seek,
       setVolume,
       toggleMute,
+      toggleShuffle,
+      cycleRepeat,
       clear,
       retry,
       removeAt,

@@ -97,9 +97,9 @@ export default function PlayerBar() {
           </span>
         </Link>
 
-        {/* 中：播放控制 + 进度（桌面） */}
+        {/* 中：播放控制 + 进度（桌面；含随机/循环） */}
         <div className="hidden min-w-0 flex-1 flex-col items-center gap-1 md:flex">
-          <TransportControls />
+          <TransportControls showMode />
           <ProgressRow className="max-w-md" />
         </div>
 

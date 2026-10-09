@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Loader2, Play, Search, TriangleAlert } from 'lucide-react'
 import {
   Button,
@@ -56,6 +57,21 @@ export default function SearchPage() {
       setPhase('error')
     }
   }, [])
+
+  /** 支持 /search?q=xxx&source=yy —— 首页搜索框与热搜标签直接跳过来即可出结果，
+   *  不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。 */
+  const [params] = useSearchParams()
+  const search = params.toString()
+  React.useEffect(() => {
+    const p = new URLSearchParams(search)
+    const q = p.get('q')
+    if (!q) return
+    // 这是「响应 URL 变化」（首页搜索框 / 热搜跳转），不是渲染期派生状态；
+    // 规则静态看不出差别，与 lib/useLists.ts 的挂载取数同一处理方式
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setKeyword(q)
+    void runSearch(q, p.get('source') ?? 'kw')
+  }, [search, runSearch])
 
   const playAll = React.useCallback(() => {
     if (!results.length) return

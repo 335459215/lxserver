@@ -1,7 +1,6 @@
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
-  ExternalLink,
   FileMusic,
   Heart,
   Home,
@@ -9,14 +8,13 @@ import {
   LogOut,
   Menu,
   Search,
-  Shapes,
+  Settings,
   Trophy,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
 import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
 import { PlayerProvider, usePlayer } from '@/lib/player'
-import { SETTINGS_GROUPS } from '@/lib/groups'
 import { ToastHost } from '@/components/ui'
 import PlayerBar from '@/components/player/PlayerBar'
 import Dashboard from '@/pages/Dashboard'
@@ -27,7 +25,8 @@ import SearchPage from '@/pages/player/SearchPage'
 import PlaylistPage from '@/pages/player/PlaylistPage'
 import PlaylistDetailPage from '@/pages/player/PlaylistDetailPage'
 import NowPlayingPage from '@/pages/player/NowPlayingPage'
-import { LeaderboardPage, LocalMusicPage } from '@/pages/player/PlannedPages'
+import LeaderboardPage from '@/pages/player/LeaderboardPage'
+import { LocalMusicPage } from '@/pages/player/PlannedPages'
 import FavoritesPage from '@/pages/player/FavoritesPage'
 
 /** 身份徽章：管理员 > 用户 > 播放器 */
@@ -65,7 +64,9 @@ const MUSIC_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: bool
   { to: '/local', label: '本地音乐', icon: FileMusic },
 ]
 
-/** 侧栏双段：上「音乐」/ 下「管理」（桌面固定侧栏与移动抽屉共用） */
+/** 侧栏：只放「听歌」相关导航。
+ *  设置是另一个功能区，收成单个入口（内部有分组导航）——把 9 组设置铺在主侧栏里
+ *  会让「这是播放器」这件事被淹没，这也是旧版侧栏最不合理的地方。 */
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const nav = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
@@ -73,30 +74,34 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     }`
   return (
     <>
-      <p className="px-3 text-[11px] font-medium tracking-widest text-faint">音乐</p>
       {MUSIC_NAV.map((m) => (
         <NavLink key={m.to} to={m.to} end={m.end} className={nav} onClick={onNavigate}>
           <m.icon className="size-4" /> {m.label}
         </NavLink>
       ))}
 
-      <p className="mt-5 px-3 text-[11px] font-medium tracking-widest text-faint">管理</p>
-      {SETTINGS_GROUPS.map((g) => (
-        <NavLink key={g.key} to={`/settings/${g.key}`} className={nav} onClick={onNavigate}>
-          <g.icon className="size-4" /> {g.label}
-        </NavLink>
-      ))}
-      <NavLink to="/dev" className={nav} onClick={onNavigate}>
-        <Shapes className="size-4" /> 组件展示
+      <div className="my-3 border-t border-line" />
+
+      <NavLink to="/settings" className={nav} onClick={onNavigate}>
+        <Settings className="size-4" /> 设置
       </NavLink>
 
-      <a
-        href="/"
-        className="mt-6 flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-faint transition-colors hover:bg-panel2 hover:text-ink"
-        title="旧版播放器（功能最全，仍在 /）"
-      >
-        <ExternalLink className="size-3.5" /> 旧版播放器
-      </a>
+      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3">
+        <NavLink
+          to="/dev"
+          onClick={onNavigate}
+          className="text-[11px] text-faint transition-colors hover:text-dim"
+        >
+          组件展示
+        </NavLink>
+        <a
+          href="/"
+          className="text-[11px] text-faint transition-colors hover:text-dim"
+          title="旧版播放器（仍在 /，作为功能对照）"
+        >
+          旧版播放器
+        </a>
+      </div>
     </>
   )
 }

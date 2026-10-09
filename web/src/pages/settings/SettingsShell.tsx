@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { NavLink, useParams } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { api, setAdminPassword, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { Button, Input, Stack } from '@/components/ui'
+import { cn } from '@/lib/utils'
 import SystemGroup from './groups/SystemGroup'
 import UsersGroup from './groups/UsersGroup'
 import DataGroup from './groups/DataGroup'
@@ -93,7 +94,31 @@ function GroupPage() {
 
 const GROUP_TITLES: Map<string, string> = new Map(SETTINGS_GROUPS.map((g) => [g.key as string, g.label]))
 
-/** 设置页内容区：侧边栏在应用外壳里，这里只负责标题 + 分组内容。
+/** 设置分组导航：设置自成体系，不再占用主侧栏（主侧栏只留「听歌」入口）。 */
+function GroupNav({ current }: { current?: string }) {
+  return (
+    <nav aria-label="设置分组" className="flex flex-wrap gap-1.5">
+      {SETTINGS_GROUPS.map((g) => (
+        <NavLink
+          key={g.key}
+          to={`/settings/${g.key}`}
+          aria-current={current === g.key ? 'page' : undefined}
+          className={cn(
+            'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
+            current === g.key
+              ? 'border-accent bg-accent text-white'
+              : 'border-line bg-panel text-dim hover:border-accent/40 hover:text-ink',
+          )}
+        >
+          <g.icon className="size-3.5" />
+          {g.label}
+        </NavLink>
+      ))}
+    </nav>
+  )
+}
+
+/** 设置页内容区：分组导航 + 标题 + 分组内容。
  * 身份不足时渲染解锁卡（保持路由不动，登录后原位显示内容） */
 export default function SettingsShell() {
   const { auth } = useAuth()
@@ -106,6 +131,7 @@ export default function SettingsShell() {
 
   return (
     <Stack gap={5} className="w-full rise">
+      <GroupNav current={group} />
       <header>
         <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
         {hint && <p className="mt-1 text-sm text-dim">{hint}</p>}

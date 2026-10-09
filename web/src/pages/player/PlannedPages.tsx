@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { FileMusic, Trophy } from 'lucide-react'
+import { FileMusic } from 'lucide-react'
 import { Stack } from '@/components/ui'
 import { PlannedPanel } from '@/components/player/PlannedPanel'
 
@@ -12,20 +12,6 @@ function Frame({ title, hint, children }: { title: string; hint: string; childre
       </header>
       {children}
     </Stack>
-  )
-}
-
-/** 排行榜壳：数据接口（/api/music/leaderboard）已就绪，页面在阶段 C 后续版本接入 */
-export function LeaderboardPage() {
-  return (
-    <Frame title="排行榜" hint="酷我 / 网易 / QQ / 酷狗 / 咪咕 五平台榜单。">
-      <PlannedPanel
-        icon={Trophy}
-        title="榜单列表"
-        note="榜单数据（/api/music/leaderboard）与整榜播放在阶段 C 后续版本接入。"
-        action={{ to: '/search', label: '先去搜索音乐' }}
-      />
-    </Frame>
   )
 }
 

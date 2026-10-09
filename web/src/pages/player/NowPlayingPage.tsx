@@ -142,7 +142,7 @@ export default function NowPlayingPage() {
 
         <div className="flex w-full flex-col items-center gap-4">
           <ProgressRow />
-          <TransportControls size="lg" />
+          <TransportControls size="lg" showMode />
         </div>
 
         {/* 解析失败：说明试过哪些源，并给一键换源重试 */}
