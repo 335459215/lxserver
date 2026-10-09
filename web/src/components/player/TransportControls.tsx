@@ -12,6 +12,7 @@ function ProgressBar({
   disabled,
   className,
   ariaLabel = '播放进度',
+  showPreview = false,
 }: {
   value: number
   max: number
@@ -19,6 +20,9 @@ function ProgressBar({
   disabled?: boolean
   className?: string
   ariaLabel?: string
+  /** 是否在轨道上方显示 hover/拖动的时间浮层。
+   *  紧凑的底部播放栏放不下（会压到传输键），故只在全屏播放页开。 */
+  showPreview?: boolean
 }) {
   const ref = React.useRef<HTMLDivElement | null>(null)
   const [dragging, setDragging] = React.useState(false)
@@ -81,8 +85,24 @@ function ProgressBar({
         else if (e.key === 'ArrowLeft') onSeek(Math.max(value - 5, 0))
       }}
     >
-      {/* 轨道 */}
-      <span className="relative block h-1 w-full rounded-full bg-panel2 transition-[height] group-hover:h-1.5">
+      {/* 时间浮层：hover 或拖动时跟随指针，拖动中常显 */}
+      {showPreview && playable && hoverPct != null && (
+        <span
+          className="pointer-events-none absolute bottom-full mb-1.5 -translate-x-1/2 rounded-md bg-ink px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow-pop"
+          style={{ left: `${hoverPct}%` }}
+          aria-hidden
+        >
+          {formatTime(((hoverRatio ?? 0) * max) || 0)}
+        </span>
+      )}
+
+      {/* 轨道：hover 加粗、拖动再粗一档（YouTube Music 式） */}
+      <span
+        className={cn(
+          'relative block w-full rounded-full bg-panel2 transition-[height]',
+          dragging ? 'h-2' : 'h-1 group-hover:h-1.5',
+        )}
+      >
         {/* hover 预览 */}
         {hoverPct != null && playable && (
           <span
@@ -233,8 +253,15 @@ export function TransportControls({
   )
 }
 
-/** 时间 + 进度行（桌面播放栏与全屏播放页共用） */
-export function ProgressRow({ className }: { className?: string }) {
+/** 时间 + 进度行（桌面播放栏与全屏播放页共用）。
+ *  showPreview 打开 hover/拖动时间浮层——只在轨道上方有空间的全屏页开。 */
+export function ProgressRow({
+  className,
+  showPreview = false,
+}: {
+  className?: string
+  showPreview?: boolean
+}) {
   const { position, duration, seek, status } = usePlayer()
   const disabled = status === 'idle' || status === 'error'
   return (
@@ -242,7 +269,14 @@ export function ProgressRow({ className }: { className?: string }) {
       <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums text-faint">
         {formatTime(position)}
       </span>
-      <ProgressBar value={position} max={duration} onSeek={seek} disabled={disabled} className="flex-1" />
+      <ProgressBar
+        value={position}
+        max={duration}
+        onSeek={seek}
+        disabled={disabled}
+        className="flex-1"
+        showPreview={showPreview}
+      />
       <span className="w-10 shrink-0 font-mono text-[11px] tabular-nums text-faint">
         {formatTime(duration)}
       </span>

@@ -141,7 +141,7 @@ export default function NowPlayingPage() {
         </div>
 
         <div className="flex w-full flex-col items-center gap-4">
-          <ProgressRow />
+          <ProgressRow showPreview />
           <TransportControls size="lg" showMode />
         </div>
 
