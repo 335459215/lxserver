@@ -189,7 +189,7 @@ export default function Lyrics({ className }: LyricsProps) {
                 aria-current={isActive ? 'true' : undefined}
                 title="点击跳转到这一句"
                 className={cn(
-                  'block w-full rounded-xl px-3 py-2 text-left text-sm leading-7 transition-colors',
+                  'block w-full rounded-xl px-4 py-2 text-center text-[15px] leading-8 transition-colors',
                   isActive
                     ? 'font-medium text-accent'
                     : 'text-faint hover:bg-panel2/70 hover:text-dim',
