@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
   FileMusic,
@@ -7,16 +7,20 @@ import {
   ListMusic,
   LogOut,
   Menu,
+  PanelRightClose,
+  PanelRightOpen,
   Search,
   Settings,
   Trophy,
   X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
 import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
+import { cn } from '@/lib/utils'
 import PlayerBar from '@/components/player/PlayerBar'
+import NowPlayingPanel from '@/components/player/NowPlayingPanel'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
 import SettingsShell from '@/pages/settings/SettingsShell'
@@ -106,12 +110,34 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
-/** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动）+ 底部播放栏 */
+/** 右侧「正在播放」面板的开关是否持久化（默认开；只在 ≥1280px 真正渲染） */
+const STORAGE_PANEL = 'lx.panel.nowPlaying'
+
+function restorePanel(): boolean {
+  if (typeof localStorage === 'undefined') return true
+  const raw = localStorage.getItem(STORAGE_PANEL)
+  return raw === null ? true : raw === '1'
+}
+
+/** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动）+ 主内容 + 右侧「正在播放」+ 底部播放栏 */
 function Shell() {
   const { auth, refresh } = useAuth()
   const player = usePlayer()
   const navigate = useNavigate()
+  const { pathname } = useLocation()
   const [drawer, setDrawer] = useState(false)
+  const [panel, setPanel] = useState(restorePanel)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_PANEL, panel ? '1' : '0')
+    } catch {
+      // 隐私模式
+    }
+  }, [panel])
+
+  // 全屏播放页本身就是播放器，再挂右侧面板是重复，还会把内容挤窄
+  const showPanel = panel && pathname !== '/now-playing'
 
   return (
     <div className="min-h-screen">
@@ -131,6 +157,16 @@ function Shell() {
             <span className="hidden text-xs text-faint sm:inline">音乐</span>
           </NavLink>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPanel((v) => !v)}
+              aria-pressed={panel}
+              aria-label="正在播放面板"
+              title={panel ? '收起正在播放面板' : '展开正在播放面板'}
+              className="hidden size-8 items-center justify-center rounded-lg text-dim transition-colors hover:bg-panel2 hover:text-ink xl:flex"
+            >
+              {panel ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+            </button>
             <RoleBadge />
             {(auth.admin.ok || auth.user.ok) && (
               <button
@@ -152,7 +188,12 @@ function Shell() {
       </header>
 
       {/* 内容区：底部给常驻播放栏让位（--playerbar-h 与 PlayerBar 同源） */}
-      <div className="mx-auto flex w-full max-w-6xl pb-[var(--playerbar-h)]">
+      <div
+        className={cn(
+          'mx-auto flex w-full pb-[var(--playerbar-h)]',
+          showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
+        )}
+      >
         {/* 桌面侧边栏 */}
         <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
           <NavItems />
@@ -190,6 +231,9 @@ function Shell() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
+
+        {/* 右侧「正在播放」常驻面板（≥1280px；全屏播放页不重复挂） */}
+        {showPanel && <NowPlayingPanel onClose={() => setPanel(false)} />}
       </div>
 
       <PlayerBar />

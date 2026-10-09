@@ -1,12 +1,15 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
-  // 统一断点（阶段 A 决策）：全项目只用 sm/md/lg 三档，消除旧版 1024/1025/CSS 三处不一致
+  // 统一断点（阶段 A 决策）：断点只在配置里定义一次，消除旧版 1024/1025/CSS 三处不一致。
+  // xl(1280) 是 v2.14 为「右侧正在播放面板」补的——面板宽 320px，加上左侧栏 224px，
+  // 低于 1280 会把主内容挤扁，所以这个档位是必要的，不是随手加的。
   theme: {
     screens: {
       sm: '640px',
       md: '768px',
       lg: '1024px',
+      xl: '1280px',
     },
     extend: {
       // 明亮清爽语义色：全部映射 index.css 的 CSS 变量，组件层不写死色值

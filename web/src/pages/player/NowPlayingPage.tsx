@@ -1,57 +1,13 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { ListMusic, Music2, Search, TriangleAlert } from 'lucide-react'
+import { Music2, Search, TriangleAlert } from 'lucide-react'
 import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui'
-import { coverUrl, formatTime, intervalToSeconds, sameSong, sourceLabel } from '@/lib/music'
+import { coverUrl, formatTime, intervalToSeconds, sourceLabel } from '@/lib/music'
 import { useCoverAccent } from '@/lib/coverColor'
 import { usePlayer } from '@/lib/player'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 import Lyrics from '@/components/player/Lyrics'
-import { cn } from '@/lib/utils'
-
-/** 播放队列（全屏播放页与歌词并列的第二页签） */
-function QueuePanel() {
-  const { queue, index, current, playAt } = usePlayer()
-
-  if (queue.length === 0) {
-    return (
-      <div className="flex h-full min-h-64 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-line bg-panel/60 p-8 text-center">
-        <ListMusic className="size-6 text-faint" />
-        <p className="text-sm text-dim">播放队列是空的</p>
-        <p className="text-xs text-faint">从搜索或歌单里点一首歌就会进来。</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="h-full overflow-y-auto rounded-2xl border border-line bg-panel p-2">
-      <ul className="space-y-0.5">
-        {queue.map((song, i) => {
-          const active = i === index || sameSong(song, current)
-          return (
-            <li key={`${song.source}-${song.songmid ?? song.id ?? i}`}>
-              <button
-                type="button"
-                onClick={() => playAt(i)}
-                aria-current={active ? 'true' : undefined}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors',
-                  active ? 'bg-accent-soft text-accent' : 'text-dim hover:bg-panel2 hover:text-ink',
-                )}
-              >
-                <span className="w-5 shrink-0 text-center font-mono text-[10px] text-faint">{i + 1}</span>
-                <span className="min-w-0 flex-1 truncate">
-                  <span className={cn('block truncate', active && 'font-medium')}>{song.name}</span>
-                  <span className="block truncate text-[11px] text-faint">{song.singer}</span>
-                </span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
+import QueueList from '@/components/player/QueueList'
 
 /** 全屏播放页（/now-playing）：大封面 + 传输控制 + 歌词/队列。
  *  - 歌词：自动滚动当前行、点行跳转、逐字卡拉 OK 高亮（Lyrics.tsx）
@@ -185,7 +141,7 @@ export default function NowPlayingPage() {
           <Lyrics className="h-full" />
         </TabsContent>
         <TabsContent value="queue" className="min-h-0 flex-1">
-          <QueuePanel />
+          <QueueList />
         </TabsContent>
       </Tabs>
     </div>
