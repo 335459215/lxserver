@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Loader2, Play, Search, TriangleAlert } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Loader2, Play, Search, TriangleAlert, UserRound } from 'lucide-react'
 import {
   Button,
   Input,
@@ -12,11 +12,19 @@ import {
   Stack,
   useToast,
 } from '@/components/ui'
-import { MUSIC_SOURCES, searchMusic, sourceLabel, type Song } from '@/lib/music'
+import { MUSIC_SOURCES, SOURCE_LABEL, searchMusic, sourceLabel, type Song } from '@/lib/music'
+import {
+  ARTIST_SOURCES,
+  searchSingers,
+  supportsArtistPages,
+  type SingerHit,
+} from '@/lib/discover'
 import { usePlayer } from '@/lib/player'
 import SongList from '@/components/player/SongList'
 
 type Phase = 'idle' | 'loading' | 'done' | 'error'
+/** 搜索类型：歌曲（默认）或歌手。歌手类型只有 wy/tx 支持，见 discover.ts 的说明。 */
+type Kind = 'song' | 'singer'
 
 export default function SearchPage() {
   const player = usePlayer()
@@ -24,8 +32,10 @@ export default function SearchPage() {
 
   const [keyword, setKeyword] = React.useState('')
   const [source, setSource] = React.useState<string>('kw')
+  const [kind, setKind] = React.useState<Kind>('song')
   const [phase, setPhase] = React.useState<Phase>('idle')
   const [results, setResults] = React.useState<Song[]>([])
+  const [singers, setSingers] = React.useState<SingerHit[]>([])
   const [error, setError] = React.useState<string | null>(null)
   /** 上一次真正发起搜索的关键词，用于结果区标题与重试 */
   const [searchedFor, setSearchedFor] = React.useState('')
@@ -33,7 +43,7 @@ export default function SearchPage() {
   const abortRef = React.useRef<AbortController | null>(null)
   React.useEffect(() => () => abortRef.current?.abort(), [])
 
-  const runSearch = React.useCallback(async (name: string, src: string) => {
+  const runSearch = React.useCallback(async (name: string, src: string, k: Kind) => {
     const q = name.trim()
     if (!q) return
 
@@ -46,31 +56,46 @@ export default function SearchPage() {
     setSearchedFor(q)
 
     try {
-      const list = await searchMusic({ name: q, source: src, pages: 1, signal: ac.signal })
-      if (ac.signal.aborted) return
-      setResults(list)
+      if (k === 'singer') {
+        // 平台不支持时不必发请求（服务端会 500），直接落到空结果由 UI 给换平台提示
+        const hits = supportsArtistPages(src) ? await searchSingers({ name: q, source: src, signal: ac.signal }) : []
+        if (ac.signal.aborted) return
+        setSingers(hits)
+        setResults([])
+      } else {
+        const list = await searchMusic({ name: q, source: src, pages: 1, signal: ac.signal })
+        if (ac.signal.aborted) return
+        setResults(list)
+        setSingers([])
+      }
       setPhase('done')
     } catch (e) {
       if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
       setResults([])
+      setSingers([])
       setError(e instanceof Error ? e.message : '搜索失败')
       setPhase('error')
     }
   }, [])
 
-  /** 支持 /search?q=xxx&source=yy —— 首页搜索框与热搜标签直接跳过来即可出结果，
-   *  不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。 */
+  /** 支持 /search?q=xxx&source=yy&type=singer —— 首页搜索框、热搜标签、列表里的歌手/专辑链接
+   *  都会带参数跳过来，不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。 */
   const [params] = useSearchParams()
   const search = params.toString()
   React.useEffect(() => {
     const p = new URLSearchParams(search)
     const q = p.get('q')
     if (!q) return
-    // 这是「响应 URL 变化」（首页搜索框 / 热搜跳转），不是渲染期派生状态；
+    const k: Kind = p.get('type') === 'singer' ? 'singer' : 'song'
+    const src = p.get('source') ?? 'kw'
+    // 这是「响应 URL 变化」（首页搜索框 / 热搜 / 列表链接跳转），不是渲染期派生状态；
     // 规则静态看不出差别，与 lib/useLists.ts 的挂载取数同一处理方式
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setKind(k)
+    setSource(src)
     setKeyword(q)
-    void runSearch(q, p.get('source') ?? 'kw')
+    /* eslint-enable react-hooks/set-state-in-effect */
+    void runSearch(q, src, k)
   }, [search, runSearch])
 
   const playAll = React.useCallback(() => {
@@ -78,6 +103,13 @@ export default function SearchPage() {
     player.playQueue(results, 0)
     toast({ title: `开始播放全部 ${results.length} 首`, description: searchedFor })
   }, [player, results, searchedFor, toast])
+
+  /** 切换搜索类型：立刻用当前关键词重搜，避免出现「切换了但结果还是旧的」 */
+  const switchKind = (k: Kind) => {
+    setKind(k)
+    const q = keyword.trim() || searchedFor
+    if (q) void runSearch(q, source, k)
+  }
 
   return (
     <Stack gap={5} className="w-full rise">
@@ -90,18 +122,49 @@ export default function SearchPage() {
         className="flex flex-wrap gap-2"
         onSubmit={(e) => {
           e.preventDefault()
-          void runSearch(keyword, source)
+          void runSearch(keyword, source, kind)
         }}
       >
+        <div className="flex rounded-lg border border-line p-0.5" role="group" aria-label="搜索类型">
+          {(
+            [
+              ['song', '歌曲'],
+              ['singer', '歌手'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={kind === key}
+              onClick={() => switchKind(key)}
+              className={
+                kind === key
+                  ? 'rounded-md bg-accent px-3 py-1.5 text-xs text-white'
+                  : 'rounded-md px-3 py-1.5 text-xs text-dim transition-colors hover:text-ink'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <Input
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
-          placeholder="搜索歌曲、歌手、专辑…"
+          placeholder={kind === 'singer' ? '搜索歌手名…' : '搜索歌曲、专辑…'}
           aria-label="搜索关键词"
           autoComplete="off"
           className="min-w-40 flex-1"
         />
-        <Select value={source} onValueChange={setSource}>
+        <Select
+          value={source}
+          onValueChange={(v) => {
+            // Radix Select 在「受控值找不到已挂载的 Item」时会回调空串 ——
+            // SelectItem 在弹层里，未展开时并不挂载，所以深链 `/search?source=wy`
+            // 之后这里会把 source 清成 ''（页面标题、平台选择器、歌手/专辑链接全跟着错）。
+            // 空串一律忽略。
+            if (v) setSource(v)
+          }}
+        >
           <SelectTrigger className="w-28" aria-label="音源平台">
             <SelectValue />
           </SelectTrigger>
@@ -118,6 +181,34 @@ export default function SearchPage() {
           搜索
         </Button>
       </form>
+
+      {kind === 'singer' && !supportsArtistPages(source) && (
+        <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-6 text-center">
+          <span className="mx-auto flex size-9 items-center justify-center rounded-xl bg-panel2 text-faint">
+            <UserRound className="size-4" />
+          </span>
+          <p className="mt-2 text-sm font-medium text-ink">「{sourceLabel(source)}」不支持按歌手搜索</p>
+          <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-dim">
+            目前只有网易云与 QQ音乐 提供歌手数据，换一个平台即可。
+          </p>
+          <div className="mt-3 flex justify-center gap-2">
+            {ARTIST_SOURCES.map((s) => (
+              <Button
+                key={s}
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSource(s)
+                  const q = keyword.trim() || searchedFor
+                  if (q) void runSearch(q, s, 'singer')
+                }}
+              >
+                换到{SOURCE_LABEL[s]}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {phase === 'idle' && (
         <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
@@ -153,20 +244,74 @@ export default function SearchPage() {
           </span>
           <p className="mt-3 text-sm font-medium text-ink">搜索失败</p>
           <p className="mx-auto mt-1 max-w-md break-words text-xs leading-relaxed text-dim">{error}</p>
-          <Button variant="outline" size="sm" className="mt-4" onClick={() => void runSearch(searchedFor, source)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-4"
+            onClick={() => void runSearch(searchedFor, source, kind)}
+          >
             重试
           </Button>
         </div>
       )}
 
-      {phase === 'done' && results.length === 0 && (
+      {phase === 'done' && kind === 'song' && results.length === 0 && (
         <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
           <p className="text-sm font-medium text-ink">没有找到「{searchedFor}」</p>
           <p className="mt-1 text-xs text-dim">换个关键词，或换一个音源平台再试。</p>
         </div>
       )}
 
-      {phase === 'done' && results.length > 0 && (
+      {phase === 'done' && kind === 'singer' && supportsArtistPages(source) && singers.length === 0 && (
+        <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
+          <p className="text-sm font-medium text-ink">没有找到歌手「{searchedFor}」</p>
+          <p className="mt-1 text-xs text-dim">试试只填名字（不要带「、」连接的合唱者），或换一个平台。</p>
+        </div>
+      )}
+
+      {/* 歌手结果：卡片网格，点进歌手详情页 */}
+      {phase === 'done' && kind === 'singer' && singers.length > 0 && (
+        <section>
+          <p className="mb-2 text-sm text-dim">
+            「{searchedFor}」· 歌手 · {sourceLabel(source)} · 共 {singers.length} 位
+          </p>
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {singers.map((s) => (
+              <li key={String(s.id)}>
+                <Link
+                  to={`/artist/${encodeURIComponent(String(s.id))}?source=${encodeURIComponent(source)}`}
+                  className="group block rounded-2xl p-3 text-center transition-colors hover:bg-panel2"
+                >
+                  <span className="mx-auto block size-20 overflow-hidden rounded-full border border-line bg-panel2 sm:size-24">
+                    {s.picUrl ? (
+                      <img
+                        src={s.picUrl}
+                        alt=""
+                        loading="lazy"
+                        className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                      />
+                    ) : (
+                      <span className="flex size-full items-center justify-center text-faint">
+                        <UserRound className="size-7" />
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-2 block truncate text-sm text-ink" title={s.name}>
+                    {s.name}
+                  </span>
+                  <span className="block truncate text-xs text-faint">
+                    {[s.alias?.[0], s.albumSize ? `${s.albumSize} 张专辑` : null]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {phase === 'done' && kind === 'song' && results.length > 0 && (
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
             <p className="text-sm text-dim">

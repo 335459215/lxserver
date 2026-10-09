@@ -30,6 +30,9 @@ import PlaylistPage from '@/pages/player/PlaylistPage'
 import PlaylistDetailPage from '@/pages/player/PlaylistDetailPage'
 import NowPlayingPage from '@/pages/player/NowPlayingPage'
 import LeaderboardPage from '@/pages/player/LeaderboardPage'
+import ArtistPage from '@/pages/player/ArtistPage'
+import ArtistNamePage from '@/pages/player/ArtistNamePage'
+import AlbumPage from '@/pages/player/AlbumPage'
 import { LocalMusicPage } from '@/pages/player/PlannedPages'
 import FavoritesPage from '@/pages/player/FavoritesPage'
 
@@ -222,6 +225,9 @@ function Shell() {
             <Route path="/playlist" element={<PlaylistPage />} />
             <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
             <Route path="/leaderboard" element={<LeaderboardPage />} />
+            <Route path="/artist/:id" element={<ArtistPage />} />
+            <Route path="/artist-name/:name" element={<ArtistNamePage />} />
+            <Route path="/album/:id" element={<AlbumPage />} />
             <Route path="/favorites" element={<FavoritesPage />} />
             <Route path="/local" element={<LocalMusicPage />} />
             <Route path="/now-playing" element={<NowPlayingPage />} />
