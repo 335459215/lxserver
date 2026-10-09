@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import {
   FileMusic,
   Heart,
@@ -14,12 +15,12 @@ import {
   Trophy,
   X,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
 import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import PlayerBar from '@/components/player/PlayerBar'
+import MobileTabBar from '@/components/player/MobileTabBar'
 import NowPlayingPanel from '@/components/player/NowPlayingPanel'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
@@ -190,10 +191,12 @@ function Shell() {
         </div>
       </header>
 
-      {/* 内容区：底部给常驻播放栏让位（--playerbar-h 与 PlayerBar 同源） */}
+      {/* 内容区：底部给常驻播放栏让位。
+          桌面是 PlayerBar（--playerbar-h），移动端是 MobileTabBar（--mobile-tabbar-h，含迷你播放条），
+          两者在各自断点下非零、另一断点为 0，所以这里一条 pb- 就够，不用写两个媒体查询。 */}
       <div
         className={cn(
-          'mx-auto flex w-full pb-[var(--playerbar-h)]',
+          'mx-auto flex w-full pb-[var(--mobile-tabbar-h)] lg:pb-[var(--playerbar-h)]',
           showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
         )}
       >
@@ -243,6 +246,7 @@ function Shell() {
       </div>
 
       <PlayerBar />
+      <MobileTabBar />
     </div>
   )
 }

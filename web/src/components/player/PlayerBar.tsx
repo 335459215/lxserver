@@ -1,18 +1,18 @@
 import { Link } from 'react-router-dom'
 import { ListMusic, Maximize2, Music2, Volume2, VolumeX } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { coverUrl, intervalToSeconds } from '@/lib/music'
+import { coverUrl } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 
-/** 音量条（含静音切换）：桌面显示，移动端交给系统音量 */
+/** 音量条（含静音切换） */
 function VolumeControl() {
   const { volume, muted, setVolume, toggleMute } = usePlayer()
   const effective = muted ? 0 : volume
   const Icon = muted || volume === 0 ? VolumeX : Volume2
 
   return (
-    <div className="hidden items-center gap-1.5 md:flex">
+    <div className="flex items-center gap-1.5">
       <button
         type="button"
         onClick={toggleMute}
@@ -40,7 +40,7 @@ function VolumeControl() {
 }
 
 /** 现正播放曲目的封面块（空态显示占位图标） */
-function CoverThumb() {
+export function CoverThumb() {
   const { current } = usePlayer()
   const cover = coverUrl(current)
 
@@ -61,14 +61,14 @@ function CoverThumb() {
   )
 }
 
-/** 底部常驻播放栏。
+/** 底部常驻播放栏（**仅桌面 ≥1024px**）。
+ *
+ *  移动端的「播放」不在这条栏里：它被嵌进了 MobileTabBar（Tab 栏上方的迷你播放条），
+ *  因为手机上寸土寸金，与其叠两条固定栏，不如让「导航 + 播放」共享一块稳定的拇指区。
  *  空态：左区即搜索入口；有曲目：左区变全屏播放页入口，中区显示真实进度与控制。 */
 export default function PlayerBar() {
-  const { current, status, duration, position, resolvedQuality, sourceName, error, queue } =
-    usePlayer()
+  const { current, status, resolvedQuality, sourceName, error, queue } = usePlayer()
 
-  // 时长：优先用媒体元素的真实时长，元数据未到时回落到 interval
-  const total = duration > 0 ? duration : intervalToSeconds(current?.interval)
   const subtitle = current
     ? [current.singer, sourceName ?? resolvedQuality ?? null].filter(Boolean).join(' · ')
     : ''
@@ -77,7 +77,7 @@ export default function PlayerBar() {
     <div
       role="region"
       aria-label="播放栏"
-      className="fixed inset-x-0 bottom-0 z-40 h-[var(--playerbar-h)] border-t border-line bg-panel/95 backdrop-blur"
+      className="fixed inset-x-0 bottom-0 z-40 hidden h-[var(--playerbar-h)] border-t border-line bg-panel/95 backdrop-blur lg:block"
     >
       <div className="mx-auto flex h-full w-full max-w-6xl items-center gap-3 px-4 md:gap-4 md:px-6">
         {/* 左：当前曲目（空态 → 搜索入口；有曲目 → 全屏播放页入口） */}
@@ -97,23 +97,20 @@ export default function PlayerBar() {
           </span>
         </Link>
 
-        {/* 中：播放控制 + 进度（桌面；含随机/循环） */}
-        <div className="hidden min-w-0 flex-1 flex-col items-center gap-1 md:flex">
+        {/* 中：播放控制 + 进度（含随机/循环） */}
+        <div className="flex min-w-0 flex-1 flex-col items-center gap-1">
           <TransportControls showMode />
           <ProgressRow className="max-w-md" />
         </div>
 
-        {/* 右：播放控制（移动）/ 音量 / 队列 / 展开播放页 */}
+        {/* 右：音量 / 队列 / 展开播放页 */}
         <div className="flex shrink-0 items-center justify-end gap-1.5 md:gap-2">
-          <div className="md:hidden">
-            <TransportControls />
-          </div>
           <VolumeControl />
           <Link
             to="/playlist"
             aria-label="播放队列"
             title={queue.length ? `播放队列（${queue.length} 首）` : '播放队列'}
-            className="relative hidden size-8 items-center justify-center rounded-lg text-dim transition-colors hover:bg-panel2 hover:text-ink md:flex"
+            className="relative flex size-8 items-center justify-center rounded-lg text-dim transition-colors hover:bg-panel2 hover:text-ink"
           >
             <ListMusic className="size-4" />
             {queue.length > 0 && (
@@ -133,13 +130,6 @@ export default function PlayerBar() {
         </div>
       </div>
 
-      {/* 移动端：极简进度条贴顶，不占额外高度 */}
-      <div className="absolute inset-x-0 top-0 h-0.5 bg-panel2 md:hidden" aria-hidden>
-        <span
-          className="block h-full bg-accent"
-          style={{ width: `${total > 0 ? Math.min(100, (position / total) * 100) : 0}%` }}
-        />
-      </div>
       {status === 'loading' && (
         <span className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden" aria-hidden>
           <span className="block h-full w-1/3 animate-pulse bg-accent/60" />

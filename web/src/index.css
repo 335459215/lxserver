@@ -68,6 +68,11 @@
   /* 底部常驻播放栏高度：Shell 的内容避让/侧栏 sticky 高度与 PlayerBar 共用同一来源 */
   --playerbar-h: 4rem;
 
+  /* 底部 Tab 栏高度（含迷你播放条 2 层）：只在 <1024px 生效，Shell 的内容避让与
+     MobileTabBar 共用。绝对值不用精确到像素——它只用于给内容区留白，
+     真正的定位是 fixed 贴文档底，不依赖这个值。 */
+  --mobile-tabbar-h: 7.25rem;
+
   /* ===== 通道三元组 =====
      Tailwind v3 只能对「R G B」三元组形式合成透明度。若把颜色直接定义成不透明的
      `var(--x)`，那么 `bg-panel/60`、`ring-accent/40`、`border-accent/40`、`bg-danger/5`
@@ -92,6 +97,13 @@
 @media (min-width: 768px) {
   :root {
     --playerbar-h: 5rem;
+  }
+}
+
+/* ≥1024px 走桌面 PlayerBar，移动 Tab 栏不再占位 */
+@media (min-width: 1024px) {
+  :root {
+    --mobile-tabbar-h: 0rem;
   }
 }
 
