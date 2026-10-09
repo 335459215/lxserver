@@ -14,15 +14,40 @@ export interface Rgb {
   b: number
 }
 
-/** 由主色派生的强调色令牌（accent / hover / soft / glow） */
+/** 由主色派生的强调色令牌 */
 export interface AccentTokens {
   accent: string
   hover: string
   soft: string
-  glow: string
 }
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+
+/** 已知读不了像素的图床主机名（本次会话内负缓存）。
+ *  这些图床不发 CORS 头，`crossOrigin` 加载必然失败并往控制台刷 CORS 报错；
+ *  记住它就不必为每首歌重复试一遍。**只有确认是 CORS 问题才记**（见 isReachable）。 */
+const noCorsHosts = new Set<string>()
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url, location.href).host
+  } catch {
+    return ''
+  }
+}
+
+/** 用 no-cors 探一次可达性：能拿到 opaque 响应说明网络没问题，
+ *  那 `crossOrigin` 加载失败就只能是图床没给 CORS 头。
+ *  `force-cache` 让这次探测复用 `<img>` 已经拉下来的缓存，通常不产生额外请求。
+ *  这样「偶发网络抖动」就不会被误判成 CORS 而把整个图床拉黑。 */
+async function isReachable(url: string): Promise<boolean> {
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'force-cache' })
+    return true
+  } catch {
+    return false
+  }
+}
 
 function loadImage(url: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
@@ -43,8 +68,14 @@ function loadImage(url: string): Promise<HTMLImageElement | null> {
 export async function extractCoverColor(url: string): Promise<Rgb | null> {
   if (typeof document === 'undefined' || !url) return null
 
+  const host = hostOf(url)
+  if (host && noCorsHosts.has(host)) return null
+
   const img = await loadImage(url)
-  if (!img) return null
+  if (!img) {
+    if (host && (await isReachable(url))) noCorsHosts.add(host)
+    return null
+  }
 
   const size = 24
   const canvas = document.createElement('canvas')
@@ -63,7 +94,8 @@ export async function extractCoverColor(url: string): Promise<Rgb | null> {
   try {
     data = ctx.getImageData(0, 0, size, size).data
   } catch {
-    // 画布被跨域图片污染（图床未给 CORS 头）
+    // 画布被跨域图片污染（理论上 crossOrigin 已挡住，这里兜底）
+    if (host) noCorsHosts.add(host)
     return null
   }
 
@@ -149,7 +181,6 @@ export function accentTokens(rgb: Rgb): AccentTokens {
     hover: hsl(h, sAccent, clamp(l - 0.08, 0.26, 0.38)),
     // 选中底：同色相但极浅，保证卡片上的深色文字仍可读
     soft: hsl(h, clamp(s * 0.72, 0.32, 0.68), 0.955),
-    glow: `rgb(${rgb.r} ${rgb.g} ${rgb.b} / 0.32)`,
   }
 }
 
