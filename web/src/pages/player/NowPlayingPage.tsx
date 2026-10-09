@@ -19,7 +19,9 @@ export default function NowPlayingPage() {
   const cover = coverUrl(current)
   const tokens = useCoverAccent(cover)
 
-  // 封面取色只在「本页 + 本曲」生效：变量挂在页面根节点上，离开本页即恢复默认靛蓝
+  // 封面取色只在「本页 + 本曲」生效：变量挂在页面根节点上，离开本页即恢复默认靛蓝。
+  // `--accent*-rgb` 必须一起写：Tailwind 的 `bg-accent/60` / `ring-accent/40` 靠三元组合成透明度，
+  // 只写 hsl 形式会让这些半透明类留在这首歌的取色上不跟随。
   const accentStyle = React.useMemo(
     () =>
       tokens
@@ -27,6 +29,9 @@ export default function NowPlayingPage() {
             '--accent': tokens.accent,
             '--accent-hover': tokens.hover,
             '--accent-soft': tokens.soft,
+            '--accent-rgb': tokens.accentRgb,
+            '--accent-hover-rgb': tokens.hoverRgb,
+            '--accent-soft-rgb': tokens.softRgb,
           } as React.CSSProperties)
         : undefined,
     [tokens],

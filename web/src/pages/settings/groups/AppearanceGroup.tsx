@@ -1,45 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Check } from 'lucide-react'
 import { Stack, useToast } from '@/components/ui'
+import { ACCENT_COLORS, applyAccent, saveAccent, savedAccent, type AccentColor } from '@/lib/accent'
 
 /** 外观组：客户端偏好（localStorage，不走后端 API）。
- * 当前实现：强调色选择器（改 --accent CSS 变量，全站即时生效）。 */
-const ACCENT_COLORS = [
-  { name: '靛蓝', value: '#4f46e5', hover: '#4338ca', soft: '#eef2ff' },
-  { name: '翡翠', value: '#059669', hover: '#047857', soft: '#ecfdf5' },
-  { name: '玫红', value: '#e11d48', hover: '#be123c', soft: '#fff1f2' },
-  { name: '琥珀', value: '#d97706', hover: '#b45309', soft: '#fffbeb' },
-  { name: '天蓝', value: '#0284c7', hover: '#0369a1', soft: '#f0f9ff' },
-  { name: '紫罗兰', value: '#7c3aed', hover: '#6d28d9', soft: '#f5f3ff' },
-] as const
-
-const STORAGE_KEY = 'lx.appearance.accent'
-
-function applyAccent(color: typeof ACCENT_COLORS[number]) {
-  const root = document.documentElement
-  root.style.setProperty('--accent', color.value)
-  root.style.setProperty('--accent-hover', color.hover)
-  root.style.setProperty('--accent-soft', color.soft)
-}
-
-function loadAccent(): string {
-  return localStorage.getItem(STORAGE_KEY) || ACCENT_COLORS[0].value
-}
+ * 当前实现：强调色选择器（改 --accent / --accent-rgb，全站即时生效）。
+ * 调色板与应用逻辑在 lib/accent.ts —— 应用入口也用它来恢复已保存的强调色。 */
 
 export default function AppearanceGroup() {
   const { toast } = useToast()
-  const [current, setCurrent] = useState(loadAccent())
+  const [current, setCurrent] = useState(() => savedAccent()?.value ?? ACCENT_COLORS[0].value)
 
-  // 初始加载时恢复保存的强调色
-  useEffect(() => {
-    const saved = ACCENT_COLORS.find((c) => c.value === current)
-    if (saved) applyAccent(saved)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const pick = (color: typeof ACCENT_COLORS[number]) => {
+  const pick = (color: AccentColor) => {
     setCurrent(color.value)
     applyAccent(color)
-    localStorage.setItem(STORAGE_KEY, color.value)
+    saveAccent(color)
     toast({ title: `强调色已切换`, description: color.name })
   }
 

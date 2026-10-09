@@ -1,7 +1,11 @@
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
+import { initAccent } from '@/lib/accent'
 import './index.css'
+
+// 恢复用户保存的强调色（localStorage）。必须在首帧前执行，否则会先闪一下默认靛蓝。
+initAccent()
 
 // 新前端挂在 /app（服务端 SPA 回退已就绪），basename 与之一致。
 //

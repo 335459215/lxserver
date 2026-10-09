@@ -1,4 +1,12 @@
 /** @type {import('tailwindcss').Config} */
+
+/** 语义色工厂：见下方 colors 处的说明。
+ *  name 是 CSS 变量的基名（如 'accent' → --accent / --accent-rgb）。 */
+const solidOrAlpha = (name) => ({ opacityValue }) =>
+  opacityValue === undefined || opacityValue === null
+    ? `var(--${name})`
+    : `rgb(var(--${name}-rgb) / ${opacityValue})`
+
 module.exports = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   // 统一断点（阶段 A 决策）：断点只在配置里定义一次，消除旧版 1024/1025/CSS 三处不一致。
@@ -12,21 +20,28 @@ module.exports = {
       xl: '1280px',
     },
     extend: {
-      // 明亮清爽语义色：全部映射 index.css 的 CSS 变量，组件层不写死色值
+      // 明亮清爽语义色：全部映射 index.css 的 CSS 变量，组件层不写死色值。
+      //
+      // 为什么是函数而不是字符串：Tailwind v3 只能对「R G B 通道三元组」合成透明度。
+      // 直接把颜色写成 `var(--accent)`（不透明值）时，`bg-accent/60`、`ring-accent/40`
+      // 这类带 alpha 的类名会**静默不生成** —— 本项目曾因此让全部半透明面板、
+      // hover 强调边框、focus ring 一起失效（产物 CSS 里查无此规则，无任何报错）。
+      // 故：不带 alpha 时仍返回 `var(--x)`（保住 @property 的封面取色渐变），
+      // 带 alpha 时才切到三元组。三元组定义在 index.css，与颜色值成对出现。
       colors: {
-        bg: 'var(--bg)',
-        panel: 'var(--panel)',
-        panel2: 'var(--panel-2)',
-        line: 'var(--line)',
-        'line-strong': 'var(--line-strong)',
-        ink: 'var(--ink)',
-        dim: 'var(--dim)',
-        faint: 'var(--faint)',
-        accent: 'var(--accent)',
-        'accent-hover': 'var(--accent-hover)',
-        'accent-soft': 'var(--accent-soft)',
-        ok: 'var(--ok)',
-        danger: 'var(--danger)',
+        bg: solidOrAlpha('bg'),
+        panel: solidOrAlpha('panel'),
+        panel2: solidOrAlpha('panel-2'),
+        line: solidOrAlpha('line'),
+        'line-strong': solidOrAlpha('line-strong'),
+        ink: solidOrAlpha('ink'),
+        dim: solidOrAlpha('dim'),
+        faint: solidOrAlpha('faint'),
+        accent: solidOrAlpha('accent'),
+        'accent-hover': solidOrAlpha('accent-hover'),
+        'accent-soft': solidOrAlpha('accent-soft'),
+        ok: solidOrAlpha('ok'),
+        danger: solidOrAlpha('danger'),
       },
       boxShadow: {
         card: '0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.03)',

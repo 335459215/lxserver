@@ -14,11 +14,18 @@ export interface Rgb {
   b: number
 }
 
-/** 由主色派生的强调色令牌 */
+/** 由主色派生的强调色令牌。
+ *  每个颜色同时给出 `hsl()` 形式与「R G B」三元组形式：
+ *  - `accent/hover/soft` 给 `--accent*`（注册为 <color>，可做封面取色的平滑渐变）
+ *  - `*Rgb` 给 `--accent*-rgb`（Tailwind 的 `bg-accent/60`、`ring-accent/40` 等靠它合成透明度）
+ *  两者由同一组钳制后的 h/s/l 派生，不会漂移。 */
 export interface AccentTokens {
   accent: string
   hover: string
   soft: string
+  accentRgb: string
+  hoverRgb: string
+  softRgb: string
 }
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
@@ -170,17 +177,51 @@ function rgbToHsl({ r, g, b }: Rgb): [number, number, number] {
 const hsl = (h: number, s: number, l: number) =>
   `hsl(${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)`
 
+/** HSL（h 0–360，s/l 0–1）→ 「R G B」三元组字符串，供 Tailwind 合成透明度用。
+ *  与上面的 hsl() 传同一组参数即得同一颜色，两者必须成对产出。 */
+export function hslToRgbTriplet(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const hp = ((((h % 360) + 360) % 360) / 60)
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  const m = l - c / 2
+  const [r, g, b]: [number, number, number] =
+    hp < 1 ? [c, x, 0]
+    : hp < 2 ? [x, c, 0]
+    : hp < 3 ? [0, c, x]
+    : hp < 4 ? [0, x, c]
+    : hp < 5 ? [x, 0, c]
+    : [c, 0, x]
+  const to255 = (v: number) => Math.round(Math.min(255, Math.max(0, (v + m) * 255)))
+  return `${to255(r)} ${to255(g)} ${to255(b)}`
+}
+
+/** 十六进制颜色（#rgb / #rrggbb）→ 「R G B」三元组字符串。
+ *  外观设置里的预设强调色是 hex，切换时也要一并写三元组。 */
+export function hexToRgbTriplet(hex: string): string | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return null
+  let h = m[1]
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+  return `${parseInt(h.slice(0, 2), 16)} ${parseInt(h.slice(2, 4), 16)} ${parseInt(h.slice(4, 6), 16)}`
+}
+
 /** 由主色生成强调色令牌。
  *  钳制饱和度与亮度：封面可能是荧光粉/深藏蓝，直接拿来当强调色会导致
  *  白字按钮对比度不足或文字看不清 —— 统一收敛到「浅色底上可读」的区间。 */
 export function accentTokens(rgb: Rgb): AccentTokens {
   const [h, s, l] = rgbToHsl(rgb)
   const sAccent = clamp(s, 0.44, 0.8)
+  const accentL = clamp(l, 0.34, 0.46)
+  const hoverL = clamp(l - 0.08, 0.26, 0.38)
+  const softS = clamp(s * 0.72, 0.32, 0.68)
   return {
-    accent: hsl(h, sAccent, clamp(l, 0.34, 0.46)),
-    hover: hsl(h, sAccent, clamp(l - 0.08, 0.26, 0.38)),
+    accent: hsl(h, sAccent, accentL),
+    hover: hsl(h, sAccent, hoverL),
     // 选中底：同色相但极浅，保证卡片上的深色文字仍可读
-    soft: hsl(h, clamp(s * 0.72, 0.32, 0.68), 0.955),
+    soft: hsl(h, softS, 0.955),
+    accentRgb: hslToRgbTriplet(h, sAccent, accentL),
+    hoverRgb: hslToRgbTriplet(h, sAccent, hoverL),
+    softRgb: hslToRgbTriplet(h, softS, 0.955),
   }
 }
 

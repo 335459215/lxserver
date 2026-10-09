@@ -10,7 +10,12 @@
 @tailwind utilities;
 
 /* 强调色令牌注册为可过渡类型：封面取色覆盖 --accent 时能平滑渐变而不是硬切。
-   不支持 @property 的浏览器会直接跳到新值，功能不受影响。 */
+   不支持 @property 的浏览器会直接跳到新值，功能不受影响。
+
+   三元组也要注册：Tailwind 生成的无 alpha 类（如 `.text-accent`）实际产出的是
+   `rgb(var(--accent-rgb) / var(--tw-text-opacity, 1))`，走的是三元组而非 --accent。
+   若三元组不可插值，封面取色时「文字/边框是硬切、渐变条是平滑」会不一致。
+   实测 Chromium 支持 `syntax: '<number>+'` 且能逐分量插值。 */
 @property --accent {
   syntax: '<color>';
   inherits: true;
@@ -25,6 +30,21 @@
   syntax: '<color>';
   inherits: true;
   initial-value: #eef2ff;
+}
+@property --accent-rgb {
+  syntax: '<number>+';
+  inherits: true;
+  initial-value: 79 70 229;
+}
+@property --accent-hover-rgb {
+  syntax: '<number>+';
+  inherits: true;
+  initial-value: 67 56 202;
+}
+@property --accent-soft-rgb {
+  syntax: '<number>+';
+  inherits: true;
+  initial-value: 238 242 255;
 }
 
 /* ===== 设计令牌（明亮清爽版）=====
@@ -47,6 +67,26 @@
 
   /* 底部常驻播放栏高度：Shell 的内容避让/侧栏 sticky 高度与 PlayerBar 共用同一来源 */
   --playerbar-h: 4rem;
+
+  /* ===== 通道三元组 =====
+     Tailwind v3 只能对「R G B」三元组形式合成透明度。若把颜色直接定义成不透明的
+     `var(--x)`，那么 `bg-panel/60`、`ring-accent/40`、`border-accent/40`、`bg-danger/5`
+     这类带 alpha 的类名会**静默不生成**（本项目曾因此让所有半透明面板与 focus ring 失效）。
+     故这里为每个语义色补一份三元组，与上面的颜色值一一对应、必须同步修改。
+     `--accent*` 的三元组还会被封面取色/外观设置在两处运行时一并覆盖。 */
+  --bg-rgb: 250 250 250;
+  --panel-rgb: 255 255 255;
+  --panel-2-rgb: 244 244 245;
+  --line-rgb: 228 228 231;
+  --line-strong-rgb: 212 212 216;
+  --ink-rgb: 24 24 27;
+  --dim-rgb: 113 113 122;
+  --faint-rgb: 161 161 170;
+  --accent-rgb: 79 70 229;
+  --accent-hover-rgb: 67 56 202;
+  --accent-soft-rgb: 238 242 255;
+  --ok-rgb: 22 163 74;
+  --danger-rgb: 220 38 38;
 }
 
 @media (min-width: 768px) {
@@ -86,9 +126,16 @@ body {
     var(--bg);
 }
 
-/* 封面取色覆盖强调色时的平滑渐变（配合上面的 @property 注册） */
+/* 封面取色覆盖强调色时的平滑渐变（配合上面的 @property 注册）。
+   三元组要一起过渡，否则走三元组的文字/边框会硬切（见上面的说明）。 */
 .accent-fade {
-  transition: --accent 600ms ease, --accent-hover 600ms ease, --accent-soft 600ms ease;
+  transition:
+    --accent 600ms ease,
+    --accent-hover 600ms ease,
+    --accent-soft 600ms ease,
+    --accent-rgb 600ms ease,
+    --accent-hover-rgb 600ms ease,
+    --accent-soft-rgb 600ms ease;
 }
 
 /* 页面加载：一次性 staggered fade-up */
