@@ -178,6 +178,13 @@ export function sameSong(a: Song | null, b: Song | null): boolean {
   return idA != null && idB != null && String(idA) === String(idB)
 }
 
+/** 曲目去重键：平台 + songmid/id，缺失时回落「歌名|歌手」。
+ *  用于搜索分页追加时去重 —— 各平台翻页结果常出现重复条目。 */
+export function songKey(song: Song): string {
+  const id = song.songmid ?? song.id ?? song.meta?.songId
+  return id != null ? `${song.source}:${id}` : `${song.source}:${song.name}|${song.singer}`
+}
+
 /** 封面地址：各平台字段名不统一，统一兜底（歌单曲目把封面放在 meta.picUrl） */
 export function coverUrl(song?: Song | null): string | undefined {
   if (!song) return undefined

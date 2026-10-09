@@ -12,7 +12,7 @@ import {
   Stack,
   useToast,
 } from '@/components/ui'
-import { MUSIC_SOURCES, SOURCE_LABEL, searchMusic, sourceLabel, type Song } from '@/lib/music'
+import { MUSIC_SOURCES, SOURCE_LABEL, searchMusic, songKey, sourceLabel, type Song } from '@/lib/music'
 import {
   ARTIST_SOURCES,
   searchSingers,
@@ -20,11 +20,16 @@ import {
   type SingerHit,
 } from '@/lib/discover'
 import { usePlayer } from '@/lib/player'
+import { useSentinel } from '@/lib/useSentinel'
 import SongList from '@/components/player/SongList'
 
 type Phase = 'idle' | 'loading' | 'done' | 'error'
 /** 搜索类型：歌曲（默认）或歌手。歌手类型只有 wy/tx 支持，见 discover.ts 的说明。 */
 type Kind = 'song' | 'singer'
+
+/** 服务端歌曲搜索每页固定 20 条（`PAGE_SIZE`）。
+ *  返回条数 < 该值即说明已经到最后一页。 */
+const PAGE_SIZE = 20
 
 export default function SearchPage() {
   const player = usePlayer()
@@ -40,6 +45,12 @@ export default function SearchPage() {
   /** 上一次真正发起搜索的关键词，用于结果区标题与重试 */
   const [searchedFor, setSearchedFor] = React.useState('')
 
+  // ===== 分页追加 =====
+  /** 已加载到第几页（服务端页码，从 1 开始） */
+  const [page, setPage] = React.useState(1)
+  const [hasMore, setHasMore] = React.useState(false)
+  const [loadingMore, setLoadingMore] = React.useState(false)
+
   const abortRef = React.useRef<AbortController | null>(null)
   React.useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -54,6 +65,10 @@ export default function SearchPage() {
     setPhase('loading')
     setError(null)
     setSearchedFor(q)
+    // 新搜索从第一页重来
+    setPage(1)
+    setHasMore(false)
+    setLoadingMore(false)
 
     try {
       if (k === 'singer') {
@@ -63,16 +78,19 @@ export default function SearchPage() {
         setSingers(hits)
         setResults([])
       } else {
-        const list = await searchMusic({ name: q, source: src, pages: 1, signal: ac.signal })
+        const list = await searchMusic({ name: q, source: src, page: 1, pages: 1, signal: ac.signal })
         if (ac.signal.aborted) return
         setResults(list)
         setSingers([])
+        // 满一页就假定还有下一页；不足一页即到底
+        setHasMore(list.length >= PAGE_SIZE)
       }
       setPhase('done')
     } catch (e) {
       if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
       setResults([])
       setSingers([])
+      setHasMore(false)
       setError(e instanceof Error ? e.message : '搜索失败')
       setPhase('error')
     }
@@ -103,6 +121,37 @@ export default function SearchPage() {
     player.playQueue(results, 0)
     toast({ title: `开始播放全部 ${results.length} 首`, description: searchedFor })
   }, [player, results, searchedFor, toast])
+
+  /** 追加下一页。触底自动触发，也可点「加载更多」手动触发。
+   *
+   *  两个防死循环的兜底（各平台翻页行为不一致，必须防）：
+   *  1. 追加结果按 songKey 去重 —— 翻页结果常与已加载条目重复；
+   *  2. 去重后一条新增都没有 → 判定到底，直接收工。
+   *     有些平台会无视 page 反复返回同一批，没有这条就会无限追加重复项。 */
+  const loadMore = React.useCallback(async () => {
+    if (loadingMore || !hasMore || kind !== 'song' || !searchedFor) return
+    setLoadingMore(true)
+    const next = page + 1
+    try {
+      const list = await searchMusic({ name: searchedFor, source, page: next, pages: 1 })
+      const seen = new Set(results.map(songKey))
+      const fresh = list.filter((s) => !seen.has(songKey(s)))
+      if (fresh.length === 0) {
+        setHasMore(false)
+      } else {
+        setResults((prev) => [...prev, ...fresh])
+        setPage(next)
+        if (list.length < PAGE_SIZE) setHasMore(false)
+      }
+    } catch {
+      // 追加失败不该把已经拿到的结果也弄丢，静默停止即可
+      setHasMore(false)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, hasMore, kind, searchedFor, page, source, results])
+
+  const sentinelRef = useSentinel(() => void loadMore(), phase === 'done' && hasMore && !loadingMore)
 
   /** 切换搜索类型：立刻用当前关键词重搜，避免出现「切换了但结果还是旧的」 */
   const switchKind = (k: Kind) => {
@@ -315,13 +364,32 @@ export default function SearchPage() {
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
             <p className="text-sm text-dim">
-              「{searchedFor}」· {sourceLabel(source)} · 共 {results.length} 首
+              「{searchedFor}」· {sourceLabel(source)} · 已加载 {results.length} 首
             </p>
             <Button variant="outline" size="sm" onClick={playAll}>
               <Play className="size-3.5 fill-current" /> 播放全部
             </Button>
           </div>
           <SongList songs={results} showSource />
+
+          {/* 触底哨兵：滚到这里自动追加下一页（rootMargin 提前 300px 触发） */}
+          <div ref={sentinelRef} aria-hidden className="h-px" />
+
+          <div className="mt-3 flex justify-center">
+            {loadingMore && (
+              <p className="flex items-center gap-2 text-xs text-faint">
+                <Loader2 className="size-3.5 animate-spin" /> 正在加载更多…
+              </p>
+            )}
+            {!loadingMore && hasMore && (
+              <Button variant="outline" size="sm" onClick={() => void loadMore()}>
+                加载更多
+              </Button>
+            )}
+            {!loadingMore && !hasMore && (
+              <p className="text-xs text-faint">已全部加载（共 {results.length} 首）</p>
+            )}
+          </div>
         </section>
       )}
 
