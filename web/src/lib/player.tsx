@@ -5,6 +5,7 @@ import {
   QUALITY_FALLBACK,
   resolveMusicUrl,
   sameSong,
+  songKey,
   type ResolveAttempt,
   type Song,
 } from '@/lib/music'
@@ -116,11 +117,6 @@ function restoreRepeat(): RepeatMode {
   if (typeof localStorage === 'undefined') return 'all'
   const raw = localStorage.getItem(STORAGE_REPEAT)
   return REPEAT_ORDER.includes(raw as RepeatMode) ? (raw as RepeatMode) : 'all'
-}
-
-/** 曲目唯一键：用于记忆"哪些源已经试过且失败" */
-function songKey(song: Song | null): string {
-  return song ? `${song.source}:${song.songmid ?? song.id ?? song.name}` : ''
 }
 
 /** MediaSession：锁屏/通知栏元数据 + 播放态（约束三：必须保留） */
@@ -297,6 +293,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       let lastMessage = '解析失败'
       let lastAttempts: ResolveAttempt[] = []
 
+      // 本地音乐带直链：解析器只认在线平台，对本地文件必然失败，直接用它播放。
+      // 封面/时长等元信息由 lib/localMusic.ts 在构造 Song 时补好。
+      if (song.url) {
+        patch({ resolvedQuality: null, sourceName: '本地音乐', attempts: [] })
+        el.src = song.url
+        el.load()
+        try {
+          await el.play()
+        } catch {
+          if (seq === reqSeqRef.current) patch({ status: 'paused' })
+        }
+        return
+      }
+
       for (const quality of QUALITY_FALLBACK) {
         try {
           const result = await resolveMusicUrl({
@@ -345,6 +355,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const recoverFromAudioFailure = React.useCallback(() => {
     const s = stateRef.current
     if (!s.current) return
+
+    // 本地直链没有别的源可换，重试同一个地址也没意义，直接报错
+    if (s.current.url) {
+      patch({ status: 'error', error: s.error ?? '本地文件无法播放（可能已被移动或删除）' })
+      return
+    }
 
     const key = songKey(s.current)
     if (audioFailRef.current.key !== key) audioFailRef.current = { key, count: 0 }

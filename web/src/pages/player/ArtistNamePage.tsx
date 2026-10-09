@@ -3,7 +3,8 @@ import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-r
 import { ArrowLeft, Search, UserRound } from 'lucide-react'
 import { Button, Stack } from '@/components/ui'
 import { sourceLabel } from '@/lib/music'
-import { searchSingers, supportsArtistPages, useAsyncResource } from '@/lib/discover'
+import { searchSingers, supportsArtistPages } from '@/lib/discover'
+import { useAsyncResource } from '@/lib/asyncResource'
 
 /** 按名字解析到歌手页（`/artist-name/:name?source=`）。
  *

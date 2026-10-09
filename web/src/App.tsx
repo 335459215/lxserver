@@ -33,7 +33,7 @@ import LeaderboardPage from '@/pages/player/LeaderboardPage'
 import ArtistPage from '@/pages/player/ArtistPage'
 import ArtistNamePage from '@/pages/player/ArtistNamePage'
 import AlbumPage from '@/pages/player/AlbumPage'
-import { LocalMusicPage } from '@/pages/player/PlannedPages'
+import LocalMusicPage from '@/pages/player/LocalMusicPage'
 import FavoritesPage from '@/pages/player/FavoritesPage'
 
 /** 身份徽章：管理员 > 用户 > 播放器 */

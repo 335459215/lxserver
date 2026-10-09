@@ -34,6 +34,9 @@ export interface Song {
   }
   /** 该曲可用的音质档位 */
   types?: Array<{ type?: string; size?: string | null }>
+  /** 直链播放地址。**仅本地音乐（source=local）用**：解析器只认在线平台，
+   *  有 url 时播放内核跳过解析直接播（见 lib/player.tsx）。 */
+  url?: string
   [key: string]: unknown
 }
 
@@ -179,8 +182,10 @@ export function sameSong(a: Song | null, b: Song | null): boolean {
 }
 
 /** 曲目去重键：平台 + songmid/id，缺失时回落「歌名|歌手」。
- *  用于搜索分页追加时去重 —— 各平台翻页结果常出现重复条目。 */
-export function songKey(song: Song): string {
+ *  用于搜索分页追加时去重（各平台翻页结果常出现重复条目），
+ *  播放内核也用它记忆「哪些源已经试过且失败」。无曲目时返回空串。 */
+export function songKey(song: Song | null): string {
+  if (!song) return ''
   const id = song.songmid ?? song.id ?? song.meta?.songId
   return id != null ? `${song.source}:${id}` : `${song.source}:${song.name}|${song.singer}`
 }
@@ -200,5 +205,7 @@ export function coverUrl(song?: Song | null): string | undefined {
 /** 平台中文名（未知平台回落原标识） */
 export function sourceLabel(source?: string): string {
   if (!source) return ''
+  // 本地音乐不是在线平台，不在 MUSIC_SOURCES 里，单独给个名字
+  if (source === 'local') return '本地'
   return SOURCE_LABEL[source] ?? source.toUpperCase()
 }

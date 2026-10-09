@@ -14,8 +14,12 @@
  * （"Source kw does not support singer search" / "Cannot read properties of undefined"）。
  * 故所有入口都要先过 `supportsArtistPages()`，不要在这两个平台之外渲染链接，否则就是死链。
  */
-import * as React from 'react'
 import { MusicApiError, type Song } from '@/lib/music'
+import { getJson, useAsyncResource, type AsyncResource } from '@/lib/asyncResource'
+
+// 通用异步资源已抽到 lib/asyncResource.ts（本地音乐也要用）。
+// 类型再导出一次，保持既有引用路径可用。
+export type { AsyncResource, AsyncStatus } from '@/lib/asyncResource'
 
 /** 支持歌手页 / 专辑页的平台。其余平台的对应接口不存在，入口必须隐藏。 */
 export const ARTIST_SOURCES = ['wy', 'tx'] as const
@@ -75,89 +79,6 @@ export interface SingerHit {
   alias?: string[]
   albumSize?: number
   source?: string
-}
-
-// ===== 通用异步资源 hook =====
-//
-// key 必须完整编码「影响请求的一切参数」：只有 key 变才重新请求，
-// 这样对象引用变化不会引发重复请求，也不需要把 load 塞进依赖数组。
-
-export type AsyncStatus = 'idle' | 'loading' | 'ready' | 'error'
-
-export interface AsyncResource<T> {
-  status: AsyncStatus
-  data: T | null
-  error: string | null
-  reload: () => void
-}
-
-export function useAsyncResource<T>(
-  key: string,
-  load: (signal: AbortSignal) => Promise<T>,
-): AsyncResource<T> {
-  // 结果连同「产生它的 key#nonce」一起存：key 或重试次数一变，返回值立刻变成
-  // loading，不需要在 effect 里同步 setState 去清空（那会触发级联渲染）。
-  const [state, setState] = React.useState<{
-    stamp: string
-    status: 'ready' | 'error'
-    data: T | null
-    error: string | null
-  }>({ stamp: '', status: 'ready', data: null, error: null })
-  const [nonce, setNonce] = React.useState(0)
-
-  // load 只作为「最新值」读取，避免每次渲染生成的新函数触发重请求
-  const loadRef = React.useRef(load)
-  React.useEffect(() => {
-    loadRef.current = load
-  })
-
-  React.useEffect(() => {
-    if (!key) return
-    const stamp = `${key}#${nonce}`
-    const ac = new AbortController()
-    let alive = true
-
-    loadRef.current(ac.signal)
-      .then((data) => {
-        if (alive) setState({ stamp, status: 'ready', data, error: null })
-      })
-      .catch((e: unknown) => {
-        if (!alive) return
-        if (e instanceof DOMException && e.name === 'AbortError') return
-        setState({
-          stamp,
-          status: 'error',
-          data: null,
-          error: e instanceof Error ? e.message : '加载失败',
-        })
-      })
-
-    return () => {
-      alive = false
-      ac.abort()
-    }
-  }, [key, nonce])
-
-  const reload = React.useCallback(() => setNonce((n) => n + 1), [])
-
-  // key 为空（例如还没选榜单）→ idle；结果不属于本次 key/重试 → 仍在加载
-  if (!key) return { status: 'idle', data: null, error: null, reload }
-  if (state.stamp !== `${key}#${nonce}`) {
-    return { status: 'loading', data: null, error: null, reload }
-  }
-  return { status: state.status, data: state.data, error: state.error, reload }
-}
-
-/** 统一解包：非 2xx 或结构异常都抛 MusicApiError */
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal })
-  const data: unknown = await res.json().catch(() => null)
-  if (!res.ok) {
-    const msg = (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`
-    throw new MusicApiError(msg)
-  }
-  if (data == null) throw new MusicApiError('返回格式异常')
-  return data as T
 }
 
 // ===== 热搜 =====
