@@ -29,17 +29,22 @@
     <link rel="icon" href="icon.svg?v=d32c9c9" type="image/svg+xml">
     <link rel="manifest" href="manifest.json?v=d32c9c9">
     <script>
+        // [v2.20.0] 旧版播放器不再注册 Service Worker，其 sw.js 已删除。
+        // 原因：它注册在**根作用域**，fetch 只排除了 /api/ 与 /music/，
+        // 会把新版 /app 的 HTML 一并缓存 → 发车后老用户可能拿到旧 HTML、
+        // 引用已删除的旧 hash bundle 而白屏。PWA 现由 /app 自己的 SW 承担
+        // （scope 天然限定 /app/，与旧版隔离）。
+        // 已注册到用户浏览器的旧 SW 由 /app/unregister-legacy-sw.js 主动注销。
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                // 使用相对路径，它会自动基于 <base> 路径解析
-                navigator.serviceWorker.register('sw.js')
-                    .then(registration => {
-                        console.log('ServiceWorker registration successful');
-                    })
-                    .catch(err => {
-                        console.log('ServiceWorker registration failed: ', err);
-                    });
-            });
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+                regs.forEach(function (reg) {
+                    var scopePath = ''
+                    try { scopePath = new URL(reg.scope).pathname } catch (e) { return }
+                    if (scopePath === '/' && reg.active && /(^|\/)sw\.js$/.test(reg.active.scriptURL)) {
+                        reg.unregister()
+                    }
+                })
+            })
         }
     </script>
     <script src="vendor/js/marked.min.js?v=d32c9c9"></script>

@@ -4,7 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="robots" content="noindex" />
-    <title>lxserver 管理台</title>
+    <title>lxserver 音乐</title>
+
+    <!-- PWA：可安装到主屏/桌面，独立窗口打开。
+         manifest 与 sw.js 都放在 public/ 下，Vite 按 base('/app/') 原样拷到 app/ 根，
+         于是两者天然落在 /app/ 作用域内，与旧版播放器完全隔离。 -->
+    <link rel="manifest" href="/app/manifest.webmanifest" />
+    <meta name="theme-color" content="#4f46e5" />
+    <!-- iOS 不吃 manifest 的 theme_color / display，这几条是老版本 Safari 的补丁 -->
+    <link rel="apple-touch-icon" href="/app/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="lxserver" />
+
+    <!-- 一次性迁移：注销旧版播放器遗留在根作用域的 Service Worker。
+         必须是**普通 script 且放在这里**（早于 type="module" 的 bundle 执行），
+         否则首次访问清不掉，会留下一个「拿到旧 HTML → 白屏」的窗口期。
+         原因详见该文件头部注释。 -->
+    <script src="/app/unregister-legacy-sw.js"></script>
   </head>
   <body>
     <div id="root"></div>

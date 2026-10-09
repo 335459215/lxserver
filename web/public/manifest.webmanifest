@@ -1,0 +1,55 @@
+{
+  "name": "lxserver 音乐",
+  "short_name": "lxserver",
+  "description": "落雪音乐服务端 · 聚合主流平台音源，点歌即播。",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "id": "/app/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#fafafa",
+  "theme_color": "#4f46e5",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    {
+      "src": "/app/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "搜索音乐",
+      "short_name": "搜索",
+      "url": "/app/search",
+      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "我的收藏",
+      "short_name": "收藏",
+      "url": "/app/favorites",
+      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "本地音乐",
+      "short_name": "本地",
+      "url": "/app/local",
+      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
