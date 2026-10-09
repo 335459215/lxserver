@@ -9,6 +9,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 强调色令牌注册为可过渡类型：封面取色覆盖 --accent 时能平滑渐变而不是硬切。
+   不支持 @property 的浏览器会直接跳到新值，功能不受影响。 */
+@property --accent {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #4f46e5;
+}
+@property --accent-hover {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #4338ca;
+}
+@property --accent-soft {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #eef2ff;
+}
+
 /* ===== 设计令牌（明亮清爽版）=====
    参考当下最主流的浅色管理台范式（shadcn/ui light / Vercel / 系统设置页）：
    白卡片 + 细灰线 + 单一靛蓝强调 + 大留白。语义色全部走 CSS 变量。 */
@@ -66,6 +84,11 @@ body {
     radial-gradient(900px 420px at 50% -8%, rgba(79, 70, 229, 0.07), transparent 62%),
     radial-gradient(700px 380px at 88% 108%, rgba(16, 185, 129, 0.05), transparent 60%),
     var(--bg);
+}
+
+/* 封面取色覆盖强调色时的平滑渐变（配合上面的 @property 注册） */
+.accent-fade {
+  transition: --accent 600ms ease, --accent-hover 600ms ease, --accent-soft 600ms ease;
 }
 
 /* 页面加载：一次性 staggered fade-up */
