@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Loader2, ListMusic, Play, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
 import { Button, useToast } from '@/components/ui'
-import { coverUrl, formatTime, intervalToSeconds } from '@/lib/music'
+import { coverUrl, formatTotalDuration, intervalToSeconds } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
 import {
   findPlaylist,
@@ -123,7 +123,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
           <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{playlist.name}</h1>
           <p className="mt-1 text-sm text-dim">
             {playlist.songs.length} 首
-            {totalSeconds > 0 && ` · ${formatTime(totalSeconds)}`}
+            {totalSeconds > 0 && ` · ${formatTotalDuration(totalSeconds)}`}
             {listId === LIST_LOVE_ID && ' · 你喜欢的歌'}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">

@@ -140,13 +140,24 @@ export async function resolveMusicUrl(params: {
   return data
 }
 
-/** 秒 → m:ss（负数/NaN 一律显示 0:00） */
+/** 秒 → m:ss（负数/NaN 一律显示 0:00）。用于单曲时长。 */
 export function formatTime(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return '0:00'
   const total = Math.floor(sec)
   const m = Math.floor(total / 60)
   const s = total % 60
   return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 列表总时长：不足 1 小时用 m:ss，超过则给「4 小时 20 分」这种可读形式
+ *  （69 首的试听列表显示成 "260:04" 没人愿意换算）。 */
+export function formatTotalDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return '0:00'
+  const total = Math.floor(sec)
+  if (total < 3600) return formatTime(total)
+  const h = Math.floor(total / 3600)
+  const m = Math.round((total % 3600) / 60)
+  return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`
 }
 
 /** "03:30" → 210（解析不出来返回 0） */
