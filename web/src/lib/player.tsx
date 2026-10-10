@@ -2,13 +2,13 @@ import * as React from 'react'
 import {
   coverUrl,
   MusicApiError,
-  QUALITY_FALLBACK,
   resolveMusicUrl,
   sameSong,
   songKey,
   type ResolveAttempt,
   type Song,
 } from '@/lib/music'
+import { DEFAULT_QUALITY, qualityFallback, saveQuality, savedQuality } from '@/lib/quality'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -49,8 +49,11 @@ export interface PlayerState {
   error: string | null
   /** 解析失败时试过的源，UI 用来解释"为什么没播成" */
   attempts: ResolveAttempt[]
-  /** 实际解析出的音质（可能与请求不同，服务端会降级） */
+  /** 实际解析出的音质（可能与请求不同，服务端会降级）。
+   *  ⚠️ 只信这个字段展示「实得档位」；请求档位另见 preferredQuality。 */
   resolvedQuality: string | null
+  /** 用户偏好的音质档位（持久化）。解析时作为首选，失败逐级向下回退。 */
+  preferredQuality: string
   /** 实际命中的自定义源名 */
   sourceName: string | null
 }
@@ -70,6 +73,8 @@ export interface PlayerApi extends PlayerState {
   toggleShuffle: () => void
   /** 循环模式轮换：不循环 → 列表循环 → 单曲循环 */
   cycleRepeat: () => void
+  /** 切换音质档位；若正在播放，会立刻用新档位重新解析当前曲目 */
+  setQuality: (tier: string) => void
   clear: () => void
   /** 失败后换源重试（把这次失败的源加入排除清单） */
   retry: () => void
@@ -97,6 +102,7 @@ const initialState: PlayerState = {
   error: null,
   attempts: [],
   resolvedQuality: null,
+  preferredQuality: DEFAULT_QUALITY,
   sourceName: null,
 }
 
@@ -154,6 +160,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     volume: restoreVolume(),
     shuffle: restoreShuffle(),
     repeat: restoreRepeat(),
+    preferredQuality: savedQuality(),
   }))
 
   /** state 的镜像：事件回调与动作里读它，避免闭包捕获陈旧值 */
@@ -264,9 +271,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.shuffle, state.repeat])
 
-  /** 解析并播放：按 QUALITY_FALLBACK 逐档降级，任一档成功即播 */
+  // 音质偏好持久化（lib/quality.ts 里也有 saveQuality，这里统一由 state 驱动，
+  // 保证「设置页选」与「播放栏选」两条入口写的是同一个来源）
+  React.useEffect(() => {
+    saveQuality(state.preferredQuality as never)
+  }, [state.preferredQuality])
+
+  /** 解析并播放：从用户偏好档位起，沿回退链逐档降级，任一档成功即播。
+   *
+   *  `tierOverride` 用于「刚切换档位、state 还没提交」的场景 —— 此时 stateRef
+   *  里的 preferredQuality 仍是旧值（ref 由 useEffect 同步，晚于本次调用），
+   *  直接读 ref 会拿着旧档位去解析，表现为「切了档位但音质没变」。 */
   const loadAndPlay = React.useCallback(
-    async (song: Song) => {
+    async (song: Song, tierOverride?: string) => {
       const el = audioRef.current
       if (!el) return
 
@@ -280,6 +297,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const exclude = excludedRef.current.get(key) ?? []
       // 换到别的曲目时重置自动换源计数（同一曲目的重试会保留计数）
       if (audioFailRef.current.key !== key) audioFailRef.current = { key, count: 0 }
+
+      // 音质档位从 stateRef 读（不放进依赖数组）：否则每次切档都会重建 loadAndPlay，
+      // 连锁让下游依赖它的 useCallback/useEffect 全部失效。ref 读最新值语义等价。
+      const tiers = qualityFallback(tierOverride ?? stateRef.current.preferredQuality)
 
       patch({
         status: 'loading',
@@ -307,7 +328,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         return
       }
 
-      for (const quality of QUALITY_FALLBACK) {
+      for (const quality of tiers) {
         try {
           const result = await resolveMusicUrl({
             songInfo: song,
@@ -568,6 +589,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  /** 切换音质档位。正在播放时立刻按新档位重新解析当前曲目 ——
+   *  否则用户改了档位却要等下一首才生效，与「改设置即时生效」的预期不符。
+   *  注意把 tier 显式传给 loadAndPlay：setState 是异步的，此刻 stateRef 还是旧值。 */
+  const setQuality = React.useCallback(
+    (tier: string) => {
+      if (stateRef.current.preferredQuality === tier) return
+      setState((s) => ({ ...s, preferredQuality: tier }))
+      const cur = stateRef.current.current
+      if (cur && !cur.url) {
+        // 本地音乐是直链、不走解析器，切档位对它无意义
+        void loadAndPlay(cur, tier)
+      }
+    },
+    [loadAndPlay],
+  )
+
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
     abortRef.current?.abort()
@@ -579,9 +616,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  /** 复位播放态。注意：**播放偏好（音量/静音/随机/循环/音质）必须原样保留**——
+   *  它们与「当前在播什么」无关，清掉会让用户每次退出登录都被重置一遍。
+   *  （原实现只保留了 volume/muted，shuffle/repeat 会被悄悄重置回默认值。） */
   const clear = React.useCallback(() => {
     stopAudio()
-    setState((s) => ({ ...initialState, volume: s.volume, muted: s.muted }))
+    setState((s) => ({
+      ...initialState,
+      volume: s.volume,
+      muted: s.muted,
+      shuffle: s.shuffle,
+      repeat: s.repeat,
+      preferredQuality: s.preferredQuality,
+    }))
   }, [stopAudio])
 
   const removeAt = React.useCallback(
@@ -591,7 +638,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const nextQueue = s.queue.filter((_, i) => i !== index)
       if (!nextQueue.length) {
         stopAudio()
-        setState((p) => ({ ...initialState, volume: p.volume, muted: p.muted }))
+        // 同上：清空队列只重置「在播什么」，播放偏好一律保留
+        setState((p) => ({
+          ...initialState,
+          volume: p.volume,
+          muted: p.muted,
+          shuffle: p.shuffle,
+          repeat: p.repeat,
+          preferredQuality: p.preferredQuality,
+        }))
         return
       }
       if (index === s.index) {
@@ -654,6 +709,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleMute,
       toggleShuffle,
       cycleRepeat,
+      setQuality,
       clear,
       retry,
       removeAt,
@@ -671,6 +727,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleMute,
       toggleShuffle,
       cycleRepeat,
+      setQuality,
       clear,
       retry,
       removeAt,

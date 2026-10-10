@@ -6,6 +6,7 @@ import { coverUrl, formatTime, intervalToSeconds, sourceLabel } from '@/lib/musi
 import { useCoverAccent } from '@/lib/coverColor'
 import { usePlayer } from '@/lib/player'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
+import QualityMenu from '@/components/player/QualityMenu'
 import Lyrics from '@/components/player/Lyrics'
 import QueueList from '@/components/player/QueueList'
 
@@ -14,7 +15,7 @@ import QueueList from '@/components/player/QueueList'
  *  - 取色：封面主色覆盖 --accent（SPlayer 式），取不到则回落默认靛蓝 */
 export default function NowPlayingPage() {
   const player = usePlayer()
-  const { current, status, error, attempts, duration, resolvedQuality, sourceName } = player
+  const { current, status, error, attempts, duration, sourceName } = player
 
   const cover = coverUrl(current)
   const tokens = useCoverAccent(cover)
@@ -94,10 +95,18 @@ export default function NowPlayingPage() {
             {current.name}
           </h1>
           <p className="mt-1 truncate text-sm text-dim">{subtitle || '未知歌手'}</p>
-          <p className="mt-1 text-xs text-faint">
-            {sourceName ?? sourceLabel(current.source)}
-            {resolvedQuality ? ` · ${resolvedQuality}` : ''}
-            {total > 0 ? ` · ${formatTime(total)}` : ''}
+          {/* 元信息一行：源 · 音质 · 时长。音质用可点的 QualityMenu，
+              让「这首歌音质不对」的当下能就地改掉，不必跑设置页。 */}
+          <p className="mt-1 flex flex-wrap items-center justify-center gap-x-1 text-xs text-faint">
+            <span>{sourceName ?? sourceLabel(current.source)}</span>
+            <span aria-hidden>·</span>
+            <QualityMenu className="h-5 px-1 text-xs text-faint hover:text-ink" />
+            {total > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span>{formatTime(total)}</span>
+              </>
+            )}
           </p>
         </div>
 

@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { coverUrl } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
+import QualityMenu from '@/components/player/QualityMenu'
 
 /** 音量条（含静音切换） */
 function VolumeControl() {
@@ -103,8 +104,9 @@ export default function PlayerBar() {
           <ProgressRow className="max-w-md" />
         </div>
 
-        {/* 右：音量 / 队列 / 展开播放页 */}
+        {/* 右：音质 / 音量 / 队列 / 展开播放页 */}
         <div className="flex shrink-0 items-center justify-end gap-1.5 md:gap-2">
+          <QualityMenu showLabel />
           <VolumeControl />
           <Link
             to="/playlist"

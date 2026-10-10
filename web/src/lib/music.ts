@@ -49,6 +49,10 @@ export interface ResolveAttempt {
 
 export interface ResolveResult {
   url: string
+  /** **实得**音质档位。注意服务端返回的字段名是 `type` 而不是 `quality`
+   *  （实测：请求 flac 时响应里 `type:"flac"` 而 `quality` 为 undefined）。
+   *  这里同时声明两者并做归一化，避免再次读错字段导致 UI 谎报档位。 */
+  type?: string
   quality?: string
   sourceName?: string
   resolvedSource?: string
@@ -140,7 +144,9 @@ export async function resolveMusicUrl(params: {
   if (!res.ok || !data?.url) {
     throw new MusicApiError(data?.error ?? `解析失败（HTTP ${res.status}）`, data?.attempts)
   }
-  return data
+  // 服务端把实得档位放在 `type`（`quality` 恒为 undefined）。这里归一化到 `quality`，
+  // 让上层只认一个字段；两侧都留是为了兼容以后服务端可能补上 quality 的情况。
+  return { ...data, quality: data.type ?? data.quality }
 }
 
 /** 秒 → m:ss（负数/NaN 一律显示 0:00）。用于单曲时长。 */
