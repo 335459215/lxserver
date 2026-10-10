@@ -15,8 +15,23 @@ export const HISTORY_MAX_ITEMS = 500
 /** 写盘防抖窗口。听歌时切歌/重播都可能触发上报，
  *  每次都同步写盘会在连续切歌时产生大量无谓 IO。
  *  参考 `src/server/sessionStore.ts` 的做法（它用 3s），这里取 1s：
- *  历史数据本身不重要到必须立即落盘，但也不该丢太多。 */
+ *  历史数据本身不重要到必须立即落盘，但也不该丢太多。
+ *
+ *  **已知取舍**：`throttle` 是「首次调用后等 delay 才执行」的语义，
+ *  所以进程在最后 1 秒内被强杀（容器重建走 SIGKILL 收尾）时，
+ *  这条上报会丢。因为丢失面只有「正在播的那一首」且下次播同曲会重记，
+ *  不值得为此挂全局退出钩子（SIGKILL 下也无能为力）。 */
 const SAVE_THROTTLE_MS = 1000
+
+/** 单个文本字段的长度上限。
+ *
+ *  为什么需要：`readBody`（server.ts）**没有请求体体积上限**，而这里要落盘并长期保存。
+ *  不设限的话，一次上报塞一个几 MB 的 name 就能让 history.json 膨胀到内存/磁盘吃不消
+ *  （500 条 × 几 MB）。各平台正常歌名/歌手名都远低于此，超长一律**截断**而不是拒绝——
+ *  截断仍保留了「听过这首歌」的事实，比整条丢弃更有用。 */
+const MAX_TEXT = 200
+
+const clip = (s: string, max = MAX_TEXT) => (s.length > max ? s.slice(0, max) : s)
 
 /** 只依赖 userDir 的最小接口。
  *
@@ -83,26 +98,27 @@ export class HistoryDataManage {
     }
   }
 
-  /** 强制立即落盘（测试用，避免等防抖窗口） */
+  /** 强制立即落盘（测试与优雅退出用，避免等防抖窗口） */
   flush = () => {
     this.saveNow()
   }
 
   /** 归一化上报入参 → HistoryItem；字段不完整时返回 null（不该把脏数据写进历史）。 */
   private normalize(payload: LX.History.ReportPayload): LX.History.HistoryItem | null {
-    const source = String(payload.source ?? '').trim()
-    const songmid = String(payload.songmid ?? payload.id ?? '').trim()
-    const name = String(payload.name ?? '').trim()
+    const source = clip(String(payload.source ?? '').trim(), 32)
+    const songmid = clip(String(payload.songmid ?? payload.id ?? '').trim(), 128)
+    const name = clip(String(payload.name ?? '').trim())
     if (!source || !songmid || !name) return null
     return {
       key: `${source}|${songmid}`,
       source,
       songmid,
       name,
-      singer: String(payload.singer ?? '').trim(),
-      interval: payload.interval ?? null,
-      albumName: payload.albumName ? String(payload.albumName) : undefined,
-      img: payload.img ?? null,
+      singer: clip(String(payload.singer ?? '').trim()),
+      interval: payload.interval ? clip(String(payload.interval), 32) : null,
+      albumName: payload.albumName ? clip(String(payload.albumName)) : undefined,
+      // 封面是 CDN 直链，正常几百字符；限 2KB 足够，也能挡住「塞 base64 进 img」的滥用
+      img: payload.img ? clip(String(payload.img), 2048) : null,
       playedAt: Date.now(),
       playCount: 1,
     }
@@ -116,7 +132,11 @@ export class HistoryDataManage {
    *  理由：历史回答的是「我最近听过什么」，不是「我按了几次播放键」。
    *  Spotify / Apple Music / YouTube Music 都是这个语义；做成流水会让列表
    *  被同一首歌刷屏（单曲循环一晚上就是几百条），完全不可用。
-   *  真正的「播放流水」如果需要，应该是另一个功能（且要按时间分桶）。 */
+   *  真正的「播放流水」如果需要，应该是另一个功能（且要按时间分桶）。
+   *
+   *  **playCount 的精确语义**：它统计的是「通过换曲 / 点播重新开始的次数」，
+   *  **不含单曲循环的自动重播**（前端 reportedRef 会在同一首上拦住重复上报）。
+   *  这是刻意的：单曲循环一晚不应把 playCount 刷成几百。 */
   report = (payload: LX.History.ReportPayload): LX.History.HistoryItem | null => {
     const item = this.normalize(payload)
     if (!item) return null

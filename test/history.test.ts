@@ -241,3 +241,63 @@ test('重复上报时保留首次的封面/专辑（新上报缺字段不覆盖�
   assert.equal(item.img, 'http://cover/1.jpg', '旧封面应被保留')
   assert.equal(item.albumName, '专辑A', '旧专辑名应被保留')
 })
+
+// ===== 审查后补的防护用例 =====
+
+test('字段长度上限：超长文本被截断而不是原样落盘（防超大字段撑爆存储）', () => {
+  const m = makeManage()
+  const huge = 'x'.repeat(50_000)
+  const item = m.report({ source: 'tx', songmid: 'big', name: huge, singer: huge, albumName: huge })
+  assert.ok(item, '超长字段不应导致整条被拒')
+  assert.ok(item!.name.length <= 200, `name 应被截断，实际 ${item!.name.length}`)
+  assert.ok(item!.singer.length <= 200, `singer 应被截断，实际 ${item!.singer.length}`)
+  assert.ok((item!.albumName ?? '').length <= 200, 'albumName 应被截断')
+
+  // 落盘体积也必须被压住（否则内存/磁盘会被撑爆）
+  m.flush()
+  const file = path.join(root, userDirname('yueyue'), 'history', 'history.json')
+  const size = fs.statSync(file).size
+  assert.ok(size < 4096, `落盘应远小于原始输入，实际 ${size} 字节`)
+})
+
+test('字段长度上限：封面 base64 之类超长 img 被截断', () => {
+  const m = makeManage()
+  const b64 = 'data:image/png;base64,' + 'A'.repeat(100_000)
+  const item = m.report(song({ songmid: 'img', img: b64 }))
+  assert.ok(item)
+  assert.ok((item!.img ?? '').length <= 2048, `img 应被截断，实际 ${(item!.img ?? '').length}`)
+})
+
+test('字段长度上限：source/songmid 也被限制（防构造超长去重键）', () => {
+  const m = makeManage()
+  const item = m.report({ source: 's'.repeat(500), songmid: 'm'.repeat(500), name: '正常歌名' })
+  assert.ok(item)
+  assert.ok(item!.source.length <= 32, `source 应被截断，实际 ${item!.source.length}`)
+  assert.ok(item!.songmid.length <= 128, `songmid 应被截断，实际 ${item!.songmid.length}`)
+})
+
+test('分页：清空后重新上报，page 语义不受影响（回归：曾漏重置 page 导致跳页）', () => {
+  const m = makeManage()
+  // 灌 120 条 → 3 页（pageSize 50）
+  for (let i = 1; i <= 120; i++) m.report(song({ songmid: `x${i}`, name: `x${i}` }))
+  assert.equal(m.list(1, 50).total, 120)
+  assert.equal(m.list(3, 50).list.length, 20, '第 3 页应有 20 条')
+
+  // 清空 → 再上报 60 条
+  m.clear()
+  for (let i = 1; i <= 60; i++) m.report(song({ songmid: `y${i}`, name: `y${i}` }))
+
+  // 从第 1 页重新翻，应能完整覆盖 60 条（不跳页）
+  const p1 = m.list(1, 50)
+  const p2 = m.list(2, 50)
+  assert.equal(p1.total, 60)
+  assert.equal(p1.list.length, 50)
+  assert.equal(p2.list.length, 10)
+  assert.equal(p1.hasMore, true)
+  assert.equal(p2.hasMore, false)
+  // 两页合并后应是完整 60 条且无重复
+  const keys = [...p1.list, ...p2.list].map((x) => x.key)
+  assert.equal(keys.length, 60)
+  assert.equal(new Set(keys).size, 60, '两页合并不应有重复或缺失')
+})
+

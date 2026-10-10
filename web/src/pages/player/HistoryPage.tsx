@@ -92,6 +92,10 @@ export default function HistoryPage() {
       setExtra([])
       setTotal(0)
       setHasMore(false)
+      // **必须一并重置 page**：否则清空后又产生新记录时，「加载更多」会从
+      // 清空前那页的下一页开始请求（如清空前加载到第 3 页 → 清空后请求第 4 页），
+      // 把第 2、3 页的数据永久跳过。这是一个真实的分页 off-by-one。
+      setPage(1)
       res.reload()
       toast({ title: '已清空播放历史' })
     } catch (e) {
