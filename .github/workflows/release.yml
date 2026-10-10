@@ -16,10 +16,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Get version from config
+      - name: Get version
         id: get_version
         run: |
-          VERSION=$(grep "version:" public/js/config.js | sed "s/.*'\(.*\)'.*/\1/")
+          # [v2.23.0] 版本号来源从 `public/js/config.js` 改为仓库根 `version` 文件。
+          # 原因：config.js 是旧版播放器的静态配置，随旧版删除；而它本就是从
+          # version 文件同步过去的（见 scripts/update-build-hash.js），
+          # 直接读源头更简单，也少一处可能漂移的副本。
+          # 兼容：若仓库里仍有 config.js 就用它（防止有人先回滚了删除提交）。
+          if [ -f public/js/config.js ]; then
+            VERSION=$(grep "version:" public/js/config.js | sed "s/.*'\(.*\)'.*/\1/")
+          else
+            VERSION=$(cat version 2>/dev/null | tr -d '[:space:]')
+          fi
+          # 兜底：万一都读不到，用 git tag（触发本 workflow 的正是 tag）
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION"
 
