@@ -62,53 +62,30 @@ const targetDir = path.resolve(__dirname, '../');
 
 // We exclude config.js/about.md itself to avoid infinite hash changes when injecting the hash.
 // Also ignore logs, data, server (dist), node_modules, .git.
-const publicHash = getDirectoryHash(path.join(targetDir, 'public'), ['js/config.js', 'about.md', 'music/about.md', 'music/bin'], []);
+// [v2.23.0] 排除项里的 about.md / music/about.md 已随旧版播放器删除；
+// music/bin 仍要保留排除（内含 fpcalc 二进制，体积大且内容固定，不该参与哈希）。
+const publicHash = getDirectoryHash(path.join(targetDir, 'public'), ['music/bin'], []);
 const srcHash = getDirectoryHash(path.join(targetDir, 'src'), [], []);
 
 const finalHash = crypto.createHash('md5').update(publicHash + srcHash).digest('hex').substring(0, 7);
 
-// 同步项目版本号到 config.js 与 package.json。
+// 同步项目版本号到 package.json。[v2.23.0 起 config.js 已随旧版播放器删除]
 //
-// 为什么：`version` 文件才是本项目的版本来源（每个里程碑手动 bump），
-// 但它与另外**两处版本号**长期漂移，各自都已漂了 20 多个版本没人管：
-//   - `public/js/config.js` 的 version → release.yml 拿它当 **Release 名/标题**
-//   - `package.json` 的 version       → electron-builder 拿它当 **桌面端产物文件名**
-// 实测后果：给 v2.22.1 打 tag，Release 标题和桌面端安装包名字却是 2.1.1。
-// 在构建期统一同步，避免每次发版手改、也避免再次漂移。
+// 历史背景：本项目曾有**三处版本号**长期漂移（`version` 文件 / `public/js/config.js` /
+// `package.json`），后两者分别被 release.yml（当 Release 名）与 electron-builder
+// （当桌面端产物名）消费，都停在 2.1.1 漂了 20 多个版本。
+// v2.22.1 起统一由本脚本从根 `version` 同步；v2.23.0 删掉 config.js 后只剩 package.json 一处。
+//
+// 服务端的版本号已不再依赖 config.js：
+//   - `/app/config.json` 用 `readAppVersion()` 直接读根 `version` 文件
+//   - 旧版 `/js/config.js` 注入通道随旧版播放器一并移除
 const versionPath = path.join(targetDir, 'version');
 const projectVersion = fs.existsSync(versionPath)
     ? fs.readFileSync(versionPath, 'utf8').trim()
     : '';
 
-// 1) config.js：保留 v 前缀（它与 Release tag 对齐，沿用历史格式）
 if (projectVersion) {
-    const configPath = path.join(targetDir, 'public', 'js', 'config.js');
-    if (fs.existsSync(configPath)) {
-        let configContent = fs.readFileSync(configPath, 'utf8');
-
-        if (configContent.includes('buildHash:')) {
-            configContent = configContent.replace(/buildHash:\s*['"][a-f0-9]+['"]/, `buildHash: '${finalHash}'`);
-        } else {
-            configContent = configContent.replace(/(window\.CONFIG\s*=\s*\{)/, `$1\n    buildHash: '${finalHash}',`);
-        }
-
-        if (/version:\s*['"][^'"]*['"]/.test(configContent)) {
-            configContent = configContent.replace(
-                /version:\s*['"][^'"]*['"]/,
-                `version: '${projectVersion}'`,
-            )
-        } else {
-            configContent = configContent.replace(
-                /(window\.CONFIG\s*=\s*\{)/,
-                `$1\n    version: '${projectVersion}',`,
-            )
-        }
-
-        fs.writeFileSync(configPath, configContent);
-        console.log(`Build hash updated to ${finalHash}; version synced to ${projectVersion} in config.js`);
-    }
-
-    // 2) package.json：**不带 v 前缀**（semver 要求，electron-builder 也按 semver 解析）
+    // package.json：**不带 v 前缀**（semver 要求，electron-builder 也按 semver 解析）
     const pkgPath = path.join(targetDir, 'package.json');
     if (fs.existsSync(pkgPath)) {
         const pkgVersion = projectVersion.replace(/^v/, '');
@@ -128,14 +105,13 @@ if (projectVersion) {
 /**
  * 给 HTML 里引用本仓库静态资源的标签追加 `?v=<hash>`。
  *
- * 为什么必须做：index.html 走 no-cache 每次都回源，但被它引用的 app.js 之类
- * 之前是 7 天强缓存，且文件名不带内容哈希。浏览器一旦缓存过某个版本，在
- * max-age 到期前即使服务端已经更新也不会重新请求——实测改了换源提示组件、
- * 服务端文件已是新版，浏览器仍在跑旧版，验证时一度以为部署失败。
+ * **v2.23.0 起此函数已无调用方**：它原本服务于旧版播放器的 index.html /
+ * music/index.html / music/login.html / filemanager.html，这些文件已随旧版删除。
+ * 新前端 /app 由 Vite 构建，产物文件名自带内容哈希（`index-<hash>.js`），
+ * 天然具备缓存失效能力，不需要这套 `?v=` 注入。
  *
- * 只改响应头救不了已经缓存的副本，必须让 URL 本身随版本变化。
- * HTML 不缓存，所以每次发版后浏览器重新拿到 HTML，里面的 ?v 已是新值，
- * 于是所有本地资源都被判定为新资源重新下载。
+ * 保留实现是为了：若将来又出现「不带哈希的静态 HTML 引用」场景可直接复用；
+ * 一旦确认不再需要，可连同下方 htmlFiles 循环一并删除。
  */
 function stampAssetVersion(htmlPath) {
     if (!fs.existsSync(htmlPath)) return 0;
@@ -163,12 +139,15 @@ function stampAssetVersion(htmlPath) {
     return 0;
 }
 
-const htmlFiles = ['index.html', 'music/index.html', 'music/login.html', 'filemanager.html'];
+// [v2.23.0] 原本这里会把 buildHash 注入旧版播放器的 4 个 HTML（index.html /
+// music/index.html / music/login.html / filemanager.html）。那些文件已随旧版删除，
+// 新前端 /app 由 Vite 产出带内容哈希的文件名，不需要这一步。
+// 保留一段空判断以便将来需要时快速恢复（也避免脚本静默什么都不做让人困惑）。
+const legacyHtmlFiles = []; // 如需恢复：['index.html', 'music/index.html', ...]
 let stamped = 0;
-for (const f of htmlFiles) {
+for (const f of legacyHtmlFiles) {
     if (stampAssetVersion(path.join(targetDir, 'public', f))) {
         console.log(`Stamped asset version ${finalHash} into ${f}`);
         stamped++;
     }
 }
-if (stamped === 0) console.log('Asset version already up to date in HTML files');

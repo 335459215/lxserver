@@ -67,7 +67,7 @@ export default function Login() {
                 }}
                 className="space-y-3"
               >
-                <p className="text-xs text-dim">服务端管理密码（旧后台 /admin 同一个）。</p>
+                <p className="text-xs text-dim">服务端管理密码（部署时配置的 frontend.password）。</p>
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-dim" htmlFor="admin-pw">管理密码</label>
                   <Input

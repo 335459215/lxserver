@@ -45,7 +45,7 @@ function AdminGate() {
         <Lock className="size-4" />
       </span>
       <h1 className="mt-3 text-base font-semibold text-ink">需要管理员权限</h1>
-      <p className="mt-1 text-sm text-dim">输入管理密码以继续（旧后台 /admin 的访问密码）。</p>
+      <p className="mt-1 text-sm text-dim">输入管理密码以继续（部署时配置的 frontend.password）。</p>
       <Input
         type="password"
         className="mt-4"

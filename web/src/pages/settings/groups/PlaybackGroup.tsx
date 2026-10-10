@@ -2,7 +2,7 @@ import { useConfigForm } from '@/lib/useConfig'
 import { Button, InputField, Stack, SwitchField, useToast } from '@/components/ui'
 
 const KEYS = [
-  'player.enableAuth', 'player.password', 'player.path',
+  'player.enableAuth', 'player.password',
   'music.url.crossPlatform', 'music.url.race', 'music.url.raceStagger',
   'music.url.crossStagger', 'music.url.maxParallelPlatforms', 'music.url.priorityGrace',
   'music.url.maxParallel', 'music.url.validate', 'music.url.stickyTtl',
@@ -11,7 +11,6 @@ const KEYS = [
 ] as const
 
 const DEFAULTS: Record<string, unknown> = {
-  'player.path': '/',
   'music.url.raceStagger': 180,
   'music.url.crossStagger': 150,
   'music.url.maxParallelPlatforms': 3,
@@ -71,14 +70,9 @@ export default function PlaybackGroup() {
               onChange={(v) => set('player.password', v)}
               placeholder="••••••••"
             />
-            <InputField
-              label="播放器路径"
-              description="播放器挂载路径，/ 为根路径"
-              value={draft['player.path'] as string}
-              onChange={(v) => set('player.path', v)}
-              placeholder="/"
-              mono
-            />
+            {/* [v2.23.0] 「播放器路径」输入框已移除：旧版播放器删除后，
+                UI 固定在 /app，该配置不再有任何作用。
+                保留「启用播放器认证 / 播放器密码」——它们仍作用于 /app 的访问控制。 */}
           </Stack>
         </Section>
 

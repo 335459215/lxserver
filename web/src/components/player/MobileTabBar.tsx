@@ -211,9 +211,7 @@ export default function MobileTabBar() {
               <NavLink to="/dev" onClick={() => setMore(false)} className="text-[11px] text-faint hover:text-dim">
                 组件展示
               </NavLink>
-              <a href="/" className="text-[11px] text-faint hover:text-dim" title="旧版播放器（仍在 /）">
-                旧版播放器
-              </a>
+              {/* [v2.23.0] 「旧版播放器」入口已移除：旧版已于 v2.23.0 彻底删除。 */}
             </div>
           </div>
         </div>

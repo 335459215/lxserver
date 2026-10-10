@@ -1091,8 +1091,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
     // 读取路径配置（每次请求都重新读取，保存后立刻生效）
     const normalizePath = (p: string) => (p || '').replace(/\/+$/, '')
-    const playerPath = global.lx.config['player.path'] ?? '/'
-    const adminPath = global.lx.config['admin.path'] ?? '/admin'
     // [修复] Subsonic 访问路径可配置；此前这里只排除写死的 /rest/，
     // 而本段判断先于下方的 Subsonic 路由执行，导致自定义 subsonic.path 会被当成播放器请求、后端接口整个失效。
     const subsonicPath = normalizePath(global.lx.config['subsonic.path'] || '/rest') || '/rest'
@@ -1101,125 +1099,50 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
     // [修复] 判断是否为 LX 同步客户端协议路由 (如 /hello, /id, /ah 以及 /<username>/hello, /<username>/ah 等)
     const isSyncProtocolRequest = /^\/([^/]+\/)?(hello|id|ah)$/.test(pathname)
 
-    // 映射播放器逻辑 (无论是自定义路径还是前端硬编码的 /music/)
-    const isPlayerRequest = (playerPath === '/' || playerPath === '')
-      ? (pathname === '/' || (!pathname.startsWith('/api/') && !isSyncProtocolRequest && pathname !== '/js/config.js' && !isSubsonicRequest && (adminPath === '' || (pathname !== adminPath && !pathname.startsWith(adminPath + '/')))))
-      : (pathname.startsWith(playerPath + '/') || pathname === playerPath)
+    // ===== 旧版入口重定向（v2.23.0）=====
+    // 旧版播放器（`/`）与旧版后台（`/admin`）已彻底移除，它们的文件也不再随镜像分发。
+    // 但用户的书签、手机主屏图标、旧文档里的链接还指着这些地址，直接 404 体验很差，
+    // 故统一 **302 到 /app/**（用 302 而非 301：这是临时迁移语义，将来若再调整路由
+    // 不至于让浏览器把 301 永久缓存住）。
+    //
+    // 注意要放行的东西（靠前者优先级处理，这里只判"确属旧版入口"才跳）：
+    //  - /api/*、/app/*、Subsonic、同步协议：各自有专门分支，不能抢
+    //  - /music/bin/*：fpcalc 音频指纹工具，服务端 identify.ts 在用（不是旧版播放器）
+    const isLegacyPathRedirect =
+      !isSubsonicRequest &&
+      !isSyncProtocolRequest &&
+      !pathname.startsWith('/api/') &&
+      !pathname.startsWith('/app/') &&
+      pathname !== '/app' &&
+      !pathname.startsWith('/music/bin/') &&
+      // 旧播放器与旧后台的确切入口 + 旧静态资源前缀
+      (
+        pathname === '/' ||
+        pathname === '/index.html' ||
+        pathname === '/music' ||
+        pathname === '/music/' ||
+        pathname.startsWith('/music/') ||
+        pathname === '/admin' ||
+        pathname.startsWith('/admin/') ||
+        pathname === '/filemanager.html' ||
+        pathname === '/login' ||
+        pathname === '/login.html' ||
+        pathname === '/js/config.js' ||
+        pathname === '/about.md' ||
+        pathname === '/LICENSE' ||
+        pathname === '/manifest.json' ||
+        pathname === '/sw.js'
+      )
 
-    // [新增] 映射管理后台逻辑
-    const isAdminRequest = adminPath && (pathname.startsWith(adminPath + '/') || pathname === adminPath)
-
-    if (isAdminRequest) {
-      if (pathname === adminPath) {
-        res.writeHead(301, { 'Location': pathname + '/' })
-        res.end()
-        return
-      }
-      const subPath = pathname.slice(adminPath.length)
-      let targetPath = ''
-      if (subPath === '/' || subPath === '') {
-        targetPath = 'index.html'
-      } else {
-        targetPath = subPath.startsWith('/') ? subPath.slice(1) : subPath
-      }
-      const filePath = path.join(global.lx.staticPath, targetPath)
-      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-        serveStatic(req, res, filePath)
-        return
-      }
+    if (isLegacyPathRedirect) {
+      res.writeHead(302, { 'Location': '/app/' })
+      res.end()
+      return
     }
 
-    const isLegacyPlayerAsset = playerPath !== '/music' && (
-      pathname.startsWith('/music/assets/') ||
-      pathname.startsWith('/music/css/') ||
-      pathname.startsWith('/music/js/') ||
-      pathname.startsWith('/music/fonts/') ||
-      pathname.startsWith('/music/img/') ||
-      pathname === '/music/manifest.json' ||
-      pathname === '/music/sw.js'
-    )
-
-    if (isPlayerRequest || isLegacyPlayerAsset) {
-      const activePrefix = isPlayerRequest ? playerPath : '/music'
-      const normalizedPrefix = (activePrefix === '/' || activePrefix === '') ? '' : activePrefix.replace(/\/+$/, '')
-      // 白名单：登录页、静态资源无需认证
-      const isLoginPage = pathname === `${normalizedPrefix}/login` || pathname === `${normalizedPrefix}/login.html`
-      const isPublicAsset = pathname.startsWith(`${normalizedPrefix}/assets/`) ||
-        pathname.startsWith(`${normalizedPrefix}/css/`) ||
-        pathname.startsWith(`${normalizedPrefix}/js/`) ||
-        pathname.startsWith(`${normalizedPrefix}/fonts/`) ||
-        pathname.startsWith(`${normalizedPrefix}/img/`) ||
-        pathname === `${normalizedPrefix}/manifest.json` ||
-        pathname === `${normalizedPrefix}/sw.js` ||
-        isLegacyPlayerAsset
-
-      // 认证检查
-      if (!isLoginPage && !isPublicAsset && global.lx.config['player.enableAuth']) {
-        if (!checkPlayerAuth(req)) {
-          res.writeHead(302, { 'Location': `${normalizedPrefix}/login` })
-          res.end()
-          return
-        }
-      }
-
-      // 规范化物理路径
-      let targetPath = pathname
-      // 将请求路径中的前缀映射到真实的 /music 物理目录
-      if (pathname === activePrefix && activePrefix !== '/') {
-        res.writeHead(301, { 'Location': pathname + '/' })
-        res.end()
-        return
-      }
-
-      // [PWA 适配] 动态生成播放器的 manifest.json，自动匹配当前 playerPath
-      if (pathname === `${normalizedPrefix}/manifest.json` || (isLegacyPlayerAsset && pathname === '/music/manifest.json')) {
-        const manifestFilePath = path.join(global.lx.staticPath, 'music', 'manifest.json')
-        try {
-          const raw = fs.readFileSync(manifestFilePath, 'utf-8')
-          const manifest = JSON.parse(raw)
-          // 规范化当前播放器的 base URL（必须以 / 结尾）
-          const effectivePlayerBase = (playerPath === '/' || playerPath === '') ? '/' : `${playerPath.replace(/\/+$/, '')}/`
-          manifest.start_url = effectivePlayerBase
-          manifest.scope = effectivePlayerBase
-          // 图标使用相对于当前有效根路径或者播放器物理路径的地址
-          if (Array.isArray(manifest.icons)) {
-            manifest.icons = manifest.icons.map((icon: any) => ({
-              ...icon,
-              src: icon.src ? (icon.src.startsWith('http') ? icon.src : `${effectivePlayerBase}${icon.src.replace(/^\.\//, '')}`) : icon.src
-            }))
-          }
-          res.writeHead(200, {
-            'Content-Type': 'application/manifest+json; charset=utf-8',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-          })
-          res.end(JSON.stringify(manifest, null, 2))
-          return
-        } catch { }
-      }
-
-      const subPath = pathname.slice(normalizedPrefix.length)
-      if (subPath === '/' || subPath === '') {
-        targetPath = 'music/index.html'
-      } else if (isLoginPage) {
-        targetPath = 'music/login.html'
-      } else {
-        // [优化] 如果根路径是播放器，且请求已经包含 /music/ 前缀，则不再重复叠加
-        if ((activePrefix === '/' || activePrefix === '') && subPath.startsWith('/music/')) {
-          targetPath = subPath.slice(1)
-        } else {
-          targetPath = path.posix.join('music', subPath.startsWith('/') ? subPath.slice(1) : subPath)
-        }
-      }
-
-      const filePath = path.join(global.lx.staticPath, targetPath)
-      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-        serveStatic(req, res, filePath)
-        return
-      }
-    }
-
-    // ===== 新前端管理台（阶段 A）：挂在 /app，旧版播放器继续占 / =====
-    // 注意 /app 是保留路径：若把 player.path 配置成 /app，播放器分支会先命中。
+    // ===== 新前端管理台：挂在 /app（v2.23.0 起**唯一**的 UI）=====
+    // 旧版播放器与旧版后台（/admin）已于 v2.23.0 彻底移除，
+    // 根路径与旧地址一律 302 到 /app/（见上方 isLegacyPathRedirect 分支）。
     if (pathname === '/app' || pathname.startsWith('/app/')) {
       if (pathname === '/app') {
         res.writeHead(301, { 'Location': '/app/' })
@@ -1256,55 +1179,20 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       return
     }
 
-    // [动态配置注入] 优先拦截 /js/config.js 请求，确保后端配置能注入到前端 window.CONFIG
-    if (pathname === '/js/config.js') {
-      // 从静态文件读取版本号和构建哈希
-      const staticConfigPath = path.join(global.lx.staticPath, 'js', 'config.js')
-      let version = 'v1.0.0'
-      let buildHash = 'unknown'
-      try {
-        const content = fs.readFileSync(staticConfigPath, 'utf-8')
-        const matchVersion = content.match(/version:\s*['"]([^'"]+)['"]/)
-        if (matchVersion) version = matchVersion[1]
-        const matchHash = content.match(/buildHash:\s*['"]([^'"]+)['"]/)
-        if (matchHash) buildHash = matchHash[1]
-      } catch { }
+    // [v2.23.0] 原 /js/config.js 动态注入分支已移除：
+    // 它服务于旧版播放器（把后端配置注入 window.CONFIG），随旧版一并删除。
+    //   - 新版前端用 /app/config.json（见上方分支，版本号由 readAppVersion() 直接读 version 文件）
+    //   - 旧地址 /js/config.js 现由 isLegacyPathRedirect 统一 302 到 /app/，
+    //     所以这段即使保留也不会被执行；直接删掉避免留下"看起来还在用"的死代码。
 
-      // 构造前端配置 暴露给前端
-      const frontendConfig = getFrontendConfig()
-      const configJs = `window.CONFIG = ${JSON.stringify({ ...frontendConfig, version, buildHash }, null, 2)};`
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      })
-      res.end(configJs)
-      return
-    }
+    // [v2.23.0] 旧版后台（admin.path）分支已移除：`public/index.html` 不再随镜像分发，
+    // 对应的入口由上方 isLegacyPathRedirect 统一 302 到 /app/。
+    // 新版后台即 /app/settings（用户管理 / 系统配置 / 日志 / 数据快照等）。
 
-    // [管理界面]
-    const effectiveAdminPath = adminPath || '/'
-    const isAdminPath = (pathname === effectiveAdminPath || pathname === effectiveAdminPath + '/' || pathname === effectiveAdminPath + '/index.html')
-
-    if (isAdminPath) {
-      const rootHtmlPath = path.join(global.lx.staticPath, 'index.html')
-      if (fs.existsSync(rootHtmlPath)) {
-        serveStatic(req, res, rootHtmlPath)
-        return
-      }
-    }
-
-    // 注意：如果设置了 adminPath，则不允许通过 / 直接访问后台资源文件，除非它是公共资源
+    // [静态兜底] 服务 public/ 下的其余文件（如 /music/bin/fpcalc*）。
+    // 注意：旧版入口已在前面被重定向拦掉，这里只会命中确实存在的普通静态文件。
     if (!pathname.startsWith('/api/')) {
       const generalFilePath = path.join(global.lx.staticPath, pathname)
-      // 禁止绕过 adminPath 直接访问后台 index.html
-      if (pathname === '/' || pathname === '/index.html') {
-        if (adminPath !== '' && playerPath !== '/') {
-          res.writeHead(404)
-          res.end('Not Found')
-          return
-        }
-      }
-
       if (fs.existsSync(generalFilePath) && fs.statSync(generalFilePath).isFile()) {
         serveStatic(req, res, generalFilePath)
         return

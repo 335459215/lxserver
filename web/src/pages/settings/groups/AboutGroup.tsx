@@ -5,7 +5,6 @@ import { Button, Stack, useToast } from '@/components/ui'
 interface RuntimeConfig {
   version?: string
   serverName?: string
-  'admin.path'?: string
   'player.enableAuth'?: boolean
 }
 

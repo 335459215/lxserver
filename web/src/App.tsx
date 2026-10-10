@@ -105,13 +105,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         >
           组件展示
         </NavLink>
-        <a
-          href="/"
-          className="text-[11px] text-faint transition-colors hover:text-dim"
-          title="旧版播放器（仍在 /，作为功能对照）"
-        >
-          旧版播放器
-        </a>
+        {/* [v2.23.0] 「旧版播放器」入口已移除：旧版已于 v2.23.0 彻底删除。 */}
       </div>
     </>
   )
