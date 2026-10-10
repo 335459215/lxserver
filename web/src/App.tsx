@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import {
   FileMusic,
   Heart,
+  History,
   Home,
   ListMusic,
   LogOut,
@@ -36,6 +37,7 @@ import ArtistNamePage from '@/pages/player/ArtistNamePage'
 import AlbumPage from '@/pages/player/AlbumPage'
 import LocalMusicPage from '@/pages/player/LocalMusicPage'
 import FavoritesPage from '@/pages/player/FavoritesPage'
+import HistoryPage from '@/pages/player/HistoryPage'
 
 /** 身份徽章：管理员 > 用户 > 播放器 */
 function RoleBadge() {
@@ -69,6 +71,7 @@ const MUSIC_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: bool
   { to: '/playlist', label: '歌单', icon: ListMusic },
   { to: '/leaderboard', label: '排行榜', icon: Trophy },
   { to: '/favorites', label: '我的收藏', icon: Heart },
+  { to: '/history', label: '播放历史', icon: History },
   { to: '/local', label: '本地音乐', icon: FileMusic },
 ]
 
@@ -233,6 +236,7 @@ function Shell() {
             <Route path="/album/:id" element={<AlbumPage />} />
             <Route path="/favorites" element={<FavoritesPage />} />
             <Route path="/local" element={<LocalMusicPage />} />
+            <Route path="/history" element={<HistoryPage />} />
             <Route path="/now-playing" element={<NowPlayingPage />} />
             <Route path="/settings" element={<SettingsShell />} />
             <Route path="/settings/:group" element={<SettingsShell />} />

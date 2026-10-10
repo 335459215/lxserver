@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
-import { FileMusic, Home, ListMusic, MoreHorizontal, Search, Settings, Sparkles, Trophy } from 'lucide-react'
+import { FileMusic, History, Home, ListMusic, MoreHorizontal, Search, Settings, Sparkles, Trophy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usePlayer } from '@/lib/player'
 import { coverUrl } from '@/lib/music'
@@ -22,6 +22,7 @@ const TAB_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: boolea
 /** 「更多」抽屉里的低频入口（含管理区）。 */
 const MORE_NAV: Array<{ to: string; label: string; icon: LucideIcon; hint: string }> = [
   { to: '/favorites', label: '我的收藏', icon: Sparkles, hint: '喜欢过的歌' },
+  { to: '/history', label: '播放历史', icon: History, hint: '最近听过什么' },
   { to: '/local', label: '本地音乐', icon: FileMusic, hint: '扫描本机曲库' },
   { to: '/settings', label: '设置', icon: Settings, hint: '音质 / 音源 / 账号' },
 ]

@@ -9,6 +9,7 @@ import {
   type Song,
 } from '@/lib/music'
 import { DEFAULT_QUALITY, qualityFallback, saveQuality, savedQuality } from '@/lib/quality'
+import { reportHistory } from '@/lib/history'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -180,10 +181,28 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   /** 由下面的 recoverFromAudioFailure 填充；挂载期的事件监听通过它回调 */
   const recoverRef = React.useRef<() => void>(() => {})
 
+  /** 本次「正在播」已经上报过历史的曲目 key。
+   *
+   *  做这层守卫是因为 `play` 事件会重复触发（暂停后恢复、缓冲后重播、
+   *  拖动进度条后继续）—— 每次触发都上报会让 playCount 虚高。
+   *  只有**换了曲目**才允许再报一次：这等价于「一首歌听一次算一次」，
+   *  而不是「按了几次播放键」。 */
+  const reportedRef = React.useRef<string>('')
+
+  /** 上报播放历史（服务端按 source|songmid 去重，这里是第一道闸）。 */
+  const reportPlayback = React.useCallback((song: Song | null) => {
+    if (!song) return
+    // 本地音乐不进历史：它不走解析器、也不该混进在线历史里
+    if (song.url || song.source === 'local') return
+    const key = songKey(song)
+    if (!key || reportedRef.current === key) return
+    reportedRef.current = key
+    void reportHistory(song)
+  }, [])
+
   const patch = React.useCallback((p: Partial<PlayerState>) => {
     setState((s) => ({ ...s, ...p }))
   }, [])
-
   // ===== 音频元素事件绑定（只绑一次）=====
   React.useEffect(() => {
     const el = audioRef.current
@@ -200,6 +219,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 真的播起来了：清掉本曲的自动换源计数，后续再失败仍有重试额度
       audioFailRef.current = { key: songKey(stateRef.current.current), count: 0 }
       setState((s) => (s.status === 'playing' ? s : { ...s, status: 'playing', error: null }))
+      reportPlayback(stateRef.current.current)
     }
     const onPause = () =>
       setState((s) => (s.status === 'idle' || s.status === 'error' ? s : { ...s, status: 'paused' }))
@@ -608,6 +628,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
     abortRef.current?.abort()
+    // 清空/切换队列时解除上报守卫，避免「同一首歌在两次播放会话里只记一次」
+    reportedRef.current = ''
     const el = audioRef.current
     if (el) {
       el.pause()

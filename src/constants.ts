@@ -135,6 +135,10 @@ export const File = {
   dislikeDir: 'dislike',
   dislikeSnapshotDir: 'snapshot',
   dislikeSnapshotInfoJSON: 'snapshotInfo.json',
+  // 播放历史：单文件存全量（不做快照——历史不需要多设备回滚语义，
+  // 它是"最近听过什么"的投影，冲突时后写覆盖即可）
+  historyDir: 'history',
+  historyDataJSON: 'history.json',
 } as const
 
 export const FeaturesList = [

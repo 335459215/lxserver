@@ -5,6 +5,7 @@ import {
   ArrowRight,
   FileMusic,
   Heart,
+  History,
   ListMusic,
   Loader2,
   Music2,
@@ -254,6 +255,7 @@ export default function Dashboard() {
             hint={loveCount > 0 ? `${loveCount} 首` : '喜欢的歌'}
             delay={80}
           />
+          <EntryCard to="/history" icon={History} label="播放历史" hint="最近听过" delay={100} />
           <EntryCard to="/local" icon={FileMusic} label="本地音乐" hint="服务端目录" delay={120} />
         </div>
       </section>

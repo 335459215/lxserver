@@ -1883,6 +1883,73 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         return
       }
 
+      // ===== 播放历史（v2.22.0）=====
+      // 三个接口：report（上报一次播放）/ list（分页拉取）/ clear（清空）。
+      // 数据挂在用户的 historyManage 上，按用户名隔离；均为「必须登录」接口。
+      if (pathname === '/api/music/history/report' && req.method === 'POST') {
+        const username = verifyUserAuth(req)
+        if (!username) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: '需要用户认证' }))
+          return
+        }
+        void readBody(req).then((body) => {
+          try {
+            const payload = JSON.parse(body || '{}')
+            const item = getUserSpace(username).historyManage.report(payload)
+            if (!item) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ success: false, message: '参数不完整：至少需要 source / songmid / name' }))
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: true, item }))
+          } catch (err: any) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, message: err?.message || '参数错误' }))
+          }
+        })
+        return
+      }
+
+      if (pathname === '/api/music/history/list' && req.method === 'GET') {
+        const username = verifyUserAuth(req)
+        if (!username) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: '需要用户认证' }))
+          return
+        }
+        try {
+          const page = Number.parseInt(urlObj.searchParams.get('page') ?? '1', 10)
+          const pageSize = Number.parseInt(urlObj.searchParams.get('pageSize') ?? '50', 10)
+          const result = getUserSpace(username).historyManage.list(page, pageSize)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: true, ...result }))
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: err?.message || '读取失败' }))
+        }
+        return
+      }
+
+      if (pathname === '/api/music/history/clear' && req.method === 'POST') {
+        const username = verifyUserAuth(req)
+        if (!username) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: '需要用户认证' }))
+          return
+        }
+        try {
+          getUserSpace(username).historyManage.clear()
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: true }))
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: err?.message || '清空失败' }))
+        }
+        return
+      }
+
       // [新增] Batch Remove Songs from List (User Auth)
       if (pathname === '/api/music/user/list/remove' && req.method === 'POST') {
         const username = verifyUserAuth(req)
