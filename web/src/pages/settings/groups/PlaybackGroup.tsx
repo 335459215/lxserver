@@ -2,7 +2,6 @@ import { useConfigForm } from '@/lib/useConfig'
 import { Button, InputField, Stack, SwitchField, useToast } from '@/components/ui'
 
 const KEYS = [
-  'player.enableAuth', 'player.password',
   'music.url.crossPlatform', 'music.url.race', 'music.url.raceStagger',
   'music.url.crossStagger', 'music.url.maxParallelPlatforms', 'music.url.priorityGrace',
   'music.url.maxParallel', 'music.url.validate', 'music.url.stickyTtl',
@@ -54,27 +53,13 @@ export default function PlaybackGroup() {
   return (
     <form onSubmit={onSave}>
       <Stack gap={5}>
-        <Section title="播放器访问">
-          <Stack gap={3}>
-            <SwitchField
-              label="启用播放器认证"
-              description="开启后 Web 播放器需输入密码才能访问"
-              checked={draft['player.enableAuth'] as boolean}
-              onChange={(v) => set('player.enableAuth', v)}
-            />
-            <InputField
-              label="播放器密码"
-              description="留空则不修改"
-              type="password"
-              value={draft['player.password'] as string}
-              onChange={(v) => set('player.password', v)}
-              placeholder="••••••••"
-            />
-            {/* [v2.23.0] 「播放器路径」输入框已移除：旧版播放器删除后，
-                UI 固定在 /app，该配置不再有任何作用。
-                保留「启用播放器认证 / 播放器密码」——它们仍作用于 /app 的访问控制。 */}
-          </Stack>
-        </Section>
+        {/* [v2.24.0] 「播放器访问」整节已移除。
+            它配的是 player.enableAuth / player.password —— 一套与账号体系并行的
+            「Web 播放器密码」，由旧版播放器（挂在 / 的静态页）使用。
+            旧版已于 v2.23.0 删除，而新版前端本来就由登录门守着，
+            再加一层播放器密码只会让用户登录两次，与「统一账密登录」相悖。
+            服务端 /api/music/auth* 端点保留（Subsonic/外部工具可能仍在用），
+            只是前端不再展示、不再调用。 */}
 
         <Section title="跨平台竞速">
           <Stack gap={3}>

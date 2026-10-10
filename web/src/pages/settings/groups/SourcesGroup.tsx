@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowDown, ArrowUp, Download, Plus, Trash2 } from 'lucide-react'
-import { api, useAuth } from '@/lib/auth'
+import { api, isAdmin, useAuth } from '@/lib/auth'
 import {
   Button,
   Dialog,
@@ -231,7 +231,7 @@ export default function SourcesGroup() {
     }
   }
 
-  if (!auth.admin.ok) return <div className="text-sm text-dim">需要管理员权限。</div>
+  if (!isAdmin(auth)) return <div className="text-sm text-dim">需要管理员账号。</div>
   if (error) return <div className="text-sm text-danger">{error}</div>
   if (!sources) return <div className="text-sm text-dim">加载中…</div>
 

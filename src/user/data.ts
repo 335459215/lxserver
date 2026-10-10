@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { throttle } from '@/utils/common'
 import { filterFileName, toMD5 } from '@/utils'
 import { File } from '@/constants'
+import { isAdminUser } from '@/server/adminAuth'
 
 
 interface ServerInfo {
@@ -58,6 +59,10 @@ export const getUserConfig = (userName: string): Required<LX.User> => {
     allowWriteCustomMusicDir: false,
     enableAutoDownload: false,
     ...user,
+    // 必须放在 `...user` **之后**：用生效值而不是回读原始字段。
+    // 无显式管理员时首个账号兜底为管理员，回读原始字段会与 adminAuth 的判定
+    // 不一致（同一账号两处结论相反，排查起来很费劲）。
+    isAdmin: isAdminUser(userName),
   }
 }
 

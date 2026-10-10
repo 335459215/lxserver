@@ -15,7 +15,7 @@ import {
   Trophy,
 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
-import { api, useAuth } from '@/lib/auth'
+import { api, isAdmin, useAuth } from '@/lib/auth'
 import { useHotSearch, useLeaderboardBoards, useLeaderboardSongs } from '@/lib/discover'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
@@ -131,9 +131,9 @@ export default function Dashboard() {
 
   // 服务器状态：只有管理员才拉，且不进首屏视觉主体
   const [status, setStatus] = useState<StatusShape | null>(null)
-  const isAdmin = auth.admin.ok
+  const adminUser = isAdmin(auth)
   useEffect(() => {
-    if (!isAdmin) return
+    if (!adminUser) return
     let alive = true
     const load = () =>
       api
@@ -146,7 +146,7 @@ export default function Dashboard() {
       alive = false
       clearInterval(timer)
     }
-  }, [isAdmin])
+  }, [adminUser])
 
   const hotList = hot.data ?? []
   const loveCount = snapshot?.loveList.length ?? 0
@@ -333,7 +333,7 @@ export default function Dashboard() {
       )}
 
       {/* 5. 服务器：一行小字，不抢音乐的位置 */}
-      {isAdmin && status && (
+      {adminUser && status && (
         <p className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-faint')}>
           <span className="inline-flex items-center gap-1.5">
             <span className="size-1.5 rounded-full bg-ok" /> 服务正常
@@ -364,7 +364,7 @@ export default function Dashboard() {
           </Link>
         </p>
       )}
-      {isAdmin && !status && (
+      {adminUser && !status && (
         <p className="flex items-center gap-1.5 text-xs text-faint">
           <Loader2 className="size-3 animate-spin" /> 正在读取服务器状态…
         </p>

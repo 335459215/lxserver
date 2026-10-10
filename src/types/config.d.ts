@@ -46,6 +46,18 @@ declare namespace LX {
      * 是否启用此用户自动下载歌曲功能（允许该用户将歌单内容自动同步下载至本地数据目录）
      */
     enableAutoDownload?: boolean
+
+    /**
+     * 是否为管理员（v2.24.0 统一登录）。
+     *
+     * 管理权限此前是一把与账号无关的独立钥匙（frontend.password），现在改为账号属性：
+     * 带 `isAdmin: true` 的账号登录后即可进入「设置」。
+     *
+     * 兼容规则（见 src/server/adminAuth.ts 的 isAdminUser）：
+     * **没有任何账号标过 isAdmin 时，首个账号兜底为管理员** ——
+     * 否则老配置升级后设置中心会直接打不开。
+     */
+    isAdmin?: boolean
   }
 
   interface UserConfig extends User {

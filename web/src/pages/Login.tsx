@@ -1,27 +1,34 @@
 import { useEffect, useState } from 'react'
 import { api, useAuth } from '@/lib/auth'
-import { Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui'
+import { Button, Input } from '@/components/ui'
 
 interface RuntimeConfig {
   version?: string
   serverName?: string
 }
 
-/** 登录页（阶段 B：首访即登录）。三种身份一张卡，服务端真实校验：
- * 管理员=/api/login、用户=/api/user/login(发 Token)、播放器=/api/music/auth(发 Cookie) */
+/** 统一登录页（v2.24.0）。
+ *
+ * 【为什么只剩一个表单】
+ * 此前这里是「管理员 / 用户 / 播放器」三个页签，对应服务端三套互不相干的凭据。
+ * 用户要记两套密码，而且「我是管理员吗」与「我是谁」被拆成了两个问题。
+ * 现在统一为**一个账号 + 一个密码**：账号在服务端 config.users 里，
+ * 其中标记为管理员的账号登录后即可进入「设置」。
+ *
+ * 旧的「部署管理密码」不再需要在页面上输入；服务端仍兼容它（外部工具/脚本在用），
+ * 但浏览器侧不再提示、不再落盘。 */
 export default function Login() {
   const { refresh } = useAuth()
-  const [tab, setTab] = useState('admin')
-  const [adminPassword, setAdminPassword] = useState('')
   const [username, setUsername] = useState('')
-  const [userPassword, setUserPassword] = useState('')
-  const [playerPassword, setPlayerPassword] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [cfg, setCfg] = useState<RuntimeConfig | null>(null)
 
   useEffect(() => {
     let alive = true
+    // 绝对路径：登录页在任意路由下都可能渲染（未登录访问 /playlist/xxx 也是它），
+    // 用相对路径会解析成 /playlist/config.json → 落到 SPA 回退拿到 HTML → 解析失败。
     fetch('/app/config.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => alive && setCfg(d))
@@ -31,13 +38,14 @@ export default function Login() {
     }
   }, [])
 
-  const run = async (fn: () => Promise<boolean>) => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
     setBusy(true)
     setError('')
-    const ok = await fn()
+    const res = await api.login(username.trim(), password)
     setBusy(false)
-    if (ok) await refresh()
-    else setError('凭据不正确，请重试')
+    if (res.ok) await refresh()
+    else setError('账号或密码不正确')
   }
 
   return (
@@ -46,102 +54,41 @@ export default function Login() {
         <div className="mb-6 flex flex-col items-center gap-1.5">
           <div className="flex items-center gap-2">
             <span className="size-2.5 rounded-full bg-accent" />
-            <span className="text-lg font-semibold tracking-tight text-ink">lxserver</span>
+            <span className="text-lg font-semibold tracking-tight text-ink">
+              {cfg?.serverName || 'lxserver'}
+            </span>
           </div>
-          <p className="text-xs text-dim">登录以管理你的音乐服务器</p>
+          <p className="text-xs text-dim">登录你的音乐服务器</p>
         </div>
 
         <div className="rounded-2xl border border-line bg-panel p-8 shadow-card">
-          <Tabs value={tab} onValueChange={setTab}>
-            <TabsList className="w-full">
-              <TabsTrigger value="admin" className="flex-1">管理员</TabsTrigger>
-              <TabsTrigger value="user" className="flex-1">用户</TabsTrigger>
-              <TabsTrigger value="player" className="flex-1">播放器</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="admin">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  void run(() => api.adminLogin(adminPassword))
-                }}
-                className="space-y-3"
-              >
-                <p className="text-xs text-dim">服务端管理密码（部署时配置的 frontend.password）。</p>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-dim" htmlFor="admin-pw">管理密码</label>
-                  <Input
-                    id="admin-pw"
-                    type="password"
-                    placeholder="••••••••"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    autoFocus
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={busy || !adminPassword}>
-                  {busy ? '验证中…' : '登录'}
-                </Button>
-              </form>
-            </TabsContent>
-
-            <TabsContent value="user">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  void run(() => api.userLogin(username, userPassword))
-                }}
-                className="space-y-3"
-              >
-                <p className="text-xs text-dim">同步账号，登录后可管理歌单与个人设置。</p>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-dim" htmlFor="user-name">用户名</label>
-                  <Input id="user-name" placeholder="yueyue" value={username} onChange={(e) => setUsername(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-dim" htmlFor="user-pw">密码</label>
-                  <Input
-                    id="user-pw"
-                    type="password"
-                    placeholder="••••••••"
-                    value={userPassword}
-                    onChange={(e) => setUserPassword(e.target.value)}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={busy || !username || !userPassword}>
-                  {busy ? '验证中…' : '登录'}
-                </Button>
-              </form>
-            </TabsContent>
-
-            <TabsContent value="player">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  void run(() => api.playerLogin(playerPassword))
-                }}
-                className="space-y-3"
-              >
-                <p className="text-xs text-dim">Web 播放器访问密码（服务端开启播放器认证时需要）。</p>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-dim" htmlFor="player-pw">播放器密码</label>
-                  <Input
-                    id="player-pw"
-                    type="password"
-                    placeholder="••••••••"
-                    value={playerPassword}
-                    onChange={(e) => setPlayerPassword(e.target.value)}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={busy || !playerPassword}>
-                  {busy ? '验证中…' : '进入播放器'}
-                </Button>
-                <p className="text-center text-xs text-faint">
-                  或直接使用 <a href="/" className="text-accent hover:underline">旧版播放器</a>
-                </p>
-              </form>
-            </TabsContent>
-          </Tabs>
+          <form onSubmit={submit} className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-dim" htmlFor="login-name">账号</label>
+              <Input
+                id="login-name"
+                autoComplete="username"
+                placeholder="用户名"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-dim" htmlFor="login-pw">密码</label>
+              <Input
+                id="login-pw"
+                type="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={busy || !username.trim() || !password}>
+              {busy ? '验证中…' : '登录'}
+            </Button>
+          </form>
 
           {error && <p className="mt-3 text-center text-xs text-danger">{error}</p>}
         </div>

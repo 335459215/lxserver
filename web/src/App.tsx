@@ -16,7 +16,7 @@ import {
   Trophy,
   X,
 } from 'lucide-react'
-import { api, AuthProvider, primaryRole, useAuth } from '@/lib/auth'
+import { api, AuthProvider, isAdmin, isLoggedIn, useAuth } from '@/lib/auth'
 import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -39,29 +39,17 @@ import LocalMusicPage from '@/pages/player/LocalMusicPage'
 import FavoritesPage from '@/pages/player/FavoritesPage'
 import HistoryPage from '@/pages/player/HistoryPage'
 
-/** 身份徽章：管理员 > 用户 > 播放器 */
+/** 身份徽章：登录账号名；管理员额外标注 */
 function RoleBadge() {
   const { auth } = useAuth()
-  const role = primaryRole(auth)
-  if (role === 'admin')
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
-        <span className="size-1.5 rounded-full bg-accent" /> 管理员
-      </span>
-    )
-  if (role === 'user')
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
-        <span className="size-1.5 rounded-full bg-ok" /> {auth.user.username}
-      </span>
-    )
-  if (role === 'player')
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
-        <span className="size-1.5 rounded-full bg-ok" /> 播放器
-      </span>
-    )
-  return null
+  if (!auth.user.ok) return null
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
+      <span className={`size-1.5 rounded-full ${auth.user.isAdmin ? 'bg-accent' : 'bg-ok'}`} />
+      {auth.user.username}
+      {auth.user.isAdmin && <span className="text-faint">管理员</span>}
+    </span>
+  )
 }
 
 /** 音乐段导航（阶段 C：先壳与路由，页面按序接入） */
@@ -77,8 +65,10 @@ const MUSIC_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: bool
 
 /** 侧栏：只放「听歌」相关导航。
  *  设置是另一个功能区，收成单个入口（内部有分组导航）——把 9 组设置铺在主侧栏里
- *  会让「这是播放器」这件事被淹没，这也是旧版侧栏最不合理的地方。 */
+ *  会让「这是播放器」这件事被淹没。
+ *  v2.24.0：设置入口只对管理员账号显示（管理员现在是账号属性，不再是另一把钥匙）。 */
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
+  const { auth } = useAuth()
   const nav = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
       isActive ? 'bg-accent-soft font-medium text-accent' : 'text-dim hover:bg-panel2 hover:text-ink'
@@ -91,11 +81,15 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         </NavLink>
       ))}
 
-      <div className="my-3 border-t border-line" />
+      {isAdmin(auth) && (
+        <>
+          <div className="my-3 border-t border-line" />
 
-      <NavLink to="/settings" className={nav} onClick={onNavigate}>
-        <Settings className="size-4" /> 设置
-      </NavLink>
+          <NavLink to="/settings" className={nav} onClick={onNavigate}>
+            <Settings className="size-4" /> 设置
+          </NavLink>
+        </>
+      )}
 
       <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3">
         <NavLink
@@ -105,7 +99,6 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         >
           组件展示
         </NavLink>
-        {/* [v2.23.0] 「旧版播放器」入口已移除：旧版已于 v2.23.0 彻底删除。 */}
       </div>
     </>
   )
@@ -169,7 +162,7 @@ function Shell() {
               {panel ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
             </button>
             <RoleBadge />
-            {(auth.admin.ok || auth.user.ok) && (
+            {isLoggedIn(auth) && (
               <button
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-dim hover:bg-panel2 hover:text-ink"
                 onClick={async () => {
@@ -262,7 +255,7 @@ function Gate() {
     )
   }
   // 首访即登录：未持有任何有效身份时不露出任何导航
-  if (primaryRole(auth) === 'none') return <Login />
+  if (!isLoggedIn(auth)) return <Login />
   return <Shell />
 }
 

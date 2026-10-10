@@ -13,7 +13,14 @@ try {
   appVersion = fs.readFileSync(path.join(here, '..', 'version'), 'utf8').trim()
 } catch { /* 独立开发时仓库外运行则回退 */ }
 
-// 新前端挂在 /app，旧版播放器继续占 /（阶段 A 决策，配置开关切回见阶段 B）
+// 构建 base 仍是 /app/（产物落在 public/app/，资源引用写死 /app/assets/…）。
+//
+// 【v2.24.0 起服务端有两个等价入口，但 base 不能改】
+//   `/`      —— 正式入口（http://ip:端口/ 直接出前端）
+//   `/app/*` —— 兼容入口（老书签；已安装 PWA 的 scope 是 /app/）
+// 之所以不把 base 改成 '/'：那会让已安装的 PWA 与旧书签全部失效
+// （它们的 scope/URL 都指向 /app/），而用户明确说过「当然这样也行」。
+// 两个入口由 `src/main.tsx` 的**动态 basename** 在运行时适配，产物只有一份。
 export default defineConfig({
   base: '/app/',
   resolve: {

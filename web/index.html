@@ -8,7 +8,9 @@
 
     <!-- PWA：可安装到主屏/桌面，独立窗口打开。
          manifest 与 sw.js 都放在 public/ 下，Vite 按 base('/app/') 原样拷到 app/ 根，
-         于是两者天然落在 /app/ 作用域内，与旧版播放器完全隔离。 -->
+         于是两者天然落在 /app/ 作用域内。
+         注：v2.24.0 起页面也能从根路径 `/` 打开，但 PWA 的 scope 仍是 /app/
+         （已安装的实例依赖它，改 scope 等于让所有已装用户失效）。 -->
     <link rel="manifest" href="/app/manifest.webmanifest" />
     <meta name="theme-color" content="#4f46e5" />
     <!-- iOS 不吃 manifest 的 theme_color / display，这几条是老版本 Safari 的补丁 -->

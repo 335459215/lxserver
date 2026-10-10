@@ -18,7 +18,9 @@ export default function AboutGroup() {
 
   useEffect(() => {
     let alive = true
-    fetch('config.json', { cache: 'no-store' })
+    // 绝对路径：设置页挂在 /settings/:group 下，相对路径会解析成
+    // /settings/config.json → 落到 SPA 回退拿到 HTML → 解析失败。
+    fetch('/app/config.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => alive && setCfg(d))
       .catch(() => {})
@@ -49,7 +51,7 @@ export default function AboutGroup() {
 
       <div className="rounded-2xl border border-line bg-panel p-5">
         <h3 className="text-sm font-medium text-ink">会话</h3>
-        <p className="mt-1 text-xs text-faint">清除本浏览器持有的管理密码与用户 Token（服务端会话随 TTL 过期）。</p>
+        <p className="mt-1 text-xs text-faint">清除本浏览器持有的登录凭据（服务端会话随 TTL 过期）。</p>
         <Button
           variant="destructive"
           className="mt-3"

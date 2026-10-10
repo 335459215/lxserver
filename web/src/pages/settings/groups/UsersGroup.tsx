@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { KeyRound, Plus, Trash2, UserPlus } from 'lucide-react'
-import { adminFetch, api, useAuth } from '@/lib/auth'
+import { adminFetch, api, isAdmin, useAuth } from '@/lib/auth'
 import {
   Button,
   Collapse,
@@ -23,6 +23,8 @@ import {
 
 interface UserRow {
   name: string
+  /** 管理员：可用该账号登录并进入「设置」（v2.24.0 起管理员是账号属性） */
+  isAdmin?: boolean
   enableCustomMusicDir?: boolean
   customMusicDir?: string
   allowOperateCustomMusicDir?: boolean
@@ -112,6 +114,7 @@ function EditUserDialog({ user, onDone }: { user: UserRow; onDone: () => void })
   const { toast } = useToast()
   const [name, setName] = useState(user.name)
   const [password, setPassword] = useState('')
+  const [isAdminUser, setIsAdminUser] = useState(!!user.isAdmin)
   const [enableCustomMusicDir, setEnableCustomMusicDir] = useState(!!user.enableCustomMusicDir)
   const [customMusicDir, setCustomMusicDir] = useState(user.customMusicDir ?? '')
   const [allowOperate, setAllowOperate] = useState(!!user.allowOperateCustomMusicDir)
@@ -129,6 +132,7 @@ function EditUserDialog({ user, onDone }: { user: UserRow; onDone: () => void })
           name: user.name,
           newName: name !== user.name ? name : undefined,
           ...(password ? { password } : {}),
+          isAdmin: isAdminUser,
           enableCustomMusicDir,
           customMusicDir,
           allowOperateCustomMusicDir: allowOperate,
@@ -165,6 +169,15 @@ function EditUserDialog({ user, onDone }: { user: UserRow; onDone: () => void })
             <label className="text-xs font-medium text-dim" htmlFor="edit-name">用户名</label>
             <Input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-panel2/60 p-3 text-sm text-ink">
+            <span>
+              管理员
+              <span className="mt-0.5 block text-xs text-dim">
+                可用该账号登录并进入「设置」；至少需保留一个管理员
+              </span>
+            </span>
+            <Switch checked={isAdminUser} onCheckedChange={setIsAdminUser} />
+          </label>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-dim" htmlFor="edit-pw">新密码</label>
             <Input
@@ -290,7 +303,7 @@ export default function UsersGroup() {
     void load()
   }, [])
 
-  if (!auth.admin.ok) return <div className="text-sm text-dim">需要管理员权限。</div>
+  if (!isAdmin(auth)) return <div className="text-sm text-dim">需要管理员账号。</div>
   if (error) return <div className="text-sm text-danger">{error}</div>
   if (!users) return <div className="text-sm text-dim">加载中…</div>
 
@@ -313,6 +326,7 @@ export default function UsersGroup() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-mono text-sm text-ink">{u.name}</span>
+                    {u.isAdmin && <Badge tone="accent">管理员</Badge>}
                     {isPublic && <Badge tone="accent">公开</Badge>}
                     {u.enableCustomMusicDir && <Badge tone="neutral">自定义目录</Badge>}
                     {u.allowWriteCustomMusicDir && <Badge tone="ok">可写</Badge>}

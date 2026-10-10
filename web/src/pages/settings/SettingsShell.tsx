@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import { Lock } from 'lucide-react'
-import { api, setAdminPassword, useAuth } from '@/lib/auth'
+import { api, isAdmin, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { Button, Input, Stack } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -15,25 +15,30 @@ import NetworkGroup from './groups/NetworkGroup'
 import SourcesGroup from './groups/SourcesGroup'
 import AppearanceGroup from './groups/AppearanceGroup'
 
-/** 管理员登录卡：验证走服务端 /api/login（与旧后台同一信任模型：密码留存浏览器） */
+/** 管理员解锁卡（v2.24.0）。
+ *
+ * 管理员现在是**账号属性**：正常情况下登录即具备，这个卡片不会出现。
+ * 它只在一种情形下渲染——已登录但不是管理员，此时给一次「用管理员账号重新登录」的机会，
+ * 而不是把用户丢回登录页（那样会丢掉当前账号的听歌状态）。 */
 function AdminGate() {
   const { refresh } = useAuth()
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState(false)
+  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true)
-    setError(false)
-    const ok = await api.adminLogin(password)
+    setError('')
+    const res = await api.login(username.trim(), password)
     setBusy(false)
-    if (ok) {
-      setAdminPassword(password)
-      await refresh()
-    } else {
-      setError(true)
+    if (!res.ok) {
+      setError('账号或密码不正确')
+      return
     }
+    await refresh()
+    if (!res.isAdmin) setError('该账号不是管理员')
   }
 
   return (
@@ -44,19 +49,29 @@ function AdminGate() {
       <span className="flex size-9 items-center justify-center rounded-lg bg-accent-soft text-accent">
         <Lock className="size-4" />
       </span>
-      <h1 className="mt-3 text-base font-semibold text-ink">需要管理员权限</h1>
-      <p className="mt-1 text-sm text-dim">输入管理密码以继续（部署时配置的 frontend.password）。</p>
-      <Input
-        type="password"
-        className="mt-4"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        placeholder="管理密码"
-        autoFocus
-      />
-      {error && <p className="mt-2 text-xs text-danger">密码不正确</p>}
-      <Button type="submit" className="mt-4 w-full" disabled={busy || !password}>
-        {busy ? '验证中…' : '解锁'}
+      <h1 className="mt-3 text-base font-semibold text-ink">需要管理员账号</h1>
+      <p className="mt-1 text-sm text-dim">
+        当前账号没有管理权限。请用管理员账号登录以继续。
+      </p>
+      <div className="mt-4 space-y-3">
+        <Input
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="管理员账号"
+          autoComplete="username"
+          autoFocus
+        />
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="密码"
+          autoComplete="current-password"
+        />
+      </div>
+      {error && <p className="mt-2 text-xs text-danger">{error}</p>}
+      <Button type="submit" className="mt-4 w-full" disabled={busy || !username.trim() || !password}>
+        {busy ? '验证中…' : '登录'}
       </Button>
     </form>
   )
@@ -124,7 +139,7 @@ export default function SettingsShell() {
   const { auth } = useAuth()
   const { group } = useParams()
 
-  if (!auth.admin.ok) return <AdminGate />
+  if (!isAdmin(auth)) return <AdminGate />
 
   const title = GROUP_TITLES.get(group ?? '') ?? '设置'
   const hint = SETTINGS_GROUPS.find((g) => g.key === group)?.hint

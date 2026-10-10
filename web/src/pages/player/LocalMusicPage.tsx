@@ -121,7 +121,7 @@ export default function LocalMusicPage() {
             （支持 mp3 / flac / m4a / ogg / wav / ape，文件名形如「歌手 - 歌名」时能自动解析出标签）。
           </p>
           <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-faint">
-            目录路径属于服务端用户配置，可在旧版播放器的「本地音乐」页或用户管理里设置。
+            目录路径属于服务端用户配置，可由管理员在「设置 → 用户」里为账号指定。
           </p>
           <Button variant="outline" size="sm" className="mt-4" onClick={() => void rescan()} disabled={syncing}>
             {syncing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
