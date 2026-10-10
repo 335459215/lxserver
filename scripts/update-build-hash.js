@@ -67,45 +67,62 @@ const srcHash = getDirectoryHash(path.join(targetDir, 'src'), [], []);
 
 const finalHash = crypto.createHash('md5').update(publicHash + srcHash).digest('hex').substring(0, 7);
 
-// Update config.js
-const configPath = path.join(targetDir, 'public', 'js', 'config.js');
-if (fs.existsSync(configPath)) {
-    let configContent = fs.readFileSync(configPath, 'utf8');
+// 同步项目版本号到 config.js 与 package.json。
+//
+// 为什么：`version` 文件才是本项目的版本来源（每个里程碑手动 bump），
+// 但它与另外**两处版本号**长期漂移，各自都已漂了 20 多个版本没人管：
+//   - `public/js/config.js` 的 version → release.yml 拿它当 **Release 名/标题**
+//   - `package.json` 的 version       → electron-builder 拿它当 **桌面端产物文件名**
+// 实测后果：给 v2.22.1 打 tag，Release 标题和桌面端安装包名字却是 2.1.1。
+// 在构建期统一同步，避免每次发版手改、也避免再次漂移。
+const versionPath = path.join(targetDir, 'version');
+const projectVersion = fs.existsSync(versionPath)
+    ? fs.readFileSync(versionPath, 'utf8').trim()
+    : '';
 
-    if (configContent.includes('buildHash:')) {
-        configContent = configContent.replace(/buildHash:\s*['"][a-f0-9]+['"]/, `buildHash: '${finalHash}'`);
-    } else {
-        configContent = configContent.replace(/(window\.CONFIG\s*=\s*\{)/, `$1\n    buildHash: '${finalHash}',`);
+// 1) config.js：保留 v 前缀（它与 Release tag 对齐，沿用历史格式）
+if (projectVersion) {
+    const configPath = path.join(targetDir, 'public', 'js', 'config.js');
+    if (fs.existsSync(configPath)) {
+        let configContent = fs.readFileSync(configPath, 'utf8');
+
+        if (configContent.includes('buildHash:')) {
+            configContent = configContent.replace(/buildHash:\s*['"][a-f0-9]+['"]/, `buildHash: '${finalHash}'`);
+        } else {
+            configContent = configContent.replace(/(window\.CONFIG\s*=\s*\{)/, `$1\n    buildHash: '${finalHash}',`);
+        }
+
+        if (/version:\s*['"][^'"]*['"]/.test(configContent)) {
+            configContent = configContent.replace(
+                /version:\s*['"][^'"]*['"]/,
+                `version: '${projectVersion}'`,
+            )
+        } else {
+            configContent = configContent.replace(
+                /(window\.CONFIG\s*=\s*\{)/,
+                `$1\n    version: '${projectVersion}',`,
+            )
+        }
+
+        fs.writeFileSync(configPath, configContent);
+        console.log(`Build hash updated to ${finalHash}; version synced to ${projectVersion} in config.js`);
     }
 
-    // 同步项目版本号到 config.js。
-    //
-    // 为什么：`version` 文件才是本项目的版本来源（每个里程碑手动 bump），
-    // 但 config.js 里的 version 是**上游继承的陈旧值**（长期停留在 v2.1.1，
-    // 从没随项目更新）。而 release.yml 恰恰是从 config.js grep 这个值当作
-    // Release 版本号 —— 结果就是打了 v2.22.1 的 tag 却发布出叫 v2.1.1 的 Release。
-    // 这里在构建期同步，避免每次发版手改、也避免两者再次漂移。
-    const versionPath = path.join(targetDir, 'version');
-    if (fs.existsSync(versionPath)) {
-        const projectVersion = fs.readFileSync(versionPath, 'utf8').trim();
-        if (projectVersion) {
-            if (/version:\s*['"][^'"]*['"]/.test(configContent)) {
-                configContent = configContent.replace(
-                    /version:\s*['"][^'"]*['"]/,
-                    `version: '${projectVersion}'`,
-                )
-            } else {
-                configContent = configContent.replace(
-                    /(window\.CONFIG\s*=\s*\{)/,
-                    `$1\n    version: '${projectVersion}',`,
-                )
-            }
-            console.log(`Version synced to ${projectVersion} in config.js`)
+    // 2) package.json：**不带 v 前缀**（semver 要求，electron-builder 也按 semver 解析）
+    const pkgPath = path.join(targetDir, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+        const pkgVersion = projectVersion.replace(/^v/, '');
+        const pkgContent = fs.readFileSync(pkgPath, 'utf8');
+        // 用带缩进的精确替换，避免误伤依赖里的 "version" 字段
+        const next = pkgContent.replace(
+            /("version"\s*:\s*")[^"]*(")/,
+            `$1${pkgVersion}$2`,
+        );
+        if (next !== pkgContent) {
+            fs.writeFileSync(pkgPath, next);
+            console.log(`Version synced to ${pkgVersion} in package.json`);
         }
     }
-
-    fs.writeFileSync(configPath, configContent);
-    console.log(`Build hash updated to ${finalHash} in config.js`);
 }
 
 /**
