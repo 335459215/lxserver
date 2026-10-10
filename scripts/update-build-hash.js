@@ -78,6 +78,32 @@ if (fs.existsSync(configPath)) {
         configContent = configContent.replace(/(window\.CONFIG\s*=\s*\{)/, `$1\n    buildHash: '${finalHash}',`);
     }
 
+    // 同步项目版本号到 config.js。
+    //
+    // 为什么：`version` 文件才是本项目的版本来源（每个里程碑手动 bump），
+    // 但 config.js 里的 version 是**上游继承的陈旧值**（长期停留在 v2.1.1，
+    // 从没随项目更新）。而 release.yml 恰恰是从 config.js grep 这个值当作
+    // Release 版本号 —— 结果就是打了 v2.22.1 的 tag 却发布出叫 v2.1.1 的 Release。
+    // 这里在构建期同步，避免每次发版手改、也避免两者再次漂移。
+    const versionPath = path.join(targetDir, 'version');
+    if (fs.existsSync(versionPath)) {
+        const projectVersion = fs.readFileSync(versionPath, 'utf8').trim();
+        if (projectVersion) {
+            if (/version:\s*['"][^'"]*['"]/.test(configContent)) {
+                configContent = configContent.replace(
+                    /version:\s*['"][^'"]*['"]/,
+                    `version: '${projectVersion}'`,
+                )
+            } else {
+                configContent = configContent.replace(
+                    /(window\.CONFIG\s*=\s*\{)/,
+                    `$1\n    version: '${projectVersion}',`,
+                )
+            }
+            console.log(`Version synced to ${projectVersion} in config.js`)
+        }
+    }
+
     fs.writeFileSync(configPath, configContent);
     console.log(`Build hash updated to ${finalHash} in config.js`);
 }
