@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavLink, useParams } from 'react-router-dom'
+import { NavLink, Navigate, useParams } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { api, isAdmin, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
@@ -35,7 +35,8 @@ function AdminGate() {
     const res = await api.login(username.trim(), password)
     setBusy(false)
     if (!res.ok) {
-      setError('账号或密码不正确')
+      // 断网与凭据错误要分开提示（否则用户会反复重输密码）
+      setError(res.error === 'network' ? '连不上服务器，请检查网络后重试' : '账号或密码不正确')
       return
     }
     await refresh()
@@ -102,11 +103,12 @@ function GroupPage() {
     case 'about':
       return <AboutGroup />
     default:
-      return (
-        <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center text-sm text-faint">
-          该分组将在阶段 B 的后续切片接入（原后台对应面板迁移时替换本占位）。
-        </div>
-      )
+      // 【为什么是重定向而不是占位文案】
+      // 十个分组已全部实现，走到这里只剩一种情况：用户直接访问 `/settings`
+      // （不带分组）。原先显示「该分组将在阶段 B 的后续切片接入」—— 那是
+      // 迁移期的占位话术，现在**既过时又误导**：它让人以为功能还没做，
+      // 实际只是少了个路由段。直接跳到第一个分组，符合「点设置就该看到内容」的预期。
+      return <Navigate to={`/settings/${SETTINGS_GROUPS[0].key}`} replace />
   }
 }
 

@@ -44,8 +44,16 @@ export default function Login() {
     setError('')
     const res = await api.login(username.trim(), password)
     setBusy(false)
-    if (res.ok) await refresh()
-    else setError('账号或密码不正确')
+    if (res.ok) {
+      await refresh()
+      return
+    }
+    // 区分「连不上」与「凭据错」：断网时说「账号或密码不正确」会让人反复重输密码
+    setError(
+      res.error === 'network'
+        ? '连不上服务器，请检查网络后重试'
+        : '账号或密码不正确',
+    )
   }
 
   return (

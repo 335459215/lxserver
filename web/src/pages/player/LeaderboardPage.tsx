@@ -85,7 +85,17 @@ export default function LeaderboardPage() {
 
       <div className="grid gap-5 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-6">
         {/* 榜单列表 */}
-        <section className="lg:sticky lg:top-20 lg:self-start">
+        {/*
+          【移动端横向溢出的根因，别改回去】
+          这个 section 在窄屏下是 grid 的**直接子项**，而 grid 项默认 `min-width: auto`：
+          它的最小宽度会被内容（那排 `whitespace-nowrap` 的榜单按钮）撑到 4140px，
+          于是整个 grid 跟着变宽 → 文档 scrollWidth 远超视口 → 页面能横向拖走。
+          上面的 `overflow-x-auto` 只是让**内层 ul** 可滚动，管不住外层的 grid 项。
+          修法：给 grid 项加 `min-w-0`（允许它收缩到轨道宽度以下），
+          滚动才会老老实实发生在 ul 内部。
+          宽屏（lg）下它是固定 13rem 的轨道，加 min-w-0 无副作用。
+        */}
+        <section className="min-w-0 lg:sticky lg:top-20 lg:self-start">
           <p className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium tracking-widest text-faint">
             <Trophy className="size-3.5" /> 榜单
           </p>

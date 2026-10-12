@@ -118,17 +118,31 @@ async function adminFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   /**
    * 统一登录：账号 + 密码。成功后落盘 token 与用户名。
-   * 返回值带 isAdmin，调用方据此刷新鉴权状态。
+   *
+   * 返回 `error` 区分两种失败，界面据此给不同提示：
+   *   'network' —— 连不上服务器（断网/服务端没起）。这时说「账号或密码不正确」是误导，
+   *                用户会反复重输密码；必须让他去查网络。
+   *   'auth'    —— 服务器明确拒绝了凭据。
+   * 原先只返回 ok:false，且**没有 try/catch** —— 断网时 fetch 抛异常会让
+   * 「登录中…」永远停住（按钮 disabled），用户只能刷新页面。
    */
-  login: async (username: string, password: string): Promise<{ ok: boolean; isAdmin: boolean }> => {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    })
-    if (!res.ok) return { ok: false, isAdmin: false }
+  login: async (
+    username: string,
+    password: string,
+  ): Promise<{ ok: boolean; isAdmin: boolean; error?: 'network' | 'auth' }> => {
+    let res: Response
+    try {
+      res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+    } catch {
+      return { ok: false, isAdmin: false, error: 'network' }
+    }
+    if (!res.ok) return { ok: false, isAdmin: false, error: 'auth' }
     const data = (await res.json().catch(() => ({}))) as { token?: string; isAdmin?: boolean }
-    if (!data.token) return { ok: false, isAdmin: false }
+    if (!data.token) return { ok: false, isAdmin: false, error: 'auth' }
     setUserToken(data.token)
     setUserName(username)
     // 迁移：老版本留下的部署密码不再需要，清掉避免它继续作为管理凭据生效
@@ -194,21 +208,37 @@ export const api = {
         body: JSON.stringify({ sourceIds, username: 'open' }),
       }),
   },
-  /** 校验本地 token 是否仍有效；顺带拿回 isAdmin 与用户名 */
+  /**
+   * 校验本地 token 是否仍有效；顺带拿回 isAdmin 与用户名。
+   *
+   * 【为什么必须 try/catch，而不是只看 res.ok】
+   * 断网（或服务端挂了）时 `fetch` 是**抛异常**（TypeError: Failed to fetch），
+   * 不是返回一个 !ok 的响应。原先没包 catch，异常会让这个 promise 永远不 resolve，
+   * 于是 `AuthProvider` 的 `loading` 停在 true —— 页面永久卡在「正在连接服务器…」，
+   * 既没有错误提示也没有重试入口。PWA 离线场景下这是必然触发的。
+   * 这里把「网络不可达」与「token 失效」都归为「未登录」，让界面落到登录页
+   * （登录页本身有网络错误提示），而不是无限转圈。
+   */
   userVerify: async (): Promise<{ ok: boolean; username: string | null; isAdmin: boolean }> => {
     const token = getUserToken()
     if (!token) return { ok: false, username: null, isAdmin: false }
-    const res = await fetch('/api/user/auth/verify', { headers: { 'x-user-token': token } })
-    if (!res.ok) return { ok: false, username: null, isAdmin: false }
-    const data = (await res.json()) as { valid?: boolean; username?: string; isAdmin?: boolean }
-    if (!data.valid) {
-      setUserName('')
+    try {
+      const res = await fetch('/api/user/auth/verify', { headers: { 'x-user-token': token } })
+      if (!res.ok) return { ok: false, username: null, isAdmin: false }
+      const data = (await res.json()) as { valid?: boolean; username?: string; isAdmin?: boolean }
+      if (!data.valid) {
+        setUserName('')
+        return { ok: false, username: null, isAdmin: false }
+      }
+      // 用户名要落盘：/api/music/url 的用户鉴权头需要它（见 userAuthHeaders）
+      const username = data.username ?? null
+      setUserName(username ?? '')
+      return { ok: true, username, isAdmin: !!data.isAdmin }
+    } catch {
+      // 网络不可达：保留本地 token 与用户名（网络恢复后 refresh() 还能救回来），
+      // 但本次判定为未登录。
       return { ok: false, username: null, isAdmin: false }
     }
-    // 用户名要落盘：/api/music/url 的用户鉴权头需要它（见 userAuthHeaders）
-    const username = data.username ?? null
-    setUserName(username ?? '')
-    return { ok: true, username, isAdmin: !!data.isAdmin }
   },
   logoutAll: async () => {
     const token = getUserToken()
