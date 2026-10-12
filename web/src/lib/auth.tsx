@@ -1,23 +1,22 @@
 import * as React from 'react'
 
-// ===== 鉴权状态（v2.24.0：统一为「账号 + 密码」）=====
+// ===== 鉴权状态（v2.25.0：只有「账号 + 密码」）=====
 //
-// 【设计变更，改前必读】
-// 此前这里维护**三套**互不相干的凭据：
-//   1. 管理员：POST /api/login 验部署密码（frontend.password），密码存 localStorage，
-//      此后每个管理 API 带 `x-frontend-auth` 头。**与账号无关**。
-//   2. 用户  ：POST /api/user/login 换 token（7 天 TTL），带 `x-user-token` 头。
-//   3. 播放器：POST /api/music/auth 换 HttpOnly Cookie（24h TTL）。
-// 于是登录页被迫做成三个页签，用户要记两套密码，且「我是管理员吗」与「我是谁」是两个问题。
+// 【模型】与 Emby / Jellyfin 同一套：
+//   - 网页登录只有一种方式：账号 + 密码 → 换取 token；
+//   - 那个 token 既是网页会话凭据，也是**外部工具**的凭据
+//     （长期令牌在「设置 → 令牌」里生成，供 MCP / 脚本等使用）。
+//   没有任何「与账号无关的独立密码」。
 //
-// 现在统一：**一个账号 + 一个密码**（config.users 里的账号）。
-//   - 登录：POST /api/login { username, password } → 回 { token, username, isAdmin }
-//   - 管理员 = 账号属性（服务端 isAdminUser 判定），不再是另一把钥匙。
-//   - 管理 API 仍然发 `x-frontend-auth` 头，但**值改成用户 token** ——
-//     服务端 adminAuth.isAdminCredential 认这个（同时继续兼容老部署密码）。
-//     这样 60 多处既有管理接口**一行都不用改**。
+// 【v2.25.0 删掉了什么（改前必读）】
+//   1. `frontend.password`（部署管理密码）：整条链路删除。它明文存 localStorage，
+//      与账号体系并行，用户要记两套凭据 —— 正是用户点名要删的东西。
+//   2. `x-frontend-auth` 请求头：整条链路删除。管理接口现在一律认 `x-user-token`，
+//      与听歌接口用同一个头、同一份凭据。
+//   （此前为了「60 多处管理接口一行不用改」，曾把 x-frontend-auth 的值换成用户 token
+//    来做过渡；v2.25.0 把这个过渡层也去掉了，头名本身不再存在。）
 //
-// 【播放器那套为什么删掉】
+// 【播放器那套为什么删掉（v2.24.0 已做）】
 // `player.enableAuth` 是给**旧版播放器**（挂在 `/` 的静态页）做的门禁：
 // 它给整个站点发 HttpOnly Cookie，与账号体系完全并行。旧版已于 v2.23.0 删除，
 // 新版前端本来就由「登录门」守着（未登录不露任何导航），再加一层播放器密码
@@ -26,7 +25,13 @@ import * as React from 'react'
 
 const USER_TOKEN_KEY = 'lx.user.token'
 const USER_NAME_KEY = 'lx.user.name'
-/** 旧版遗留：部署密码。仍读取用于**迁移**（见 hasLegacyAdminPassword），不再写入。 */
+/**
+ * 旧版遗留的部署密码键名。**只用于删除**（见 clearLegacyAdminPassword）。
+ *
+ * 为什么删掉逻辑还要留着：v2.25.0 之前登录过的人浏览器里存着 `lx.admin.password`。
+ * 虽然服务端已经完全不认它了（认了也没用），但它毕竟是明文密码躺在 localStorage 里，
+ * 能抹掉就抹掉 —— 保留一个几十字节的清理函数换「用户浏览器里不再有明文密码」，划算。
+ */
 const LEGACY_ADMIN_KEY = 'lx.admin.password'
 
 export interface AuthState {
@@ -56,11 +61,8 @@ export function setUserName(name: string) {
 /**
  * 清除旧版遗留的部署密码（迁移用，登录成功与退出登录时各调一次）。
  *
- * 【为什么必须清掉】v2.24.0 之前登录过的人浏览器里存着 `lx.admin.password`，
- * 而服务端**刻意保留了**「老密码也能过管理鉴权」的向后兼容分支（外部工具/脚本在用）。
- * 两者叠加的后果是：用户点了「退出」，token 清了，但那份老密码还在，
- * 于是**退出后依然能进设置** —— 一种很难察觉的权限残留。
- * 前端已不再读取它，这里只负责把它从浏览器里抹掉。
+ * 服务端已不再认这个凭据，所以它**不再是权限残留**；这里清它是为了
+ * 不在用户浏览器里留一份明文密码。
  */
 export function clearLegacyAdminPassword() {
   try {
@@ -68,17 +70,6 @@ export function clearLegacyAdminPassword() {
   } catch {
     /* 隐私模式 */
   }
-}
-
-/**
- * 管理 API 的凭据头。
- *
- * 值用**用户 token**：服务端 adminAuth.isAdminCredential 会拿它去 verifyUserAuth，
- * 再按账号的 isAdmin 属性判定。这样既有的 60 多处 `x-frontend-auth` 校验
- * 无需改动就自动升级到账号模型。
- */
-function adminCredential(): string {
-  return getUserToken()
 }
 
 /**
@@ -96,14 +87,19 @@ export function userAuthHeaders(): Record<string, string> {
   return { 'x-user-name': name, 'x-user-token': token }
 }
 
-/** 管理 API 包装：自动带 x-frontend-auth；401 时清除本地登录态并抛出 */
+/**
+ * 管理 API 包装：自动带用户 token；401 时清除本地登录态并抛出。
+ *
+ * 【v2.25.0】头名从 `x-frontend-auth` 换成 `x-user-token` —— 与听歌接口同一个头。
+ * 服务端 60 多处管理校验也同步改成只认这个头，两边是一套东西。
+ */
 export async function adminFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(url, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
       'Content-Type': 'application/json',
-      'x-frontend-auth': adminCredential(),
+      'x-user-token': getUserToken(),
     },
   })
   if (res.status === 401) {

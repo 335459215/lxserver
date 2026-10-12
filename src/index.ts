@@ -339,8 +339,11 @@ if (envParams.LIST_ADD_MUSIC_LOCATION_TYPE) {
       break
   }
 }
+// 【v2.25.0】FRONTEND_PASSWORD 环境变量已废弃（frontend.password 整条链路删除）。
+// 这里刻意**静默忽略**而不是报错：老用户的 compose.yaml 里可能还留着这一行，
+// 报错会让容器直接起不来，而它现在本来就该无效。
 if (envParams.FRONTEND_PASSWORD) {
-  global.lx.config['frontend.password'] = envParams.FRONTEND_PASSWORD
+  console.warn('[配置] FRONTEND_PASSWORD 已废弃（v2.25.0 起管理员改为账号属性），该环境变量被忽略。')
 }
 if (envParams.WEBDAV_ENABLE !== undefined) {
   setBoolConfig('webdav.enable', envParams.WEBDAV_ENABLE)
@@ -388,11 +391,13 @@ if (envParams.PORT) {
   const port = parseInt(envParams.PORT, 10)
   if (!isNaN(port) && port > 0) global.lx.config.port = port
 }
-if (envParams.ENABLE_WEBPLAYER_AUTH !== undefined) {
-  setBoolConfig('player.enableAuth', envParams.ENABLE_WEBPLAYER_AUTH)
-}
-if (envParams.WEBPLAYER_PASSWORD) {
-  global.lx.config['player.password'] = envParams.WEBPLAYER_PASSWORD
+// 【v2.25.0】ENABLE_WEBPLAYER_AUTH / WEBPLAYER_PASSWORD 已废弃
+// （player.enableAuth / player.password 整条链路删除，无任何调用方）。
+// 与 FRONTEND_PASSWORD 同样处理：静默忽略 + 警告，避免老 compose.yaml 起不来。
+// 注意：这两个名字已从 ENV_PARAMS 名单里移除，故不能再从 envParams 读，
+// 直接读 process.env（只为给一句友好提示，不参与任何逻辑）。
+if (process.env.ENABLE_WEBPLAYER_AUTH !== undefined || process.env.WEBPLAYER_PASSWORD) {
+  console.warn('[配置] ENABLE_WEBPLAYER_AUTH / WEBPLAYER_PASSWORD 已废弃（v2.25.0 起删除播放器独立密码），该环境变量被忽略。')
 }
 if (envParams.DISABLE_TELEMETRY !== undefined) {
   setBoolConfig('disableTelemetry', envParams.DISABLE_TELEMETRY)

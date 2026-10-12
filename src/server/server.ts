@@ -38,7 +38,7 @@ import * as scheduler from './scheduler'
 import { getUpdatedListIds, removeUpdatedListId } from './task/networkListTask'
 import { setSongResolver, getSyncDownloadData, saveSyncDownloadData, getUserSyncProgress, triggerUserSync, cancelUserSync, getUserSyncStorageLocation, isUserSyncRunning, migrateSyncStorage } from './task/syncDownloadTask'
 import { getDownloadQualityCandidates } from './downloadQuality'
-import { isAdminCredential, isAdminUser, hasExplicitAdmin, adminExistsAfterChange, registerUserTokenVerifier } from './adminAuth'
+import { isAdminRequest, isAdminUser, hasExplicitAdmin, adminExistsAfterChange, registerUserTokenVerifier, extractTokens } from './adminAuth'
 import crypto from 'node:crypto'
 import needle from 'needle'
 import { getProxyAgent, resolveProxyAddress } from '../modules/utils/proxy.js'
@@ -104,9 +104,8 @@ const serializeDislikeRules = (rules: string, username?: string) => {
 }
 
 // ===== Player Session Store =====
-const playerSessions = new Map<string, { createdAt: number }>()
-const SESSION_TTL = 24 * 60 * 60 * 1000 // 24小时
-const SESSION_COOKIE_NAME = 'lx_player_session'
+// 【v2.25.0 已删除】playerSessions / SESSION_TTL / SESSION_COOKIE_NAME
+// （旧版播放器的独立 Cookie 会话，见下方「User Session Token Store」前的说明）
 
 // 收藏歌手列表头像补全：内存缓存（避免每次刷新重复请求音源）
 const artistPicCache = new Map<string, string>()
@@ -214,46 +213,11 @@ async function fetchArtistPicShared(source: string, id: string | number): Promis
 /** 生成随机 sessionId */
 const generateSessionId = () => crypto.randomBytes(32).toString('hex')
 
-/** 解析 Cookie 字符串 */
-const parseCookies = (cookieHeader: string | undefined): Record<string, string> => {
-  if (!cookieHeader) return {}
-  return Object.fromEntries(
-    cookieHeader.split(';').map(c => {
-      const [k, ...v] = c.trim().split('=')
-      return [k.trim(), decodeURIComponent(v.join('='))]
-    })
-  )
-}
-
-/** 检查请求是否携带有效的 Player Session Cookie */
-const checkPlayerAuth = (req: IncomingMessage): boolean => {
-  if (!global.lx.config['player.enableAuth']) return true // 未开启认证，直接放行
-  const cookies = parseCookies(req.headers['cookie'])
-  const sessionId = cookies[SESSION_COOKIE_NAME]
-  if (!sessionId) return false
-  const session = playerSessions.get(sessionId)
-  if (!session) return false
-  if (Date.now() - session.createdAt > SESSION_TTL) {
-    playerSessions.delete(sessionId)
-    return false
-  }
-  return true
-}
-
-/** 定期清理过期 Session（每小时） */
-setInterval(() => {
-  const now = Date.now()
-  let expired = 0
-  for (const [id, session] of playerSessions) {
-    if (now - session.createdAt > SESSION_TTL) {
-      playerSessions.delete(id)
-      expired++
-    }
-  }
-  // 有清理才让快照瘦身；Redis 键靠 TTL 自过期，无需处理
-  if (expired) sessionStore.scheduleSnapshotWrite()
-}, 60 * 60 * 1000)
-// ===== End Player Session Store =====
+// 【v2.25.0 已删除】Player Session Store（playerSessions / SESSION_TTL /
+// SESSION_COOKIE_NAME / parseCookies / checkPlayerAuth / 每小时清理定时器）。
+//
+// 那是旧版播放器的独立 Cookie 门禁，随 /api/music/auth* 三个端点一起删除。
+// 全站现在只有一套会话：userSessions（账号 token）。
 
 // ===== User Session Token Store =====
 interface UserToken {
@@ -277,8 +241,19 @@ const USER_SESSION_TTL = 7 * 24 * 60 * 60 * 1000 // 7天
 /** 持久化 Token 快速查找缓存：token → username */
 const persistentTokens = new Map<string, string>()
 
-/** 持久化 Token 元数据缓存：token → token 对象（含 disabled/expiresAt/lastUsed）*/
-const persistentTokenMeta = new Map<string, { name: string; token: string; disabled?: boolean; expiresAt?: number; lastUsed?: number }>()
+/**
+ * 持久化 Token 元数据缓存：token → token 对象。
+ *
+ * 【⚠️ 这里必须是 token 的**完整**字段集】
+ * 防抖写盘（scheduleSaveTokenConfig）是**从本 Map 重建**要落盘的对象，
+ * 而不是从文件读回来改。所以本 Map 少一个字段，那个字段就会在
+ * 「某次 lastUsed 更新触发写盘」时被静默抹掉。
+ *
+ * 曾经就漏了 `createdAt`：结果是「设置 → 令牌」列表里，凡是使用过一次的令牌
+ * 都显示「创建 —」（因为它的 lastUsed 更新触发了写盘，把 createdAt 冲掉了）。
+ * 加字段时请同步 `UserToken` 接口与下面的 `.set()`。
+ */
+const persistentTokenMeta = new Map<string, { name: string; token: string; createdAt: number; disabled?: boolean; expiresAt?: number; lastUsed?: number }>()
 
 /** lastUsed 防抖写盘队列：username → debounce timer */
 const persistentTokenSaveQueue = new Map<string, ReturnType<typeof setTimeout>>()
@@ -326,6 +301,26 @@ const getUserTokenConfig = (username: string): UserTokenConfig => {
   return { enabled: false, tokens: [] }
 }
 
+/**
+ * 按「完整令牌」或「脱敏串」定位一个 token 条目。
+ *
+ * 为什么两种都认：脱敏串（`lx_tk_abc123...wxyz`）是给**旧前端**用的 ——
+ * 它只从列表接口拿到脱敏值，不想让明文令牌在页面里到处流转。
+ * 但新前端（「设置 → 令牌」）手上本来就有完整令牌，直接传它更可靠：
+ * 脱敏串在「前 6 位 + 后 4 位都相同」的两个令牌之间会撞车，而完整令牌不会。
+ * 同时保留两条路径，是为了不破坏既有调用方。
+ */
+const findTokenItem = (tokens: UserToken[], target: unknown) => {
+  if (typeof target !== 'string' || !target) return undefined
+  // 1) 完整令牌精确匹配（以 lx_tk_ 前缀识别，避免把脱敏串误当完整令牌）
+  if (target.startsWith('lx_tk_')) {
+    const exact = tokens.find((t) => t.token === target)
+    if (exact) return exact
+  }
+  // 2) 脱敏串匹配（与列表接口给出的格式保持一致）
+  return tokens.find((t) => `${t.token.slice(0, 6)}...${t.token.slice(-4)}` === target)
+}
+
 const saveUserTokenConfig = (username: string, config: UserTokenConfig) => {
   const userDirname = getUserDirname(username)
   const userPath = path.join(global.lx.userPath, userDirname)
@@ -348,6 +343,9 @@ const saveUserTokenConfig = (username: string, config: UserTokenConfig) => {
         persistentTokenMeta.set(t.token, {
           name: t.name,
           token: t.token,
+          // createdAt 必须带上：写盘是从本 Map 重建对象的（见上面的注释）。
+          // 老数据可能没有这个字段，兜一个 0 让列表显示为「—」而不是 undefined。
+          createdAt: t.createdAt ?? 0,
           disabled: t.disabled ?? false,
           expiresAt: t.expiresAt ?? undefined,
           lastUsed: t.lastUsed,
@@ -418,12 +416,19 @@ export const verifyUserToken = (token: string, req?: IncomingMessage): string | 
 }
 
 /**
- * 验证请求中的用户 Token（x-user-token header）。
+ * 验证请求中的用户 Token。
  * 返回已验证的用户名，或 null 表示未认证。
+ *
+ * 【v2.25.0】改用 adminAuth.extractTokens，按 `x-user-token` → `Authorization: Bearer`
+ * → `?auth=` 的顺序找 token。此前这里**只**看 `x-user-token`，导致
+ * 「管理接口认 Bearer、听歌/用户接口不认」——MCP 客户端能读服务器状态，
+ * 却一搜索就 401。两处必须共用同一套提取逻辑。
  */
 export const verifyUserAuth = (req: IncomingMessage): string | null => {
-  const token = req.headers['x-user-token'] as string
-  if (token) return verifyUserToken(token, req)
+  for (const token of extractTokens(req)) {
+    const name = verifyUserToken(token, req)
+    if (name) return name
+  }
 
   // 后端所有用户名密码明文校验逻辑
   /*
@@ -443,12 +448,31 @@ export const verifyUserAuth = (req: IncomingMessage): string | null => {
 // 直接互相 import 会形成 CJS 循环依赖，加载期拿到半成品 exports。
 registerUserTokenVerifier((token, req) => verifyUserToken(token, req))
 
+/**
+ * 解析「这个请求该用谁的音源」。
+ *
+ * 自定义音源按用户归属落盘（`data/users/source/<user>/`），所以每个请求都要先
+ * 确定它代表哪个账号。规则（顺序即优先级）：
+ *   1. 带了具名 `x-user-name` → 必须**同时**带有效 token，否则返回 null（调用方回 401）。
+ *      要求两者兼备是防「拿自己的 token 去读别人的音源目录」：
+ *      用户名决定读哪个目录，token 决定你是不是那个账号。
+ *   2. 没带 `x-user-name` 但带了有效 token → **从 token 反查账号**。
+ *      （v2.25.0 新增）外部工具（MCP / 脚本）按标准做法只发
+ *      `Authorization: Bearer <token>`，不会去填 `x-user-name`。
+ *      此前这条路径会落到公开用户 `_open`，而 `_open` 目录通常是空的 ——
+ *      表现为「搜索正常，一点歌就说没找到自定义源」，排查起来很费解。
+ *      token 本来就已经唯一确定了账号，没必要再要求客户端重复声明一次。
+ *   3. 都没有 → 公开用户 `_open`（浏览类接口允许匿名只读）。
+ */
 const getCacheRequestUsername = (req: IncomingMessage): string | null => {
   const requested = (req.headers['x-user-name'] as string) || ''
-  if (!requested || requested === 'default' || requested === 'open' || requested === '_open') return '_open'
+  const isAnonymous = !requested || requested === 'default' || requested === 'open' || requested === '_open'
+  if (isAnonymous) {
+    // 没声明用户名：若带了有效 token 就认它（外部工具的标准姿势），否则当公开用户
+    return verifyUserAuth(req) || '_open'
+  }
   return verifyUserAuth(req)
 }
-
 /** 定期清理过期用户 Token（每小时） */
 setInterval(() => {
   const now = Date.now()
@@ -1072,7 +1096,7 @@ const getFrontendConfig = () => ({
   'user.cacheSizeLimit': global.lx.config['user.cacheSizeLimit'] || 2000,
   maxSnapshotNum: global.lx.config.maxSnapshotNum,
   'list.addMusicLocationType': global.lx.config['list.addMusicLocationType'],
-  'player.enableAuth': global.lx.config['player.enableAuth'] || false,
+  // 【v2.25.0】'player.enableAuth' 已删除（旧版播放器门禁，无调用方）
   port: global.lx.config.port,
   bindIP: global.lx.config.bindIP,
   'admin.path': global.lx.config['admin.path'] ?? '/admin',
@@ -1300,48 +1324,38 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
     if (pathname.startsWith('/api/')) {
 
 
-      // ===== 统一登录（v2.24.0）=====
+      // ===== 统一登录（v2.24.0，v2.25.0 收口）=====
       // 一个表单：账号 + 密码。账号在 config.users 里，其中 isAdmin 的账号即管理员。
-      // 登录成功即颁发用户 token —— 与旧版「管理员是一把独立钥匙」不同，
-      // 现在**同一份凭据**同时用于听歌与设置管理（管理员身份由账号决定）。
+      // 登录成功即颁发用户 token —— 同一份凭据同时用于听歌与设置管理。
       //
-      // 仍兼容「只传 password」的旧调用：老外部工具/书签用部署密码打这个端点。
-      // 那条路径只回 success（不发 token），因为部署密码本身不是任何账号的凭据。
+      // 【v2.25.0】删掉了「只传 password」的旧分支（它验的是 frontend.password 部署密码）。
+      // 现在这个端点**只认账号 + 密码**，与 Emby/Jellyfin 一致：
+      // 网页登录用账密换 token，外部工具用「设置 → 令牌」里生成的长期 token。
       if (pathname === '/api/login' && req.method === 'POST') {
         void readBody(req).then(body => {
           try {
             const { username, password } = JSON.parse(body)
 
-            // --- 路径 A：账号 + 密码（新前端走这条）---
-            if (username) {
-              const user = global.lx.config.users.find((u: any) => u.name === username && u.password === password)
-              if (!user) {
-                loginLog.warn(`Login failed: ${username} from ${ip}`)
-                res.writeHead(401, { 'Content-Type': 'application/json' })
-                res.end(JSON.stringify({ success: false, message: 'Invalid credentials' }))
-                return
-              }
-              const token = generateSessionId()
-              const session = { username, createdAt: Date.now() }
-              userSessions.set(token, session)
-              sessionStore.persistSession('user', token, session)
-              const admin = isAdminUser(username)
-              loginLog.info(`Login success: ${username}${admin ? ' (admin)' : ''} from ${ip}`)
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ success: true, token, username, isAdmin: admin }))
+            if (!username) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ success: false, message: 'Missing username' }))
               return
             }
-
-            // --- 路径 B：仅部署密码（向后兼容，不发 token）---
-            if (password === global.lx.config['frontend.password']) {
-              loginLog.info(`Admin login success from ${ip}`)
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ success: true, legacyAdmin: true }))
-            } else {
-              loginLog.warn(`Admin login failed from ${ip}`)
+            const user = global.lx.config.users.find((u: any) => u.name === username && u.password === password)
+            if (!user) {
+              loginLog.warn(`Login failed: ${username} from ${ip}`)
               res.writeHead(401, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ success: false }))
+              res.end(JSON.stringify({ success: false, message: 'Invalid credentials' }))
+              return
             }
+            const token = generateSessionId()
+            const session = { username, createdAt: Date.now() }
+            userSessions.set(token, session)
+            sessionStore.persistSession('user', token, session)
+            const admin = isAdminUser(username)
+            loginLog.info(`Login success: ${username}${admin ? ' (admin)' : ''} from ${ip}`)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: true, token, username, isAdmin: admin }))
           } catch (e) {
             res.writeHead(400)
             res.end('Bad Request')
@@ -1354,8 +1368,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 获取服务器状态
       if (pathname === '/api/status' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -1426,8 +1440,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/users') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -1714,8 +1728,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/data' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
 
         if (!userParam) {
@@ -1776,8 +1790,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // 获取快照列表
       if (pathname === '/api/data/snapshots' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
 
         if (!userParam) {
@@ -1818,8 +1832,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // 下载快照数据
       if (pathname === '/api/data/snapshot' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
 
         if (!userParam) {
@@ -1870,8 +1884,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // 恢复快照
       if (pathname === '/api/data/restore-snapshot' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
 
         if (!userParam) {
@@ -2077,8 +2091,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 删除快照 API
       if (pathname === '/api/data/delete-snapshot' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
 
         if (!userParam) {
@@ -2120,8 +2134,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // [新增] 上传快照 API
       if (pathname === '/api/data/upload-snapshot' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        const isAdminAuth = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdminAuth = isAdminRequest(req, auth)
         const userParam = urlObj.searchParams.get('user')
         const time = parseInt(urlObj.searchParams.get('time') || '0')
         const filename = urlObj.searchParams.get('filename')
@@ -2316,8 +2330,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/user/list' && req.method === 'GET') {
         const targetUserParam = urlObj.searchParams.get('user')
         const reqUsername = (req.headers['x-user-name'] as string) || targetUserParam || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         let username: string | null = null
 
         const canAccessOpen = global.lx.config['user.enablePublicFavorites'] && (
@@ -2360,8 +2374,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/user/list' && req.method === 'POST') {
         const targetUserParam = urlObj.searchParams.get('user')
         const reqUsername = (req.headers['x-user-name'] as string) || targetUserParam || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         let username: string | null = null
 
         const canAccessOpen = global.lx.config['user.enablePublicFavorites'] && (
@@ -2373,7 +2387,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             res.end(JSON.stringify({ success: false, error: '权限不足：未开启公开访问。' }))
             return
           }
-          if (!isAdminCredential(auth, req)) {
+          if (!isAdminRequest(req, auth)) {
             res.writeHead(403, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ success: false, error: '权限不足：公共歌单修改受限，请先验证管理员身份。' }))
             return
@@ -2418,8 +2432,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         const url = new URL(req.url || '', 'http://localhost')
         const userParam = url.searchParams.get('user') || ''
         const reqUsername = (req.headers['x-user-name'] as string) || userParam
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
 
         const canAccessOpen = global.lx.config['user.enablePublicFavorites'] && (
           global.lx.config['user.enablePublicNonAdminAccess'] || isAdmin || !!verifyUserAuth(req)
@@ -2860,8 +2874,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         let username: string | null = null
         if (isPublic) {
           if (global.lx.config['user.enablePublicRestriction']) {
-            const auth = req.headers['x-frontend-auth']
-            if (!isAdminCredential(auth, req)) {
+            const auth = req.headers['x-user-token']
+            if (!isAdminRequest(req, auth)) {
               res.writeHead(403, { 'Content-Type': 'application/json' })
               res.end(JSON.stringify({ success: false, message: '权限不足：公共用户受限模式下需要管理员权限' }))
               return
@@ -2907,8 +2921,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         let username: string | null = null
         if (isPublic) {
           if (global.lx.config['user.enablePublicRestriction']) {
-            const auth = req.headers['x-frontend-auth']
-            if (!isAdminCredential(auth, req)) {
+            const auth = req.headers['x-user-token']
+            if (!isAdminRequest(req, auth)) {
               res.writeHead(403, { 'Content-Type': 'application/json' })
               res.end(JSON.stringify({ success: false, message: '权限不足：公共用户受限模式下需要管理员权限' }))
               return
@@ -3077,8 +3091,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         if (isPublic) {
           // 公开用户：若开启了限制，需要管理员密码
           if (global.lx.config['user.enablePublicRestriction']) {
-            const auth = req.headers['x-frontend-auth']
-            if (!isAdminCredential(auth, req)) {
+            const auth = req.headers['x-user-token']
+            if (!isAdminRequest(req, auth)) {
               res.writeHead(403, { 'Content-Type': 'application/json' })
               res.end(JSON.stringify({ success: false, error: '权限不足：公共用户保存设置受限，请先验证管理员身份。' }))
               return
@@ -3276,12 +3290,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
         void readBody(req).then(body => {
           try {
-            const { tokenMasked, name, expireDays, expiresAt } = JSON.parse(body)
+            const { tokenMasked, token, name, expireDays, expiresAt } = JSON.parse(body)
             const config = getUserTokenConfig(username)
-            const tokenItem = config.tokens.find(t => {
-              const masked = `${t.token.slice(0, 6)}...${t.token.slice(-4)}`
-              return masked === tokenMasked
-            })
+            const tokenItem = findTokenItem(config.tokens, tokenMasked ?? token)
 
             if (tokenItem) {
               if (name !== undefined) tokenItem.name = name
@@ -3317,12 +3328,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
         void readBody(req).then(body => {
           try {
-            const { tokenMasked, disabled } = JSON.parse(body)
+            const { tokenMasked, token, disabled } = JSON.parse(body)
             const config = getUserTokenConfig(username)
-            const tokenItem = config.tokens.find(t => {
-              const masked = `${t.token.slice(0, 6)}...${t.token.slice(-4)}`
-              return masked === tokenMasked
-            })
+            const tokenItem = findTokenItem(config.tokens, tokenMasked ?? token)
 
             if (tokenItem) {
               tokenItem.disabled = !!disabled
@@ -3428,8 +3436,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         
         if (isPublic) {
           if (global.lx.config['user.enablePublicRestriction']) {
-            const auth = req.headers['x-frontend-auth']
-            if (!isAdminCredential(auth, req)) {
+            const auth = req.headers['x-user-token']
+            if (!isAdminRequest(req, auth)) {
               res.writeHead(403, { 'Content-Type': 'application/json' })
               res.end(JSON.stringify({ success: false, message: '权限不足：受限模式下需要管理员权限' }))
               return
@@ -3647,8 +3655,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               if (location !== fileCache.getCacheLocation()) {
                 // 公开用户：需要管理员密码才能修改
                 if (isPublic && global.lx.config['user.enablePublicRestriction']) {
-                  const auth = req.headers['x-frontend-auth']
-                  if (!isAdminCredential(auth, req)) {
+                  const auth = req.headers['x-user-token']
+                  if (!isAdminRequest(req, auth)) {
                     res.writeHead(403, { 'Content-Type': 'application/json' })
                     res.end(JSON.stringify({ success: false, error: '权限不足：公共用户修改缓存位置受限，请输入管理员密码。' }))
                     return
@@ -3842,8 +3850,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // 1.1-E Rename Subdirectory
       if (pathname === '/api/music/cache/subdirs/rename' && req.method === 'POST') {
         const reqUsername = (req.headers['x-user-name'] as string) || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         const isPublic = !reqUsername || reqUsername === '_open' || reqUsername === 'default'
         let username = '_open'
 
@@ -3884,8 +3892,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // 检查文件夹是否有效
       if (pathname === '/api/utils/check-dir' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, message: 'Unauthorized' }))
           return
@@ -3923,8 +3931,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // 1.1-F Delete Subdirectory
       if (pathname === '/api/music/cache/subdirs/delete' && req.method === 'POST') {
         const reqUsername = (req.headers['x-user-name'] as string) || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         const isPublic = !reqUsername || reqUsername === '_open' || reqUsername === 'default'
         let username = '_open'
 
@@ -4052,9 +4060,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           res.end(JSON.stringify({ success: false, message: 'Unauthorized' }))
           return
         }
-        const auth = req.headers['x-frontend-auth']
+        const auth = req.headers['x-user-token']
         const isPublic = username === '_open'
-        const isAdmin = isAdminCredential(auth, req) || username === 'admin'
+        const isAdmin = isAdminRequest(req, auth) || username === 'admin'
         const enablePublicRestriction = global.lx.config['user.enablePublicRestriction']
         const isServerCacheAllowed = global.lx.config['user.enablePublicNonAdminServerCache'] !== false
 
@@ -4070,8 +4078,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             if (!Array.isArray(tasks) || tasks.length === 0) throw new Error('Missing tasks')
             if (concurrency !== undefined) serverDownloadQueue.setConcurrency(username, concurrency)
             if (namingPattern) {
-              const auth = req.headers['x-frontend-auth']
-              if (isAdminCredential(auth, req)) {
+              const auth = req.headers['x-user-token']
+              if (isAdminRequest(req, auth)) {
                 const normalizedNamingPattern = fileCache.setNamingPattern(namingPattern)
                 if (global.lx.config) global.lx.config['cache.namingPattern'] = normalizedNamingPattern
               }
@@ -4178,8 +4186,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               username = verified
             }
 
-            const auth = req.headers['x-frontend-auth']
-            const isAdmin = isAdminCredential(auth, req) || username === 'admin'
+            const auth = req.headers['x-user-token']
+            const isAdmin = isAdminRequest(req, auth) || username === 'admin'
             const enablePublicRestriction = global.lx.config['user.enablePublicRestriction']
             const isServerCacheAllowed = global.lx.config['user.enablePublicNonAdminServerCache'] !== false
 
@@ -4189,8 +4197,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               return
             }
             if (namingPattern) {
-              const auth = req.headers['x-frontend-auth']
-              if (isAdminCredential(auth, req)) {
+              const auth = req.headers['x-user-token']
+              if (isAdminRequest(req, auth)) {
                 const normalizedNamingPattern = fileCache.setNamingPattern(namingPattern)
                 if (global.lx.config) global.lx.config['cache.namingPattern'] = normalizedNamingPattern
               }
@@ -4406,8 +4414,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/music/cache/list' && req.method === 'GET') {
         const targetUserParam = urlObj.searchParams.get('user')
         const reqUsername = targetUserParam || (req.headers['x-user-name'] as string) || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         const isPublic = !reqUsername || reqUsername === 'default' || reqUsername === '_open' || targetUserParam === '_open'
         let username = '_open'
 
@@ -4492,8 +4500,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // 9. Remove Cache File (Single or Batch)
       if (pathname === '/api/music/cache/remove' && req.method === 'POST') {
         const reqUsername = (req.headers['x-user-name'] as string) || ''
-        const auth = req.headers['x-frontend-auth']
-        const isAdmin = isAdminCredential(auth, req)
+        const auth = req.headers['x-user-token']
+        const isAdmin = isAdminRequest(req, auth)
         const isPublic = !reqUsername || reqUsername === 'default' || reqUsername === '_open'
         let username = '_open'
 
@@ -5668,8 +5676,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/data/delete-playlist' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -5707,8 +5715,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // 删除歌曲
       if (pathname === '/api/data/delete-song' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -5761,8 +5769,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // 重命名歌单
       if (pathname === '/api/data/rename-playlist' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -5815,8 +5823,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // 批量删除歌曲
       if (pathname === '/api/data/batch-delete-songs' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -5883,7 +5891,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           'Cache-Control': 'no-cache'
         })
         res.end(JSON.stringify({
-          'player.enableAuth': global.lx.config['player.enableAuth'] || false,
+          // 【v2.25.0】'player.enableAuth' 已删除（旧版播放器的独立门禁，无调用方）。
+          // 保留其它键：它们是「公共用户」相关的开关，前端仍在读。
           'user.enablePublicRestriction': global.lx.config['user.enablePublicRestriction'] || false,
           'user.enablePublicFavorites': global.lx.config['user.enablePublicFavorites'] || false,
           'user.enablePublicNonAdminAccess': global.lx.config['user.enablePublicNonAdminAccess'] || false,
@@ -5894,59 +5903,16 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         return
       }
 
-      // [新增] Web播放器认证 API（颁发 HttpOnly Cookie Session）
-      if (pathname === '/api/music/auth' && req.method === 'POST') {
-        void readBody(req).then(body => {
-          try {
-            const { password } = JSON.parse(body)
-            const correctPassword = global.lx.config['player.password'] || ''
-
-            if (password === correctPassword) {
-              const sessionId = generateSessionId()
-              const session = { createdAt: Date.now() }
-              playerSessions.set(sessionId, session)
-              sessionStore.persistSession('player', sessionId, session)
-              loginLog.info(`Player login success from ${ip}`)
-              res.writeHead(200, {
-                'Content-Type': 'application/json',
-                'Set-Cookie': `${SESSION_COOKIE_NAME}=${sessionId}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${SESSION_TTL / 1000}`
-              })
-              res.end(JSON.stringify({ success: true }))
-            } else {
-              loginLog.warn(`Player login failed from ${ip}`)
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ success: false }))
-            }
-          } catch (err: any) {
-            res.writeHead(500)
-            res.end(JSON.stringify({ success: false, error: err.message }))
-          }
-        })
-        return
-      }
-
-      // [新增] Web播放器登出 API（清除 Session Cookie）
-      if (pathname === '/api/music/auth/logout' && req.method === 'POST') {
-        const cookies = parseCookies(req.headers['cookie'])
-        const sessionId = cookies[SESSION_COOKIE_NAME]
-        if (sessionId) {
-          playerSessions.delete(sessionId)
-          sessionStore.unpersistSession('player', sessionId)
-        }
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Set-Cookie': `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`
-        })
-        res.end(JSON.stringify({ success: true }))
-        return
-      }
-
-      // [新增] Web播放器认证状态检查 API
-      if (pathname === '/api/music/auth/verify' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ valid: checkPlayerAuth(req) }))
-        return
-      }
+      // 【v2.25.0 已删除】/api/music/auth、/api/music/auth/logout、/api/music/auth/verify
+      //
+      // 它们是给**旧版播放器**（挂在 / 的静态页）做的独立门禁：一套与账号体系
+      // 完全并行的 HttpOnly Cookie 会话（`lx_player_session`）。旧版播放器已于
+      // v2.23.0 删除，前端在 v2.24.0 就不再调用它们，Subsonic 用的是自己的账号体系
+      // （见 subsonic.ts 的 getSubsonicUser），所以整条链路**没有任何调用方**。
+      //
+      // 删掉的理由与 frontend.password 一样：留着「看起来还有一套密码在生效」的
+      // 死代码，只会让人误判当前到底哪套鉴权在管事。现在全站只有一套：
+      // 账号 + 密码换 token，token 同时供网页与外部工具使用。
 
       // [新增] 音乐搜索 API
       if (pathname === '/api/music/search' && req.method === 'GET') {
@@ -6147,7 +6113,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       if (pathname === '/api/music/url' && req.method === 'POST') {
         const clientUsername = req.headers['x-user-name'] as string | undefined
 
-        // 鉴权逻辑：如果提供了具名用户，必须通过 Token 或密码验证
+        // 鉴权逻辑：如果提供了具名用户，必须通过 Token 验证（且必须是同一个账号）
         let verifiedUsername = 'open' // userApi 中公开用户标识为 'open'
         if (clientUsername && clientUsername !== 'default' && clientUsername !== 'open' && clientUsername !== '_open') {
           const verified = verifyUserAuth(req)
@@ -6157,6 +6123,18 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             return
           }
           verifiedUsername = verified
+        } else {
+          // 【v2.25.0】没声明用户名时，若带了有效 token 就**从 token 反查账号**。
+          //
+          // 外部工具（MCP / 脚本）按标准做法只发 `Authorization: Bearer <token>`，
+          // 不会去填 `x-user-name`。此前这条路径直接落到公开用户 `open`，
+          // 而 `open` 通常没有自定义音源 —— 表现为「搜索一切正常、一点歌就说
+          // 未找到支持 X 平台的自定义源」，排查起来非常费解。
+          //
+          // 安全性不受影响：token 本身已经唯一确定了账号，
+          // 「带别人的名字 + 自己的 token」仍会被上面的分支拒绝。
+          const tokenUser = verifyUserAuth(req)
+          if (tokenUser) verifiedUsername = tokenUser
         }
 
         const clientId = req.headers['x-client-id'] as string | undefined
@@ -6687,8 +6665,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 管理员身份验证接口
       if (pathname === '/api/admin/verify' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (isAdminRequest(req, auth)) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: true }))
         } else {
@@ -6708,8 +6686,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // 所有自定义源修改接口通用鉴权 (如果是公开访问限制模式，则必须登录)
       if (pathname.startsWith('/api/custom-source/') && req.method === 'POST' && pathname !== '/api/custom-source/validate') {
         if (global.lx.config['user.enablePublicRestriction']) {
-          const auth = req.headers['x-frontend-auth']
-          const isAdmin = isAdminCredential(auth, req)
+          const auth = req.headers['x-user-token']
+          const isAdmin = isAdminRequest(req, auth)
           const user = verifyUserAuth(req)
           if (!isAdmin && !user) {
             res.writeHead(403, { 'Content-Type': 'application/json' })
@@ -6734,8 +6712,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
         // 鉴权逻辑：如果开启了页面公开访问限制
         if (global.lx.config['user.enablePublicRestriction']) {
-          const auth = req.headers['x-frontend-auth']
-          const isAdmin = isAdminCredential(auth, req)
+          const auth = req.headers['x-user-token']
+          const isAdmin = isAdminRequest(req, auth)
           const user = verifyUserAuth(req)
           if (!isAdmin && !user) {
             res.writeHead(403, { 'Content-Type': 'application/json' })
@@ -6770,9 +6748,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // elFinder 文件管理器连接器
       if (pathname === '/api/elfinder/connector') {
         // [修改] 优先从 Header 获取，如果没有则尝试从 URL 参数获取 (用于支持下载和预览)
-        const auth = req.headers['x-frontend-auth'] || urlObj.searchParams.get('auth')
+        const auth = req.headers['x-user-token'] || urlObj.searchParams.get('auth')
 
-        if (!isAdminCredential(auth, req)) {
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -6929,8 +6907,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // Configuration API
       if (pathname === '/api/config') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -6956,9 +6934,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'user.enableLoginCacheRestriction': global.lx.config['user.enableLoginCacheRestriction'],
             'user.enableCacheSizeLimit': global.lx.config['user.enableCacheSizeLimit'],
             'user.cacheSizeLimit': global.lx.config['user.cacheSizeLimit'],
-            'frontend.password': global.lx.config['frontend.password'],
-            'player.enableAuth': global.lx.config['player.enableAuth'] || false,
-            'player.password': global.lx.config['player.password'] || '',
+            // 【v2.25.0】'frontend.password' 已彻底删除：管理员改为账号属性，
+            // 配置里不再有这个键，也就不该再回传给前端。
             'webdav.enable': global.lx.config['webdav.enable'] ?? false,
             'webdav.url': global.lx.config['webdav.url'] || '',
             'webdav.username': global.lx.config['webdav.username'] || '',
@@ -7086,11 +7063,14 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                   warning += '检测到重复密码！开启“根路径”模式要求所有用户密码唯一，否则可能导致连接错误。'
                 }
               }
-              if (newConfig['frontend.password'] !== undefined) global.lx.config['frontend.password'] = newConfig['frontend.password']
+              // 【v2.25.0】此处原本写 `frontend.password`（部署管理密码）。
+              // 该键已彻底删除：管理员改为账号属性（config.users[].isAdmin），
+              // 外部工具凭据改为「设置 → 令牌」里的持久化 token。
+              // 若老客户端仍把该键塞进请求体，直接忽略（不报错，避免旧前端白屏）。
 
               // Web播放器配置
-              if (newConfig['player.enableAuth'] !== undefined) global.lx.config['player.enableAuth'] = newConfig['player.enableAuth']
-              if (newConfig['player.password'] !== undefined) global.lx.config['player.password'] = newConfig['player.password']
+              // 【v2.25.0】'player.enableAuth' / 'player.password' 已删除（旧版播放器门禁）。
+              // 老前端若仍把这两个键塞进请求体，直接忽略。
 
               // WebDAV 配置
               if (newConfig['webdav.enable'] !== undefined) global.lx.config['webdav.enable'] = newConfig['webdav.enable']
@@ -7329,9 +7309,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 'list.addMusicLocationType': global.lx.config['list.addMusicLocationType'],
                 'debug.enabled': global.lx.config['debug.enabled'] || false,
                 disableTelemetry: global.lx.config.disableTelemetry,
-                'frontend.password': global.lx.config['frontend.password'],
-                'player.enableAuth': global.lx.config['player.enableAuth'],
-                'player.password': global.lx.config['player.password'],
+                // 【v2.25.0】'frontend.password' 已彻底删除（见上）
                 'webdav.enable': global.lx.config['webdav.enable'],
                 'webdav.url': global.lx.config['webdav.url'],
                 'webdav.username': global.lx.config['webdav.username'],
@@ -7445,8 +7423,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [配置备份管理 API] 获取备份列表及状态
       if (pathname === '/api/config/backups' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, error: 'Unauthorized' }))
           return
@@ -7515,8 +7493,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [配置备份管理 API] 手动立即备份
       if (pathname === '/api/config/backup-now' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, error: 'Unauthorized' }))
           return
@@ -7545,8 +7523,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [配置备份管理 API] 下载指定备份文件
       if (pathname === '/api/config/backups/download' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7585,8 +7563,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [配置备份管理 API] 删除指定备份文件
       if (pathname.startsWith('/api/config/backups/') && req.method === 'DELETE') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, error: 'Unauthorized' }))
           return
@@ -7621,8 +7599,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [配置备份管理 API] 从备份文件还原配置
       if (pathname === '/api/config/backups/restore' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, error: 'Unauthorized' }))
           return
@@ -7678,8 +7656,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       // 复用 resolveProxyAddress，与运行时请求走的完全是同一套判断，
       // 避免 UI 显示与实际行为不一致。
       if (pathname === '/api/config/proxy-status' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7707,8 +7685,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       if (pathname === '/api/config/test-proxy' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7760,8 +7738,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // Logs API
       if (pathname === '/api/logs' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7789,8 +7767,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // Stats API
       if (pathname === '/api/stats' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7813,8 +7791,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Test Connection API
       if (pathname === '/api/webdav/test' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7836,8 +7814,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Sync File API
       if (pathname === '/api/webdav/sync-file' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7873,8 +7851,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Backup API
       if (pathname === '/api/webdav/backup' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7898,8 +7876,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // WebDAV Sync All Files API
       if (pathname === '/api/webdav/sync' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7921,8 +7899,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Backups List API
       if (pathname === '/api/webdav/backups' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7950,8 +7928,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Delete Backup API
       if (pathname === '/api/webdav/backup' && req.method === 'DELETE') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -7995,8 +7973,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Restore API
       if (pathname === '/api/webdav/restore' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8034,8 +8012,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // WebDAV Logs API
       if (pathname === '/api/webdav/logs' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8058,8 +8036,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // WebDAV Progress SSE API
       if (pathname === '/api/webdav/progress' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth'] || urlObj.searchParams.get('auth')
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token'] || urlObj.searchParams.get('auth')
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8092,8 +8070,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // [新增] 本地备份下载 API
       if (pathname === '/api/backup/download' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth'] || urlObj.searchParams.get('auth')
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token'] || urlObj.searchParams.get('auth')
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401); res.end('Unauthorized'); return
         }
 
@@ -8127,8 +8105,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 本地备份还原 API
       if (pathname === '/api/backup/upload' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401); res.end('Unauthorized'); return
         }
 
@@ -8169,8 +8147,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // [新增] 管理重载 API
       if (pathname === '/api/admin/reload' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401); res.end('Unauthorized'); return
         }
 
@@ -8186,8 +8164,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // Restart Server API
       if (pathname === '/api/restart' && req.method === 'POST') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8218,8 +8196,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
       // File Management - List Files
       if (pathname === '/api/files' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8261,8 +8239,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // File Management - Download File
       if (pathname === '/api/files/download' && req.method === 'GET') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8293,8 +8271,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // File Management - Create/Update File
       if (pathname === '/api/files' && (req.method === 'POST' || req.method === 'PUT')) {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8333,8 +8311,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
       // File Management - Delete File
       if (pathname === '/api/files' && req.method === 'DELETE') {
-        const auth = req.headers['x-frontend-auth']
-        if (!isAdminCredential(auth, req)) {
+        const auth = req.headers['x-user-token']
+        if (!isAdminRequest(req, auth)) {
           res.writeHead(401)
           res.end('Unauthorized')
           return
@@ -8780,7 +8758,6 @@ export const startServer = async (port: number, ip: string) => {
   // 保持同步读内存不变，Redis 只解决"重启恢复"，不在请求热路径上。
   await sessionStore.initSessionStores({
     user: { map: userSessions, ttlSeconds: USER_SESSION_TTL / 1000 },
-    player: { map: playerSessions, ttlSeconds: SESSION_TTL / 1000 },
   })
 
   // Initialize file cache settings from global config

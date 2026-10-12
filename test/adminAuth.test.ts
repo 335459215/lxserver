@@ -1,7 +1,15 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isAdminUser, adminExistsAfterChange, hasExplicitAdmin } from '@/server/adminAuth'
+import {
+  isAdminUser,
+  adminExistsAfterChange,
+  hasExplicitAdmin,
+  registerUserTokenVerifier,
+  extractTokens,
+  getRequestUser,
+  isAdminRequest,
+} from '@/server/adminAuth'
 
 // 管理员判定是 v2.24.0「统一登录」的安全核心：它决定谁能进设置中心。
 // 规则（顺序即优先级）：
@@ -107,4 +115,94 @@ test('用户对象缺失 isAdmin 字段与显式 undefined 等价（都走兜底
   setUsers([{ name: 'admin' }, { name: 'bob', isAdmin: undefined }])
   assert.equal(isAdminUser('admin'), true)
   assert.equal(isAdminUser('bob'), false)
+})
+
+// ===== v2.25.0：token 提取与请求身份 =====
+//
+// 这一段钉的是「删掉 x-frontend-auth 之后，token 从哪来」。
+// 关键约束：**所有接口必须共用同一套提取逻辑**。
+// 曾经踩过：管理接口认 `Authorization: Bearer`，而 verifyUserAuth 只看
+// `x-user-token` —— 结果 MCP 客户端能读服务器状态，却一搜索就 401。
+
+/** 造一个最小可用的请求对象（只带 headers 与 url） */
+const req = (headers: Record<string, string> = {}, url = '/') =>
+  ({ headers, url }) as any
+
+/** 用一个「认识固定几个 token」的假校验器，避免依赖真实的 session/token 存储 */
+const FAKE = { tok_admin: 'admin', tok_bob: 'bob' }
+const installFakeVerifier = () => {
+  registerUserTokenVerifier((token) => FAKE[token as keyof typeof FAKE] ?? null)
+}
+
+test('extractTokens：按 x-user-token → Bearer → ?auth= 的顺序收集', () => {
+  installFakeVerifier()
+  assert.deepEqual(extractTokens(req({ 'x-user-token': 'a' })), ['a'])
+  assert.deepEqual(extractTokens(req({ authorization: 'Bearer b' })), ['b'])
+  assert.deepEqual(extractTokens(req({}, '/api/x?auth=c')), ['c'])
+  // 大小写不敏感（HTTP 头名本身就不区分大小写，值里的 Bearer 也常被写成 bearer）
+  assert.deepEqual(extractTokens(req({ authorization: 'bearer d' })), ['d'])
+})
+
+test('extractTokens：多种来源同时存在时全部收集且去重', () => {
+  installFakeVerifier()
+  const t = extractTokens(req({ 'x-user-token': 'a', authorization: 'Bearer b' }, '/x?auth=c'))
+  assert.deepEqual(t, ['a', 'b', 'c'])
+  // 同一个值出现在两处时只留一份
+  const dup = extractTokens(req({ 'x-user-token': 'same', authorization: 'Bearer same' }))
+  assert.deepEqual(dup, ['same'])
+})
+
+test('extractTokens：畸形/空输入不抛异常', () => {
+  installFakeVerifier()
+  assert.deepEqual(extractTokens(req({})), [])
+  assert.deepEqual(extractTokens(req({ authorization: 'Basic abc' })), [], '非 Bearer 不认')
+  assert.deepEqual(extractTokens(req({ authorization: 'Bearer ' })), [], '空 token 不认')
+  assert.deepEqual(extractTokens(req({}, '/x?auth=')), [], '空 auth 不认')
+  assert.deepEqual(extractTokens({ headers: {}, url: '' } as any), [])
+})
+
+test('getRequestUser：三种来源都能认出身份', () => {
+  installFakeVerifier()
+  assert.equal(getRequestUser(req({ 'x-user-token': 'tok_admin' })), 'admin')
+  assert.equal(getRequestUser(req({ authorization: 'Bearer tok_bob' })), 'bob')
+  assert.equal(getRequestUser(req({}, '/x?auth=tok_admin')), 'admin')
+  assert.equal(getRequestUser(req({ 'x-user-token': 'bogus' })), null)
+  assert.equal(getRequestUser(req({})), null)
+})
+
+test('getRequestUser：先命中的来源生效（顺序即优先级）', () => {
+  installFakeVerifier()
+  // 头里是 bob，查询串里是 admin → 应该认 bob（头优先，避免查询串被用来提权）
+  assert.equal(getRequestUser(req({ 'x-user-token': 'tok_bob' }, '/x?auth=tok_admin')), 'bob')
+})
+
+test('isAdminRequest：只有管理员账号的 token 才算管理员', () => {
+  setUsers([{ name: 'admin', isAdmin: true }, { name: 'bob', isAdmin: false }])
+  installFakeVerifier()
+  assert.equal(isAdminRequest(req({ 'x-user-token': 'tok_admin' })), true)
+  assert.equal(isAdminRequest(req({ 'x-user-token': 'tok_bob' })), false, '普通账号不是管理员')
+  assert.equal(isAdminRequest(req({ 'x-user-token': 'bogus' })), false)
+  assert.equal(isAdminRequest(req({})), false, '无凭据不是管理员')
+})
+
+test('isAdminRequest：extraCredential 作为兜底来源（?auth= 的显式传参）', () => {
+  setUsers([{ name: 'admin', isAdmin: true }, { name: 'bob', isAdmin: false }])
+  installFakeVerifier()
+  // 头里没有，靠显式传进来的凭据
+  assert.equal(isAdminRequest(req({}), 'tok_admin'), true)
+  assert.equal(isAdminRequest(req({}), 'tok_bob'), false)
+  assert.equal(isAdminRequest(req({}), ''), false)
+  assert.equal(isAdminRequest(req({}), undefined), false)
+  // 显式凭据不能覆盖「头里已经是别人」的事实 —— 头优先
+  assert.equal(isAdminRequest(req({ 'x-user-token': 'tok_bob' }), 'tok_admin'), true,
+    'extraCredential 是「或」关系，任一为管理员即通过')
+})
+
+test('isAdminRequest：未注入校验器时一律拒绝（不误放行）', () => {
+  setUsers([{ name: 'admin', isAdmin: true }])
+  // 直接注入一个「永远认不出」的校验器，模拟「server.ts 尚未 register」的启动早期
+  registerUserTokenVerifier(() => null)
+  assert.equal(isAdminRequest(req({ 'x-user-token': 'tok_admin' })), false)
+  assert.equal(getRequestUser(req({ 'x-user-token': 'tok_admin' })), null)
+  installFakeVerifier() // 复原，避免影响后续用例
 })

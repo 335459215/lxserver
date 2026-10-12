@@ -167,10 +167,10 @@ declare namespace LX {
      */
     users: UserConfig[]
 
-    /**
-     * 前端访问密码
-     */
-    'frontend.password'?: string
+    // 【v2.25.0 已删除 'frontend.password'】
+    // 管理员身份改由 `users[].isAdmin` 决定；外部工具凭据改由持久化 token 承担
+    // （见 `/api/user/token/*`）。类型里保留这条说明而不是留一个可选字段，
+    // 是为了让「这个键为什么不见了」有据可查。
 
     /**
      * 是否启用 WebDAV 同步服务
@@ -243,15 +243,9 @@ declare namespace LX {
      */
     'snapshot.backupPath'?: string
 
-    /**
-     * 是否开启Web播放器访问密码
-     */
-    'player.enableAuth'?: boolean
-
-    /**
-     * Web播放器访问密码
-     */
-    'player.password'?: string
+    // 【v2.25.0 已删除 'player.enableAuth' / 'player.password'】
+    // 旧版播放器（挂在 / 的静态页）的独立 Cookie 门禁，随旧版一起下线。
+    // 新版前端由登录门守着（账号 + 密码换 token），且这两项没有任何调用方。
 
     /**
      * 是否启用自定义歌曲目录

@@ -7,6 +7,7 @@ import { Button, Input, Stack } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import SystemGroup from './groups/SystemGroup'
 import UsersGroup from './groups/UsersGroup'
+import TokensGroup from './groups/TokensGroup'
 import DataGroup from './groups/DataGroup'
 import AboutGroup from './groups/AboutGroup'
 import LogsGroup from './groups/LogsGroup'
@@ -84,6 +85,8 @@ function GroupPage() {
       return <SystemGroup />
     case 'users':
       return <UsersGroup />
+    case 'tokens':
+      return <TokensGroup />
     case 'data':
       return <DataGroup />
     case 'logs':

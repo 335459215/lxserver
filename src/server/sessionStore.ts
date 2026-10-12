@@ -3,15 +3,17 @@ import path from 'node:path'
 import Redis from 'ioredis'
 import { startupLog } from '@/utils/log4js'
 
-// ===== Redis 会话层（阶段0：userSessions / playerSessions 迁出"仅进程内"）=====
+// ===== Redis 会话层（userSessions 迁出"仅进程内"）=====
 //
 // 职责边界（关键设计，别改回去了）：
-// - 校验路径保持同步读内存。verifyUserAuth / checkPlayerAuth 是同步签名，调用点
+// - 校验路径保持同步读内存。verifyUserAuth 是同步签名，调用点
 //   遍布全文件；会话的 Map 留在 server.ts，本模块只做两件事：启动时把持久层的
 //   会话"回灌"进 Map，和把增删写回持久层。Redis 抖动只影响"重启后能否恢复登录"，
 //   永远不在请求热路径上。
 // - Redis 主存：SET key value EX ttl，全键带 TTL（与内存语义一致：登录时刻 + TTL
-//   过期，无续期）。key 规划 lx:sess:user:<token> / lx:sess:player:<sessionId>。
+//   过期，无续期）。key 规划 lx:sess:user:<token>。
+//   （v2.25.0 起 playerSessions 已删除；Redis 里可能残留 lx:sess:player:* 历史键，
+//    由 TTL 自行过期，不再读写。）
 // - 磁盘快照兜底（data/runtime/sessions.json）：Redis 不可达时启动降级读它——
 //   读空内存等于 Redis 一抖全站掉线；未配置 REDIS_URL 时纯快照模式也能解决
 //   容器重启掉线（快照在 data 卷里，随容器存续）。
@@ -22,14 +24,13 @@ import { startupLog } from '@/utils/log4js'
 //   多应用共享的 Redis 是安全降级，保持文件为唯一存储。
 
 type UserSessionValue = { username: string; createdAt: number }
-type PlayerSessionValue = { createdAt: number }
 
 interface StoreTarget<V> {
   map: Map<string, V>
   ttlSeconds: number
 }
 
-const KEY_PREFIX = { user: 'lx:sess:user:', player: 'lx:sess:player:' } as const
+const KEY_PREFIX = { user: 'lx:sess:user:' } as const
 export type SessionStoreName = keyof typeof KEY_PREFIX
 
 const SNAPSHOT_DEBOUNCE_MS = 3000
@@ -91,7 +92,6 @@ const writeSnapshot = () => {
       version: 1,
       savedAt: new Date().toISOString(),
       user: dump(stores.user),
-      player: dump(stores.player),
     }
     const tmp = `${snapshotPath}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(payload), 'utf8')
@@ -112,8 +112,8 @@ const isFresh = (v: any, ttlSeconds: number): boolean =>
   !!v && typeof v.createdAt === 'number' && Date.now() - v.createdAt <= ttlSeconds * 1000
 
 /** 从磁盘快照回灌 Map（丢过期），返回恢复数量 */
-const loadFromSnapshot = (): { user: number; player: number } => {
-  const stats = { user: 0, player: 0 }
+const loadFromSnapshot = (): { user: number } => {
+  const stats = { user: 0 }
   if (!stores) return stats
   try {
     if (!fs.existsSync(snapshotPath)) return stats
@@ -122,12 +122,6 @@ const loadFromSnapshot = (): { user: number; player: number } => {
       if (isFresh(v, stores.user.ttlSeconds) && typeof (v as UserSessionValue).username === 'string') {
         stores.user.map.set(id, v as UserSessionValue)
         stats.user++
-      }
-    }
-    for (const [id, v] of Object.entries(raw?.player ?? {})) {
-      if (isFresh(v, stores.player.ttlSeconds)) {
-        stores.player.map.set(id, v as PlayerSessionValue)
-        stats.player++
       }
     }
   } catch (e: any) {
@@ -156,7 +150,6 @@ const scanSessionKeys = async (): Promise<string[]> => {
  */
 export const initSessionStores = async (targets: {
   user: StoreTarget<UserSessionValue>
-  player: StoreTarget<PlayerSessionValue>
 }): Promise<void> => {
   stores = targets
   snapshotPath = global.lx?.dataPath ? path.join(global.lx.dataPath, 'runtime', 'sessions.json') : ''
@@ -168,7 +161,7 @@ export const initSessionStores = async (targets: {
   const url = (process.env.REDIS_URL || '').trim()
   if (!url) {
     const stats = loadFromSnapshot()
-    startupLog.info(`[会话层] 未配置 REDIS_URL，磁盘快照模式：恢复用户会话 ${stats.user} / 播放器会话 ${stats.player}（重启不再掉线；如需多实例共享请配置 REDIS_URL）`)
+    startupLog.info(`[会话层] 未配置 REDIS_URL，磁盘快照模式：恢复用户会话 ${stats.user}（重启不再掉线；如需多实例共享请配置 REDIS_URL）`)
     return
   }
 
@@ -192,7 +185,7 @@ export const initSessionStores = async (targets: {
 
   if (!redisReady()) {
     const stats = loadFromSnapshot()
-    startupLog.warn(`[会话层] Redis 不可达，降级磁盘快照：恢复用户会话 ${stats.user} / 播放器会话 ${stats.player}`)
+    startupLog.warn(`[会话层] Redis 不可达，降级磁盘快照：恢复用户会话 ${stats.user}`)
     return
   }
 
@@ -200,7 +193,6 @@ export const initSessionStores = async (targets: {
     const client = redis!
     const keys = await scanSessionKeys()
     let userCount = 0
-    let playerCount = 0
     for (let i = 0; i < keys.length; i += MGET_BATCH) {
       const batch = keys.slice(i, i + MGET_BATCH)
       const values: Array<string | null> = await client.mget(...batch)
@@ -218,32 +210,28 @@ export const initSessionStores = async (targets: {
             stores!.user.map.set(key.slice(KEY_PREFIX.user.length), parsed as UserSessionValue)
             userCount++
           }
-        } else if (key.startsWith(KEY_PREFIX.player)) {
-          if (isFresh(parsed, stores!.player.ttlSeconds)) {
-            stores!.player.map.set(key.slice(KEY_PREFIX.player.length), parsed as PlayerSessionValue)
-            playerCount++
-          }
         }
+        // 【v2.25.0】原本还有 `lx:sess:player:*` 分支（旧版播放器的 Cookie 会话）。
+        // 那条链路已删除，Redis 里可能残留的历史键由 TTL 自行过期，这里不再读。
       })
     }
-    if (userCount + playerCount > 0) {
-      startupLog.info(`[会话层] Redis 已连接，恢复用户会话 ${userCount} / 播放器会话 ${playerCount}`)
+    if (userCount > 0) {
+      startupLog.info(`[会话层] Redis 已连接，恢复用户会话 ${userCount}`)
       return
     }
     // Redis 空（实例被重建/flush）：快照里还有效的会话反向回灌，避免全员重新登录
     const stats = loadFromSnapshot()
-    if (stats.user + stats.player > 0) {
+    if (stats.user > 0) {
       const backfill: Array<Promise<unknown>> = []
       for (const [id, v] of stores.user.map) backfill.push(setRedis(KEY_PREFIX.user + id, JSON.stringify(v), stores.user.ttlSeconds))
-      for (const [id, v] of stores.player.map) backfill.push(setRedis(KEY_PREFIX.player + id, JSON.stringify(v), stores.player.ttlSeconds))
       await Promise.allSettled(backfill)
-      startupLog.info(`[会话层] Redis 为空，已从磁盘快照自愈：用户会话 ${stats.user} / 播放器会话 ${stats.player}`)
+      startupLog.info(`[会话层] Redis 为空，已从磁盘快照自愈：用户会话 ${stats.user}`)
     } else {
       startupLog.info('[会话层] Redis 已连接，当前无会话')
     }
   } catch (e: any) {
     const stats = loadFromSnapshot()
-    startupLog.warn(`[会话层] Redis 读取失败（${e.message}），降级磁盘快照：恢复用户会话 ${stats.user} / 播放器会话 ${stats.player}`)
+    startupLog.warn(`[会话层] Redis 读取失败（${e.message}），降级磁盘快照：恢复用户会话 ${stats.user}`)
   }
 }
 

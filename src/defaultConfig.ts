@@ -39,7 +39,11 @@ const config: LX.Config = {
     // },
   ],
 
-  'frontend.password': '123456',
+  // 【v2.25.0 已删除 'frontend.password'】
+  // 它曾是「与账号无关的部署管理密码」，明文存在浏览器 localStorage 里，
+  // 与账号体系并行导致用户要记两套凭据。现在管理员 = config.users[].isAdmin，
+  // 外部工具凭据 = 用户在「设置 → 令牌」里生成的持久化 token。
+  // 这里刻意**不再写回该键**：老配置文件里残留的值会在读取时被忽略。
 
   // WebDAV 配置
   'webdav.enable': false,
@@ -63,8 +67,10 @@ const config: LX.Config = {
   'snapshot.backupPath': '',
 
   // Web播放器配置
-  'player.enableAuth': false,
-  'player.password': '123456',
+  // 【v2.25.0 已删除 'player.enableAuth' / 'player.password'】
+  // 那是给旧版播放器（挂在 / 的静态页）做的 Cookie 门禁。旧版已于 v2.23.0 删除，
+  // 新版前端由登录门守着，且这两项**没有任何调用方**（Subsonic 用的是自己的账号体系）。
+  // 保留一个空配置项只会让「到底哪套在生效」变得难以判断。
 
   // 代理配置
   'proxy.all.enabled': false,

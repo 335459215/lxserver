@@ -46,15 +46,18 @@ const musicSdk = musicSdkRaw as any
 
 // 服务端签名票据密钥
 // ─────────────────────────────────────────────
-// 进程级随机密钥备选（当未设置 frontend.password 时使用，避免硬编码常数字符串）
-const processRandomSecret = crypto.randomBytes(32).toString('hex')
+// 【v2.25.0】改用专用的落盘随机密钥（`serverSecret.ts`）。
+// 此前这里借用 `frontend.password`，而该配置键已彻底删除（管理员改为账号属性）。
+// 换成「落盘随机密钥」而不是「进程级随机」的原因：后者会让**每次重启后
+// 此前签发的转码/电台票据全部失效**，正在播放的客户端会突然报错。
+import { getServerSecret } from './serverSecret'
 
 function serverTicketSecret(): string {
-    return String((global.lx.config as any)?.['frontend.password'] || processRandomSecret)
+    return getServerSecret()
 }
 
 function radioTicketSecret(): string {
-    return String((global.lx.config as any)?.['frontend.password'] || processRandomSecret)
+    return getServerSecret()
 }
 
 /** 把错误原因压成可安全回传给客户端的一小段文本（截断 + 打码常见密钥参数） */

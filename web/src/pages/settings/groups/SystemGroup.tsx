@@ -81,7 +81,6 @@ export default function SystemGroup() {
     const base: Record<string, unknown> = config
       ? {
           serverName: config.serverName ?? '',
-          'frontend.password': '',
           'debug.enabled': config['debug.enabled'] ?? false,
           'list.addMusicLocationType': config['list.addMusicLocationType'] ?? 'top',
           'proxy.enabled': config['proxy.enabled'] ?? false,
@@ -98,10 +97,9 @@ export default function SystemGroup() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true)
-    // 只发有变更的 key（对比 config 基线）；密码空串不发
+    // 只发有变更的 key（对比 config 基线）
     const patch: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(overrides)) {
-      if (k === 'frontend.password' && !v) continue
       patch[k] = v
     }
     if (Object.keys(patch).length === 0) {
@@ -154,14 +152,9 @@ export default function SystemGroup() {
                 onChange={(v) => set('serverName', v)}
                 placeholder="lxserver"
               />
-              <InputField
-                label="管理密码"
-                description="留空则不修改。修改后需用新密码重新登录。"
-                type="password"
-                value={draft['frontend.password'] as string}
-                onChange={(v) => set('frontend.password', v)}
-                placeholder="••••••••"
-              />
+              {/* 【v2.25.0】此处原本有「管理密码」（frontend.password）输入框。
+                  该配置已彻底删除：管理员身份 = 账号的 isAdmin 属性，
+                  在「设置 → 用户」里管理；外部工具凭据在「设置 → 令牌」里生成。 */}
             </Stack>
           </Section>
 
@@ -227,7 +220,7 @@ export default function SystemGroup() {
         </p>
         <div>
           {Object.entries(config)
-            .filter(([k]) => !['serverName', 'frontend.password', 'debug.enabled', 'list.addMusicLocationType', 'proxy.enabled', 'proxy.header', 'maxSnapshotNum', 'system.allowUnsafeVM'].includes(k))
+            .filter(([k]) => !['serverName', 'debug.enabled', 'list.addMusicLocationType', 'proxy.enabled', 'proxy.header', 'maxSnapshotNum', 'system.allowUnsafeVM'].includes(k))
             .map(([k, v]) => (
               <Row key={k} k={k} v={typeof v === 'object' ? JSON.stringify(v) : String(v)} />
             ))}

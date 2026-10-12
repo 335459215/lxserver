@@ -1,13 +1,18 @@
 import type { IncomingMessage } from 'http'
 
-// ===== 统一鉴权：管理员身份（v2.24.0）=====
+// ===== 统一鉴权：管理员身份（v2.25.0）=====
 //
-// 【为什么要有这个模块】
-// 此前「管理员」是一把与账号无关的独立钥匙：前端存 frontend.password 明文，
-// 每个管理接口拿 `x-frontend-auth === config['frontend.password']` 做比较。
-// 于是用户要记两套凭据（部署管理密码 + 同步账号密码），登录页也因此有三个页签
-// （管理员 / 用户 / 播放器）。现在统一成「一个账号 + 一个密码」：
-//   账号在 config.users 里，其中带 `isAdmin: true` 的账号即管理员。
+// 【模型】与 Emby / Jellyfin 同一套：
+//   - 网页登录：只有「账号 + 密码」一种方式 → 换取 token；
+//   - 那个 token 既是网页会话凭据，也是**外部工具**的凭据（长期令牌由用户在
+//     「设置 → 令牌」里生成，供 MCP / 脚本等使用）。
+//   没有任何「与账号无关的独立密码」。
+//
+// 【v2.25.0 删掉了什么】
+//   - `frontend.password`（部署管理密码）：整条链路删除，config 里不再有这个键；
+//   - `x-frontend-auth` 请求头：整条链路删除，管理接口一律认 `x-user-token`。
+//   删之前它们是「管理员钥匙」的两条老路径，与账号体系并行 —— 用户要记两套凭据，
+//   且 `frontend.password` 是**明文存 localStorage** 的，本身就是个隐患。
 //
 // 【为什么是独立文件而不是写在 server.ts 里】
 // customSourceHandlers.ts 也要做同样的判断，而它**被 server.ts 导入**。
@@ -15,12 +20,6 @@ import type { IncomingMessage } from 'http'
 // `require('./server')` 在模块加载期拿到的是半成品 exports，函数可能是 undefined，
 // 表现为「验证音源时随机 403」。故判断逻辑放在这个不依赖 server.ts 的模块里，
 // 「token → 用户名」的校验能力由 server.ts 在启动时**注入**（registerUserTokenVerifier）。
-//
-// 【向后兼容是刻意保留的，不要删】
-// `frontend.password` 仍然有效：外部工具、既有验证脚本（注入 localStorage 的
-// `lx.admin.password`）、以及 `<a download>` / SSE 这类只能走 `?auth=` 查询参数的
-// 场景都在用它。删掉会让 `verify-*.py` 全线 401。
-// 所以判定是「或」关系：老密码 **或** 管理员账号的 token，任一成立即放行。
 
 /** token → 用户名 的校验器；由 server.ts 注入（它持有 userSessions / persistentTokens） */
 type UserTokenVerifier = (token: string, req?: IncomingMessage) => string | null
@@ -32,7 +31,7 @@ export const registerUserTokenVerifier = (fn: UserTokenVerifier): void => {
 }
 
 /**
- * 判断某个账号名是否具备管理员身份（v2.24.0 统一登录的核心规则）。
+ * 判断某个账号名是否具备管理员身份。
  *
  * 规则（三条，顺序即优先级）：
  *   1. `isAdmin === true`  → 是管理员；
@@ -91,28 +90,74 @@ export const adminExistsAfterChange = (targetName: string, next: boolean): boole
 }
 
 /**
- * 管理凭据判定。**签名刻意收成 (credential, req)**，好让全文件 60 多处调用点
- * 只替换右侧表达式（`auth === config['frontend.password']` → `isAdminCredential(auth, req)`），
- * 不必重排每个分支的局部变量——改动越小越不容易漏掉某一处。
+ * 从请求里取「调用者身份」。这是全服务唯一的身份来源。
  *
- * @param credential `x-frontend-auth` 头的值（部分场景是 `?auth=` 查询参数的值）
- * @param req        当前请求；用于读 `x-user-token`
+ * 只认 token，且按**固定顺序**尝试三个位置（顺序有意义：先便宜后昂贵，
+ * 且要让「显式传了 token 但无效」与「压根没传」都能正确落到下一种）：
+ *   1. `x-user-token` 头 —— 网页与绝大多数 API 调用走这里；
+ *   2. `Authorization: Bearer <token>` —— 外部工具/MCP 的标准做法；
+ *   3. `?auth=<token>` 查询参数 —— 给没法自定义请求头的场景
+ *      （`<a download>` 下载直链、EventSource SSE、elFinder 连接器）。
+ *
+ * @returns 已验证的账号名；未认证返回 null
  */
-export const isAdminCredential = (credential: unknown, req: IncomingMessage): boolean => {
-  // 1) 旧部署密码（向后兼容，见文件头注释）
-  const legacyPassword = global.lx?.config?.['frontend.password']
-  if (legacyPassword && typeof credential === 'string' && credential === legacyPassword) return true
-
-  // 2) 管理员账号的 token（新路径：与普通登录同一个凭据）
-  if (!verifyUserToken) return false
-  const tokens: string[] = []
-  const headerToken = req?.headers?.['x-user-token']
-  if (typeof headerToken === 'string' && headerToken) tokens.push(headerToken)
-  // `?auth=<token>`：给没法自定义请求头的场景（下载直链 / SSE / elFinder）
-  if (typeof credential === 'string' && credential) tokens.push(credential)
-  for (const token of tokens) {
+export const getRequestUser = (req: IncomingMessage): string | null => {
+  if (!verifyUserToken) return null
+  for (const token of extractTokens(req)) {
     const name = verifyUserToken(token, req)
-    if (name && isAdminUser(name)) return true
+    if (name) return name
+  }
+  return null
+}
+/**
+ * 请求是否来自管理员。
+ *
+ * `extraCredential` 供少数「token 不在标准位置」的调用点显式传入
+ * （历史上是 `?auth=` 的取值；现在多数场景已被 getRequestUser 覆盖，
+ * 保留该参数是为了让那些调用点的 diff 最小、不必重排局部变量）。
+ */
+export const isAdminRequest = (req: IncomingMessage, extraCredential?: unknown): boolean => {
+  const name = getRequestUser(req)
+  if (name && isAdminUser(name)) return true
+  if (typeof extraCredential === 'string' && extraCredential && verifyUserToken) {
+    const extraName = verifyUserToken(extraCredential, req)
+    if (extraName && isAdminUser(extraName)) return true
   }
   return false
+}
+
+/**
+ * 按固定顺序收集请求里可能携带的 token（去重、跳过空值）。
+ *
+ * 导出给 server.ts 的 `verifyUserAuth` 复用 —— 两处必须用**同一套**提取逻辑，
+ * 否则会出现「管理接口认 Bearer、听歌接口不认」这种半吊子状态：
+ * MCP 客户端能读服务器状态，却一搜索就 401。
+ */
+export const extractTokens = (req: IncomingMessage): string[] => {
+  const out: string[] = []
+  const push = (v: unknown) => {
+    if (typeof v === 'string' && v && !out.includes(v)) out.push(v)
+  }
+
+  push(req?.headers?.['x-user-token'])
+
+  const authz = req?.headers?.['authorization']
+  if (typeof authz === 'string') {
+    const m = /^Bearer\s+(.+)$/i.exec(authz.trim())
+    if (m) push(m[1].trim())
+  }
+
+  // ?auth=<token>：req.url 是原始请求行，可能带查询串
+  const url = req?.url || ''
+  const q = url.indexOf('?')
+  if (q >= 0) {
+    try {
+      const params = new URLSearchParams(url.slice(q + 1))
+      push(params.get('auth'))
+    } catch {
+      /* 畸形查询串：忽略 */
+    }
+  }
+
+  return out
 }
