@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Disc3, Play, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, Disc3, Download, Loader2, Play, TriangleAlert } from 'lucide-react'
 import { Button, Stack, useToast } from '@/components/ui'
 import { coverUrl, sourceLabel } from '@/lib/music'
 import { firstSingerName, supportsArtistPages, useAlbumSongs } from '@/lib/discover'
 import { usePlayer } from '@/lib/player'
+import { downloadSongsQueue } from '@/lib/download'
 import SongList from '@/components/player/SongList'
 
 /** 专辑详情页（`/album/:id?source=`）。
@@ -19,6 +20,8 @@ export default function AlbumPage() {
   const navigate = useNavigate()
   const player = usePlayer()
   const { toast } = useToast()
+  const [batchDownloading, setBatchDownloading] = React.useState(false)
+  const [batchProgress, setBatchProgress] = React.useState<{ current: number; total: number } | null>(null)
 
   const supported = supportsArtistPages(source)
   const album = useAlbumSongs(source, supported ? id : '')
@@ -34,6 +37,38 @@ export default function AlbumPage() {
     player.playQueue(songs, 0)
     toast({ title: `开始播放《${album.data?.name ?? '专辑'}》`, description: `${songs.length} 首` })
   }, [songs, player, toast, album.data?.name])
+
+  const handleDownloadAll = React.useCallback(async () => {
+    if (!songs.length || batchDownloading) return
+    setBatchDownloading(true)
+    setBatchProgress({ current: 0, total: songs.length })
+    const albumName = album.data?.name ?? '专辑'
+    toast({
+      title: `开始下载专辑《${albumName}》`,
+      description: `准备依次下载全部 ${songs.length} 首歌曲并注入标签...`,
+    })
+    try {
+      const result = await downloadSongsQueue(songs, {
+        onProgress: (p) => {
+          setBatchProgress({ current: p.current, total: p.total })
+        },
+      })
+      toast({
+        title: `专辑《${albumName}》下载完成`,
+        description: `成功：${result.success} 首${result.failed > 0 ? ` · 失败：${result.failed} 首` : ''}`,
+        variant: result.failed > 0 ? 'default' : 'success',
+      })
+    } catch (err: unknown) {
+      toast({
+        title: '批量下载中断',
+        description: err instanceof Error ? err.message : '未知错误',
+        variant: 'destructive',
+      })
+    } finally {
+      setBatchDownloading(false)
+      setBatchProgress(null)
+    }
+  }, [songs, batchDownloading, album.data?.name, toast, setBatchDownloading, setBatchProgress])
 
   if (!supported) {
     return (
@@ -97,9 +132,29 @@ export default function AlbumPage() {
               .join(' · ')}
           </p>
 
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={playAll} disabled={!songs.length}>
               <Play className="size-4 fill-current" /> 播放全部
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!songs.length || batchDownloading}
+              onClick={handleDownloadAll}
+              title={`下载整张专辑全部 ${songs.length} 首歌`}
+            >
+              {batchDownloading ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin text-accent" />
+                  <span>
+                    下载中 {batchProgress ? `(${batchProgress.current}/${batchProgress.total})` : ''}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Download className="size-3.5" />
+                  <span>下载专辑</span>
+                </>
+              )}
             </Button>
           </div>
         </div>

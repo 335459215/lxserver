@@ -96,31 +96,31 @@ function ProgressBar({
         </span>
       )}
 
-      {/* 轨道：hover 加粗、拖动再粗一档（YouTube Music 式） */}
+      {/* 轨道：hover 加粗、拖动再粗一档（Apple Music / Spotify 式高保真质感） */}
       <span
         className={cn(
-          'relative block w-full rounded-full bg-panel2 transition-[height]',
-          dragging ? 'h-2' : 'h-1 group-hover:h-1.5',
+          'relative block w-full rounded-full bg-slate-200/80 transition-[height]',
+          dragging ? 'h-2' : 'h-1.5 group-hover:h-2',
         )}
       >
         {/* hover 预览 */}
         {hoverPct != null && playable && (
           <span
-            className="absolute inset-y-0 left-0 rounded-full bg-line-strong/70"
+            className="absolute inset-y-0 left-0 rounded-full bg-line-strong/60"
             style={{ width: `${hoverPct}%` }}
           />
         )}
-        {/* 已播放 */}
+        {/* 已播放：微渐变高质感 */}
         <span
-          className="absolute inset-y-0 left-0 rounded-full bg-accent"
+          className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent to-indigo-500 shadow-xs"
           style={{ width: `${pct}%` }}
         />
         {/* 拖柄 */}
         {playable && (
           <span
             className={cn(
-              'absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent shadow-card transition-opacity',
-              dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+              'absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-accent shadow-sm transition-transform',
+              dragging ? 'scale-110 opacity-100' : 'opacity-0 group-hover:opacity-100 hover:scale-110',
             )}
             style={{ left: `${pct}%` }}
           />
@@ -223,8 +223,8 @@ export function TransportControls({
         title={`${playing ? '暂停' : '播放'}（空格）`}
         className={cn(
           size === 'lg' ? 'size-14' : 'size-10',
-          'flex items-center justify-center rounded-full bg-accent text-white shadow-card transition-all',
-          'hover:bg-accent-hover active:scale-95 disabled:pointer-events-none disabled:bg-panel2 disabled:text-faint',
+          'flex items-center justify-center rounded-full bg-gradient-to-tr from-accent to-indigo-500 text-white shadow-md shadow-accent/25 transition-all',
+          'hover:shadow-lg hover:shadow-accent/35 hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:bg-panel2 disabled:text-faint disabled:shadow-none',
         )}
       >
         {loading ? (
@@ -232,7 +232,7 @@ export function TransportControls({
         ) : playing ? (
           <Pause className={cn(iconSize, 'fill-current')} />
         ) : (
-          <Play className={cn(iconSize, 'translate-x-px fill-current')} />
+          <Play className={cn(iconSize, 'translate-x-0.5 fill-current')} />
         )}
       </button>
 

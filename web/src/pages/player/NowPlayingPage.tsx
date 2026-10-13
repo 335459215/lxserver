@@ -1,14 +1,16 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
-import { Music2, Search, TriangleAlert } from 'lucide-react'
-import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui'
+import { Download, Loader2, Music2, Search, TriangleAlert } from 'lucide-react'
+import { Button, Tabs, TabsContent, TabsList, TabsTrigger, useToast } from '@/components/ui'
 import { coverUrl, formatTime, intervalToSeconds, sourceLabel } from '@/lib/music'
 import { useCoverAccent } from '@/lib/coverColor'
 import { usePlayer } from '@/lib/player'
+import { downloadSong } from '@/lib/download'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 import QualityMenu from '@/components/player/QualityMenu'
 import Lyrics from '@/components/player/Lyrics'
 import QueueList from '@/components/player/QueueList'
+import { cn } from '@/lib/utils'
 
 /** 全屏播放页（/now-playing）：大封面 + 传输控制 + 歌词/队列。
  *  - 歌词：自动滚动当前行、点行跳转、逐字卡拉 OK 高亮（Lyrics.tsx）
@@ -16,9 +18,37 @@ import QueueList from '@/components/player/QueueList'
 export default function NowPlayingPage() {
   const player = usePlayer()
   const { current, status, error, attempts, duration, sourceName } = player
+  const { toast } = useToast()
+  const [downloading, setDownloading] = React.useState(false)
 
   const cover = coverUrl(current)
   const tokens = useCoverAccent(cover)
+
+  const handleDownload = async () => {
+    if (!current || downloading) return
+    setDownloading(true)
+    toast({
+      title: `正在准备下载《${current.name}》`,
+      description: '正在获取音频流并写入 ID3 标签、封面及歌词...',
+    })
+    try {
+      const res = await downloadSong(current)
+      toast({
+        title: `已开始下载《${current.name}》`,
+        description: `音质：${res.quality} · 文件：${res.filename}`,
+        variant: 'success',
+      })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '下载准备失败'
+      toast({
+        title: `下载《${current.name}》失败`,
+        description: message,
+        variant: 'destructive',
+      })
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   // 封面取色只在「本页 + 本曲」生效：变量挂在页面根节点上，离开本页即恢复默认靛蓝。
   // `--accent*-rgb` 必须一起写：Tailwind 的 `bg-accent/60` / `ring-accent/40` 靠三元组合成透明度，
@@ -66,48 +96,90 @@ export default function NowPlayingPage() {
       style={accentStyle}
       className="accent-fade rise mx-auto grid w-full max-w-5xl gap-6 py-2 md:gap-8 lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:py-4"
     >
-      {/* 左：封面 + 信息 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
-      <section className="flex flex-col items-center gap-5 lg:sticky lg:top-20">
-        <div className="relative">
-          {/* 氛围光：封面放大模糊铺底，全平台可用（不依赖读像素） */}
+      {/* 左：封面 + 唱片反光与声学动感 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
+      <section className="flex flex-col items-center gap-6 lg:sticky lg:top-20">
+        <div className="relative mx-auto flex items-center justify-center">
+          {/* 氛围光：封面放大模糊铺底 */}
           {cover && (
             <div
               aria-hidden
-              className="pointer-events-none absolute -inset-3 rounded-[2.25rem] opacity-50 blur-2xl saturate-150"
+              className="pointer-events-none absolute -inset-4 rounded-[2.5rem] opacity-50 blur-3xl saturate-200 transition-opacity"
               style={{ backgroundImage: `url(${cover})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
             />
           )}
-          {cover ? (
-            <img
-              src={cover}
-              alt={current.name}
-              className="relative aspect-square w-52 rounded-3xl border border-line object-cover shadow-pop md:w-60"
-            />
-          ) : (
-            <div className="relative flex aspect-square w-52 items-center justify-center rounded-3xl border border-line bg-panel shadow-pop md:w-60">
-              <Music2 className="size-12 text-faint" />
+
+          {/* 拟物黑胶唱片（在封面背后探出半截并转动） */}
+          <div
+            className={cn(
+              'absolute right-0 top-1/2 -translate-y-1/2 translate-x-4 size-56 md:size-64 rounded-full bg-zinc-950 p-2 shadow-2xl transition-all duration-700',
+              status === 'playing' ? 'translate-x-8 md:translate-x-12 rotate-12' : 'translate-x-2',
+            )}
+          >
+            <div
+              className={cn(
+                'size-full rounded-full border-4 border-zinc-900/90 flex items-center justify-center',
+                status === 'playing' ? 'animate-vinyl' : 'animate-vinyl animate-vinyl-paused',
+              )}
+              style={{
+                background:
+                  'radial-gradient(circle, #27272a 18%, #09090b 20%, #18181b 38%, #09090b 40%, #27272a 60%, #09090b 62%, #18181b 80%, #09090b 82%)',
+              }}
+            >
+              <div className="size-16 md:size-20 rounded-full border-2 border-white/20 bg-accent/85 flex items-center justify-center">
+                <div className="size-5 rounded-full bg-zinc-950" />
+              </div>
             </div>
-          )}
+          </div>
+
+          {/* 专辑封面封套主体 */}
+          <div className="relative z-10 aspect-square w-56 md:w-64 rounded-3xl border border-white/80 bg-panel shadow-2xl overflow-hidden group">
+            {cover ? (
+              <img
+                src={cover}
+                alt={current.name}
+                className="size-full object-cover transition-transform duration-500 group-hover:scale-105"
+              />
+            ) : (
+              <div className="flex size-full items-center justify-center bg-panel-2 text-faint">
+                <Music2 className="size-16" />
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="w-full text-center">
-          <h1 className="truncate text-lg font-semibold tracking-tight text-ink" title={current.name}>
+          <h1 className="truncate text-xl md:text-2xl font-extrabold tracking-tight text-ink" title={current.name}>
             {current.name}
           </h1>
-          <p className="mt-1 truncate text-sm text-dim">{subtitle || '未知歌手'}</p>
-          {/* 元信息一行：源 · 音质 · 时长。音质用可点的 QualityMenu，
-              让「这首歌音质不对」的当下能就地改掉，不必跑设置页。 */}
-          <p className="mt-1 flex flex-wrap items-center justify-center gap-x-1 text-xs text-faint">
-            <span>{sourceName ?? sourceLabel(current.source)}</span>
-            <span aria-hidden>·</span>
-            <QualityMenu className="h-5 px-1 text-xs text-faint hover:text-ink" />
+          <p className="mt-1 truncate text-sm font-medium text-dim">{subtitle || '未知歌手'}</p>
+
+          {/* 元信息标签栏：音源平台 · 无损音质 · 时长 · 一键高保真下载 */}
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
+            <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-medium text-dim">
+              {sourceName ?? sourceLabel(current.source)}
+            </span>
+            <QualityMenu className="h-6 px-2 rounded-md border border-accent/25 bg-accent/10 font-semibold text-accent hover:bg-accent/20" />
             {total > 0 && (
-              <>
-                <span aria-hidden>·</span>
-                <span>{formatTime(total)}</span>
-              </>
+              <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-mono text-faint">
+                {formatTime(total)}
+              </span>
             )}
-          </p>
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              aria-label={`下载当前歌曲 ${current.name}`}
+              title={downloading ? '正在准备下载...' : `下载到本地 (${current.name})`}
+              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
+            >
+              {downloading ? (
+                <Loader2 className="size-3 animate-spin text-accent" />
+              ) : (
+                <Download className="size-3" />
+              )}
+              <span>下载本曲</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex w-full flex-col items-center gap-4">

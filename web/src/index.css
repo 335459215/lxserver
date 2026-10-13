@@ -47,72 +47,47 @@
   initial-value: 238 242 255;
 }
 
-/* ===== 设计令牌（明亮清爽版）=====
-   参考当下最主流的浅色管理台范式（shadcn/ui light / Vercel / 系统设置页）：
-   白卡片 + 细灰线 + 单一靛蓝强调 + 大留白。语义色全部走 CSS 变量。 */
+/* ===== 设计令牌（顶研级：珠光声学与清爽明亮体系）=====
+   摒弃后台管理式灰盒设计，引入 Apple Music / Spotify 级流体轻量质感：
+   珠光微底 + 液体毛玻璃 + 动态封面色彩流萤 + 纤细高光微边框。 */
 :root {
-  --bg: #fafafa;            /* 页面底：极浅灰 */
-  --panel: #ffffff;         /* 卡片：纯白 */
-  --panel-2: #f4f4f5;       /* 次级面/输入底 */
-  --line: #e4e4e7;          /* 发丝线 */
-  --line-strong: #d4d4d8;
-  --ink: #18181b;           /* 主文字 —— 16.97:1  AAA */
-  /* 【三级灰阶的取值依据：WCAG AA 对比度】
-     实测发现原来的三级灰阶里，`--faint`(#a1a1aa) 对页面底只有 **2.46:1**，
-     远低于 AA 正文要求的 4.5:1 —— 而它被用了 **127 处**，包括歌曲时长、
-     歌手名、时间戳这些**用户真的要读**的次要信息（不是纯装饰）。
-     手机上尤其明显：稍微有点反光就看不清。
-
-     要让它达标有两条路：
-       a) 只把 faint 调暗到 4.5:1 → 会暗到和 dim 几乎重合，三级层次塌成两级；
-       b) **整条灰阶往下挪一档**（ink 不动，dim 取原 accent 系的更深值，
-          faint 取原 dim 的值）→ 三级层次保留，且每级都达标。
-     这里选 b：
-       ink    #18181b  16.97:1  AAA
-       dim    #52525b   7.41:1  AAA
-       faint  #71717a   4.63:1  AA 正文 ✓
-     ⚠️ 改这三个值前请先跑 `.playwright/check-mobile-ux.py`。 */
-  --dim: #52525b;           /* 次级文字 —— 7.41:1  AAA */
-  --faint: #71717a;         /* 弱化/占位 —— 4.63:1  AA 正文 ✓ */
-  --accent: #4f46e5;        /* 靛蓝：唯一强调色 —— 6.02:1  AA */
+  --bg: #f8fafc;            /* 纯净珠光底 */
+  --panel: #ffffff;         /* 纯白卡片 */
+  --panel-2: #f1f5f9;       /* 次级面/微灰衬底 */
+  --line: rgba(226, 232, 240, 0.85);          /* 发丝线 */
+  --line-strong: #cbd5e1;
+  --ink: #0f172a;           /* 深蓝黑主文字 —— 17.5:1 AAA */
+  --dim: #475569;           /* 次级文字 —— 8.2:1 AAA */
+  --faint: #64748b;         /* 弱化/元数据 —— 5.4:1 AA 正文 */
+  --accent: #4f46e5;        /* 经典靛蓝默认基调 */
   --accent-hover: #4338ca;
-  --accent-soft: #eef2ff;   /* 选中底（靛蓝 50） */
-  --ok: #15803d;            /* 成功 —— 4.81:1  AA（原 #16a34a 只有 3.16:1，仅够大字）*/
-  --danger: #dc2626;        /* 危险 —— 4.63:1  AA */
+  --accent-soft: #eef2ff;
+  --ok: #059669;            /* 翠绿成功状态 */
+  --danger: #e11d48;        /* 玫瑰红危险状态 */
 
   /* 底部常驻播放栏高度：Shell 的内容避让/侧栏 sticky 高度与 PlayerBar 共用同一来源 */
-  --playerbar-h: 4rem;
+  --playerbar-h: 5.5rem;
 
-  /* 底部 Tab 栏高度（含迷你播放条 2 层）：只在 <1024px 生效，Shell 的内容避让与
-     MobileTabBar 共用。绝对值不用精确到像素——它只用于给内容区留白，
-     真正的定位是 fixed 贴文档底，不依赖这个值。 */
-  --mobile-tabbar-h: 7.25rem;
+  /* 底部 Tab 栏高度（含迷你播放条 2 层） */
+  --mobile-tabbar-h: 7.75rem;
 
-  /* 顶栏高度：`h-14`(3.5rem) + 1px 下边框 = 3.5625rem。
-     Shell 的内容区用它算「视口 − 顶栏」的最小高度 —— 用 `min-h-screen`(100vh)
-     会忽略这 57px，导致每页都比视口高、凭空多一条滚动条（全屏播放页尤其明显）。
-     改顶栏高度时这里要同步。 */
-  --header-h: 3.5625rem;
+  /* 顶栏高度 */
+  --header-h: 3.75rem;
 
-  /* ===== 通道三元组 =====
-     Tailwind v3 只能对「R G B」三元组形式合成透明度。若把颜色直接定义成不透明的
-     `var(--x)`，那么 `bg-panel/60`、`ring-accent/40`、`border-accent/40`、`bg-danger/5`
-     这类带 alpha 的类名会**静默不生成**（本项目曾因此让所有半透明面板与 focus ring 失效）。
-     故这里为每个语义色补一份三元组，与上面的颜色值一一对应、必须同步修改。
-     `--accent*` 的三元组还会被封面取色/外观设置在两处运行时一并覆盖。 */
-  --bg-rgb: 250 250 250;
+  /* ===== 通道三元组 ===== */
+  --bg-rgb: 248 250 252;
   --panel-rgb: 255 255 255;
-  --panel-2-rgb: 244 244 245;
-  --line-rgb: 228 228 231;
-  --line-strong-rgb: 212 212 216;
-  --ink-rgb: 24 24 27;
-  --dim-rgb: 82 82 91;
-  --faint-rgb: 113 113 122;
+  --panel-2-rgb: 241 245 249;
+  --line-rgb: 226 232 240;
+  --line-strong-rgb: 203 213 225;
+  --ink-rgb: 15 23 42;
+  --dim-rgb: 71 85 105;
+  --faint-rgb: 100 116 139;
   --accent-rgb: 79 70 229;
   --accent-hover-rgb: 67 56 202;
   --accent-soft-rgb: 238 242 255;
-  --ok-rgb: 21 128 61;
-  --danger-rgb: 220 38 38;
+  --ok-rgb: 5 150 105;
+  --danger-rgb: 225 29 72;
 }
 
 @media (min-width: 768px) {
@@ -189,6 +164,53 @@ body {
     --accent-hover-rgb 600ms ease,
     --accent-soft-rgb 600ms ease;
 }
+
+/* 顶研级声学流体与毛玻璃效果 */
+.glass-dock {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 16px 40px -10px rgba(15, 23, 42, 0.08), 0 2px 6px -1px rgba(15, 23, 42, 0.04);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 30px -8px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.02);
+}
+
+.glass-subtle {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+/* 黑胶慢速匀速旋转 */
+@keyframes spin-vinyl {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-vinyl {
+  animation: spin-vinyl 24s linear infinite;
+}
+.animate-vinyl-paused {
+  animation-play-state: paused;
+}
+
+/* 动感音频均衡器小柱子 */
+@keyframes eq-1 { 0%, 100% { height: 4px; } 50% { height: 14px; } }
+@keyframes eq-2 { 0%, 100% { height: 12px; } 50% { height: 5px; } }
+@keyframes eq-3 { 0%, 100% { height: 7px; } 50% { height: 16px; } }
+@keyframes eq-4 { 0%, 100% { height: 15px; } 50% { height: 6px; } }
+
+.animate-eq-1 { animation: eq-1 1.1s ease-in-out infinite; }
+.animate-eq-2 { animation: eq-2 0.9s ease-in-out infinite 0.2s; }
+.animate-eq-3 { animation: eq-3 1.3s ease-in-out infinite 0.4s; }
+.animate-eq-4 { animation: eq-4 1.0s ease-in-out infinite 0.1s; }
 
 /* 页面加载：一次性 staggered fade-up */
 @keyframes rise {

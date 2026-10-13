@@ -72,6 +72,7 @@ export class MusicApiError extends Error {
 }
 
 export const MUSIC_SOURCES = [
+  { key: 'all', label: '聚合搜索' },
   { key: 'kw', label: '酷我' },
   { key: 'wy', label: '网易云' },
   { key: 'tx', label: 'QQ音乐' },
@@ -79,9 +80,14 @@ export const MUSIC_SOURCES = [
   { key: 'mg', label: '咪咕' },
 ] as const
 
-export const SOURCE_LABEL: Record<string, string> = Object.fromEntries(
-  MUSIC_SOURCES.map((s) => [s.key, s.label]),
-)
+export const SOURCE_LABEL: Record<string, string> = {
+  all: '全网聚合',
+  kw: '酷我',
+  wy: '网易云',
+  tx: 'QQ音乐',
+  kg: '酷狗',
+  mg: '咪咕',
+}
 
 /** 音质降级序列：首选 320k，失败退 128k（服务端解析器内部还会再按可用档位调整） */
 export const QUALITY_FALLBACK = ['320k', '128k'] as const
@@ -114,6 +120,67 @@ export async function searchMusic(params: {
   }
   if (!Array.isArray(data)) throw new MusicApiError('搜索返回格式异常')
   return data as Song[]
+}
+
+/** 多平台并发聚合搜索：同时从酷我、网易云、QQ音乐、咪咕等拉取并交织合并 */
+export async function searchMusicAggregate(params: {
+  name: string
+  singer?: string
+  sources?: string[]
+  page?: number
+  signal?: AbortSignal
+}): Promise<Song[]> {
+  const targetSources =
+    params.sources && params.sources.length > 0
+      ? params.sources
+      : ['kw', 'wy', 'tx', 'mg', 'kg']
+
+  const results = await Promise.allSettled(
+    targetSources.map((src) =>
+      searchMusic({
+        name: params.name,
+        singer: params.singer,
+        source: src,
+        page: params.page ?? 1,
+        signal: params.signal,
+      }),
+    ),
+  )
+
+  const lists: Song[][] = []
+  for (const r of results) {
+    if (r.status === 'fulfilled' && Array.isArray(r.value) && r.value.length > 0) {
+      lists.push(r.value)
+    }
+  }
+
+  if (lists.length === 0) {
+    const firstErr = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+    if (firstErr) {
+      throw firstErr.reason
+    }
+    return []
+  }
+
+  // 交织合并（Round-Robin）：每个平台各出第 0 首，再出第 1 首，保证不同平台的热门曲目都能展现
+  const merged: Song[] = []
+  const maxLen = Math.max(...lists.map((l) => l.length))
+  const seenKeys = new Set<string>()
+
+  for (let i = 0; i < maxLen; i++) {
+    for (const list of lists) {
+      if (i < list.length) {
+        const item = list[i]
+        const k = `${item.source}_${item.id || item.songmid || item.name}`
+        if (!seenKeys.has(k)) {
+          seenKeys.add(k)
+          merged.push(item)
+        }
+      }
+    }
+  }
+
+  return merged
 }
 
 /** 解析播放地址；失败抛 MusicApiError（带 attempts 明细）。

@@ -64,7 +64,7 @@ export default function LeaderboardPage() {
           <p className="mt-0.5 text-sm text-dim">五平台榜单，选一个榜直接听。</p>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {MUSIC_SOURCES.map((s) => (
+          {MUSIC_SOURCES.filter((s) => s.key !== 'all').map((s) => (
             <button
               key={s.key}
               type="button"

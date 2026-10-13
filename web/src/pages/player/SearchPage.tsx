@@ -1,18 +1,20 @@
 import * as React from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Loader2, Play, Search, TriangleAlert, UserRound } from 'lucide-react'
+import { Loader2, Play, Search, TriangleAlert, UserRound, X } from 'lucide-react'
 import {
   Button,
   Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Stack,
   useToast,
 } from '@/components/ui'
-import { MUSIC_SOURCES, SOURCE_LABEL, searchMusic, songKey, sourceLabel, type Song } from '@/lib/music'
+import {
+  MUSIC_SOURCES,
+  SOURCE_LABEL,
+  searchMusic,
+  searchMusicAggregate,
+  songKey,
+  sourceLabel,
+  type Song,
+} from '@/lib/music'
 import {
   ARTIST_SOURCES,
   searchSingers,
@@ -22,6 +24,7 @@ import {
 import { usePlayer } from '@/lib/player'
 import { useSentinel } from '@/lib/useSentinel'
 import SongList from '@/components/player/SongList'
+import { cn } from '@/lib/utils'
 
 type Phase = 'idle' | 'loading' | 'done' | 'error'
 /** 搜索类型：歌曲（默认）或歌手。歌手类型只有 wy/tx 支持，见 discover.ts 的说明。 */
@@ -36,7 +39,7 @@ export default function SearchPage() {
   const { toast } = useToast()
 
   const [keyword, setKeyword] = React.useState('')
-  const [source, setSource] = React.useState<string>('kw')
+  const [source, setSource] = React.useState<string>('all')
   const [kind, setKind] = React.useState<Kind>('song')
   const [phase, setPhase] = React.useState<Phase>('idle')
   const [results, setResults] = React.useState<Song[]>([])
@@ -72,13 +75,18 @@ export default function SearchPage() {
 
     try {
       if (k === 'singer') {
-        // 平台不支持时不必发请求（服务端会 500），直接落到空结果由 UI 给换平台提示
-        const hits = supportsArtistPages(src) ? await searchSingers({ name: q, source: src, signal: ac.signal }) : []
+        const targetSrc = src === 'all' ? 'wy' : src
+        const hits = supportsArtistPages(targetSrc)
+          ? await searchSingers({ name: q, source: targetSrc, signal: ac.signal })
+          : []
         if (ac.signal.aborted) return
         setSingers(hits)
         setResults([])
       } else {
-        const list = await searchMusic({ name: q, source: src, page: 1, pages: 1, signal: ac.signal })
+        const list =
+          src === 'all'
+            ? await searchMusicAggregate({ name: q, page: 1, signal: ac.signal })
+            : await searchMusic({ name: q, source: src, page: 1, pages: 1, signal: ac.signal })
         if (ac.signal.aborted) return
         setResults(list)
         setSingers([])
@@ -105,9 +113,7 @@ export default function SearchPage() {
     const q = p.get('q')
     if (!q) return
     const k: Kind = p.get('type') === 'singer' ? 'singer' : 'song'
-    const src = p.get('source') ?? 'kw'
-    // 这是「响应 URL 变化」（首页搜索框 / 热搜 / 列表链接跳转），不是渲染期派生状态；
-    // 规则静态看不出差别，与 lib/useLists.ts 的挂载取数同一处理方式
+    const src = p.get('source') ?? 'all'
     /* eslint-disable react-hooks/set-state-in-effect */
     setKind(k)
     setSource(src)
@@ -122,18 +128,16 @@ export default function SearchPage() {
     toast({ title: `开始播放全部 ${results.length} 首`, description: searchedFor })
   }, [player, results, searchedFor, toast])
 
-  /** 追加下一页。触底自动触发，也可点「加载更多」手动触发。
-   *
-   *  两个防死循环的兜底（各平台翻页行为不一致，必须防）：
-   *  1. 追加结果按 songKey 去重 —— 翻页结果常与已加载条目重复；
-   *  2. 去重后一条新增都没有 → 判定到底，直接收工。
-   *     有些平台会无视 page 反复返回同一批，没有这条就会无限追加重复项。 */
+  /** 追加下一页。触底自动触发，也可点「加载更多」手动触发。 */
   const loadMore = React.useCallback(async () => {
     if (loadingMore || !hasMore || kind !== 'song' || !searchedFor) return
     setLoadingMore(true)
     const next = page + 1
     try {
-      const list = await searchMusic({ name: searchedFor, source, page: next, pages: 1 })
+      const list =
+        source === 'all'
+          ? await searchMusicAggregate({ name: searchedFor, page: next })
+          : await searchMusic({ name: searchedFor, source, page: next, pages: 1 })
       const seen = new Set(results.map(songKey))
       const fresh = list.filter((s) => !seen.has(songKey(s)))
       if (fresh.length === 0) {
@@ -144,7 +148,6 @@ export default function SearchPage() {
         if (list.length < PAGE_SIZE) setHasMore(false)
       }
     } catch {
-      // 追加失败不该把已经拿到的结果也弄丢，静默停止即可
       setHasMore(false)
     } finally {
       setLoadingMore(false)
@@ -161,75 +164,120 @@ export default function SearchPage() {
   }
 
   return (
-    <Stack gap={5} className="w-full rise">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-ink">搜索</h1>
-        <p className="mt-1 text-sm text-dim">聚合主流平台音源，点歌即播。</p>
-      </header>
+    <div className="w-full rise flex flex-col gap-5 md:gap-6">
+      {/* 搜索控制台卡片：移动端极简，仅保留单条纯粹搜索框；桌面端展示完整控制台 */}
+      <section className="rounded-2xl md:rounded-3xl border border-line/80 bg-panel p-3.5 md:p-6 shadow-card">
+        {/* 桌面端标题与分类Tab：移动端彻底隐藏，绝不占用垂直空间 */}
+        <div className="hidden md:flex md:flex-row md:items-center justify-between gap-4 mb-5">
+          <div>
+            <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-ink">搜索发现</h1>
+            <p className="mt-1 text-xs text-dim">聚合五大主流平台海量高品质音源，一键即听、随心珍藏。</p>
+          </div>
 
-      <form
-        className="flex flex-wrap gap-2"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void runSearch(keyword, source, kind)
-        }}
-      >
-        <div className="flex rounded-lg border border-line p-0.5" role="group" aria-label="搜索类型">
-          {(
-            [
-              ['song', '歌曲'],
-              ['singer', '歌手'],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              aria-pressed={kind === key}
-              onClick={() => switchKind(key)}
-              className={
-                kind === key
-                  ? 'rounded-md bg-accent px-3 py-1.5 text-xs text-white'
-                  : 'rounded-md px-3 py-1.5 text-xs text-dim transition-colors hover:text-ink'
-              }
-            >
-              {label}
-            </button>
-          ))}
+          {/* 搜索类型胶囊（歌曲 / 歌手） */}
+          <div className="flex items-center rounded-xl bg-panel-2/90 p-1 border border-line/60">
+            {(
+              [
+                ['song', '歌曲搜索'],
+                ['singer', '歌手检索'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={kind === key}
+                onClick={() => switchKind(key)}
+                className={cn(
+                  'rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all',
+                  kind === key
+                    ? 'bg-panel text-accent shadow-2xs'
+                    : 'text-dim hover:text-ink',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-        <Input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          placeholder={kind === 'singer' ? '搜索歌手名…' : '搜索歌曲、专辑…'}
-          aria-label="搜索关键词"
-          autoComplete="off"
-          className="min-w-40 flex-1"
-        />
-        <Select
-          value={source}
-          onValueChange={(v) => {
-            // Radix Select 在「受控值找不到已挂载的 Item」时会回调空串 ——
-            // SelectItem 在弹层里，未展开时并不挂载，所以深链 `/search?source=wy`
-            // 之后这里会把 source 清成 ''（页面标题、平台选择器、歌手/专辑链接全跟着错）。
-            // 空串一律忽略。
-            if (v) setSource(v)
+
+        {/* 搜索主输入框：在移动端就是最纯粹、全宽的搜索框 */}
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void runSearch(keyword, source, kind)
           }}
         >
-          <SelectTrigger className="w-28" aria-label="音源平台">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {MUSIC_SOURCES.map((s) => (
-              <SelectItem key={s.key} value={s.key}>
-                {s.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button type="submit" disabled={!keyword.trim() || phase === 'loading'}>
-          {phase === 'loading' ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-          搜索
-        </Button>
-      </form>
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 md:left-4 top-1/2 size-4.5 -translate-y-1/2 text-faint" />
+            <Input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="搜索歌曲、歌手、专辑…"
+              aria-label="搜索关键词"
+              autoComplete="off"
+              className="h-11 md:h-12 pl-10 md:pl-11 pr-8 md:pr-10 text-sm rounded-xl md:rounded-2xl bg-panel-2/70 border-line/80 focus:border-accent"
+            />
+            {keyword && (
+              <button
+                type="button"
+                onClick={() => setKeyword('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-1 text-faint hover:text-ink transition-colors"
+                aria-label="清空输入"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+
+          <Button
+            type="submit"
+            size="lg"
+            disabled={!keyword.trim() || phase === 'loading'}
+            className="h-11 md:h-12 px-4 md:px-7 rounded-xl md:rounded-2xl font-semibold shadow-xs shrink-0"
+          >
+            {phase === 'loading' ? (
+              <Loader2 className="size-4 animate-spin md:mr-1" />
+            ) : (
+              <Search className="size-4 md:mr-1" />
+            )}
+            <span className="hidden md:inline">搜索</span>
+          </Button>
+        </form>
+
+        {/* 快捷平台切换药丸标签：仅在桌面端显示；移动端默认聚合搜索，无冗余按钮 */}
+        <div className="hidden md:flex flex-wrap items-center gap-2 pt-3 mt-4 border-t border-line/40">
+          <span className="text-xs font-semibold text-faint mr-1">音源平台：</span>
+          {MUSIC_SOURCES.map((s) => {
+            const active = source === s.key
+            return (
+              <button
+                key={s.key}
+                type="button"
+                onClick={() => {
+                  setSource(s.key)
+                  const q = keyword.trim() || searchedFor
+                  if (q) void runSearch(q, s.key, kind)
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all',
+                  active
+                    ? 'bg-accent/10 border border-accent/30 text-accent font-semibold shadow-2xs'
+                    : 'bg-panel-2/70 border border-line/70 text-dim hover:border-line-strong hover:bg-panel hover:text-ink',
+                )}
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full',
+                    active ? 'bg-accent' : 'bg-faint/60',
+                  )}
+                />
+                <span>{s.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      </section>
 
       {kind === 'singer' && !supportsArtistPages(source) && (
         <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-6 text-center">
@@ -361,13 +409,22 @@ export default function SearchPage() {
       )}
 
       {phase === 'done' && kind === 'song' && results.length > 0 && (
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <p className="text-sm text-dim">
-              「{searchedFor}」· {sourceLabel(source)} · 已加载 {results.length} 首
-            </p>
-            <Button variant="outline" size="sm" onClick={playAll}>
-              <Play className="size-3.5 fill-current" /> 播放全部
+        <section className="rounded-3xl border border-line/80 bg-panel p-5 md:p-6 shadow-card">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-line/60">
+            <div className="flex items-center gap-2 text-xs font-semibold text-dim">
+              <span className="rounded-md bg-accent/10 px-2 py-0.5 text-accent font-bold">
+                {sourceLabel(source)}
+              </span>
+              <span>
+                「{searchedFor}」共找到 <span className="text-ink font-bold">{results.length}</span> 首歌曲
+              </span>
+            </div>
+            <Button
+              size="sm"
+              onClick={playAll}
+              className="rounded-xl font-medium shadow-xs"
+            >
+              <Play className="size-3.5 fill-current mr-1" /> 播放全部
             </Button>
           </div>
           <SongList songs={results} showSource />
@@ -375,19 +432,19 @@ export default function SearchPage() {
           {/* 触底哨兵：滚到这里自动追加下一页（rootMargin 提前 300px 触发） */}
           <div ref={sentinelRef} aria-hidden className="h-px" />
 
-          <div className="mt-3 flex justify-center">
+          <div className="mt-4 flex justify-center pt-2">
             {loadingMore && (
               <p className="flex items-center gap-2 text-xs text-faint">
-                <Loader2 className="size-3.5 animate-spin" /> 正在加载更多…
+                <Loader2 className="size-3.5 animate-spin text-accent" /> 正在加载更多音源…
               </p>
             )}
             {!loadingMore && hasMore && (
-              <Button variant="outline" size="sm" onClick={() => void loadMore()}>
-                加载更多
+              <Button variant="outline" size="sm" onClick={() => void loadMore()} className="rounded-xl">
+                加载更多歌曲
               </Button>
             )}
             {!loadingMore && !hasMore && (
-              <p className="text-xs text-faint">已全部加载（共 {results.length} 首）</p>
+              <p className="text-xs text-faint">已展示全部结果（共 {results.length} 首）</p>
             )}
           </div>
         </section>
@@ -423,6 +480,6 @@ export default function SearchPage() {
           {player.sourceName && <span>· {player.sourceName}</span>}
         </div>
       )}
-    </Stack>
+    </div>
   )
 }

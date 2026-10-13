@@ -1,5 +1,4 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import type { LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   FileMusic,
@@ -9,10 +8,12 @@ import {
   ListMusic,
   LogOut,
   Menu,
+  Music2,
   PanelRightClose,
   PanelRightOpen,
   Search,
   Settings,
+  Sparkles,
   Trophy,
   X,
 } from 'lucide-react'
@@ -43,64 +44,101 @@ import HistoryPage from '@/pages/player/HistoryPage'
 function RoleBadge() {
   const { auth } = useAuth()
   if (!auth.user.ok) return null
+  const initial = (auth.user.username?.[0] || 'U').toUpperCase()
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink">
-      <span className={`size-1.5 rounded-full ${auth.user.isAdmin ? 'bg-accent' : 'bg-ok'}`} />
-      {auth.user.username}
-      {auth.user.isAdmin && <span className="text-faint">管理员</span>}
-    </span>
+    <div className="flex items-center gap-1.5 sm:gap-2 rounded-full border border-line/80 bg-panel/80 px-2 sm:px-2.5 py-1 text-xs shadow-xs backdrop-blur-sm">
+      <span className="flex size-5 sm:size-5.5 items-center justify-center rounded-full bg-accent/15 text-accent font-semibold text-[11px]">
+        {initial}
+      </span>
+      <span className="hidden sm:inline font-medium text-ink max-w-[90px] truncate">{auth.user.username}</span>
+      {auth.user.isAdmin ? (
+        <span className="rounded-full bg-accent/10 px-1.5 py-0.2 text-[10px] font-semibold text-accent">
+          管理员
+        </span>
+      ) : (
+        <span className="size-1.5 rounded-full bg-ok" />
+      )}
+    </div>
   )
 }
 
-/** 音乐段导航（阶段 C：先壳与路由，页面按序接入） */
-const MUSIC_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }> = [
-  { to: '/', label: '首页', icon: Home, end: true },
-  { to: '/search', label: '搜索', icon: Search },
-  { to: '/playlist', label: '歌单', icon: ListMusic },
-  { to: '/leaderboard', label: '排行榜', icon: Trophy },
-  { to: '/favorites', label: '我的收藏', icon: Heart },
-  { to: '/history', label: '播放历史', icon: History },
+/** 音乐库导航（分层结构：发现 / 音乐库） */
+const NAV_DISCOVER = [
+  { to: '/', label: '精选发现', icon: Home, end: true },
+  { to: '/search', label: '搜索发现', icon: Search },
+  { to: '/leaderboard', label: '排行榜单', icon: Trophy },
+]
+
+const NAV_LIBRARY = [
+  { to: '/playlist', label: '我的歌单', icon: ListMusic },
+  { to: '/favorites', label: '我喜欢的', icon: Heart },
+  { to: '/history', label: '最近播放', icon: History },
   { to: '/local', label: '本地音乐', icon: FileMusic },
 ]
 
-/** 侧栏：只放「听歌」相关导航。
- *  设置是另一个功能区，收成单个入口（内部有分组导航）——把 9 组设置铺在主侧栏里
- *  会让「这是播放器」这件事被淹没。
- *  v2.24.0：设置入口只对管理员账号显示（管理员现在是账号属性，不再是另一把钥匙）。 */
+/** 侧栏：顶研级 Apple Music 质感，优雅分组与悬停微光 */
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const { auth } = useAuth()
   const nav = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
-      isActive ? 'bg-accent-soft font-medium text-accent' : 'text-dim hover:bg-panel2 hover:text-ink'
+    `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all ${
+      isActive
+        ? 'bg-accent/10 text-accent font-semibold shadow-xs'
+        : 'text-dim hover:bg-panel-2 hover:text-ink'
     }`
   return (
-    <>
-      {MUSIC_NAV.map((m) => (
-        <NavLink key={m.to} to={m.to} end={m.end} className={nav} onClick={onNavigate}>
-          <m.icon className="size-4" /> {m.label}
-        </NavLink>
-      ))}
+    <div className="flex flex-col gap-6">
+      <div>
+        <div className="mb-2 px-3 text-[11px] font-semibold tracking-wider text-faint uppercase">
+          发现
+        </div>
+        <div className="space-y-1">
+          {NAV_DISCOVER.map((m) => (
+            <NavLink key={m.to} to={m.to} end={m.end} className={nav} onClick={onNavigate}>
+              <m.icon className="size-4.5" />
+              <span>{m.label}</span>
+            </NavLink>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-2 px-3 text-[11px] font-semibold tracking-wider text-faint uppercase">
+          我的音乐库
+        </div>
+        <div className="space-y-1">
+          {NAV_LIBRARY.map((m) => (
+            <NavLink key={m.to} to={m.to} className={nav} onClick={onNavigate}>
+              <m.icon className="size-4.5" />
+              <span>{m.label}</span>
+            </NavLink>
+          ))}
+        </div>
+      </div>
 
       {isAdmin(auth) && (
-        <>
-          <div className="my-3 border-t border-line" />
-
-          <NavLink to="/settings" className={nav} onClick={onNavigate}>
-            <Settings className="size-4" /> 设置
-          </NavLink>
-        </>
+        <div>
+          <div className="mb-2 px-3 text-[11px] font-semibold tracking-wider text-faint uppercase">
+            管理
+          </div>
+          <div className="space-y-1">
+            <NavLink to="/settings" className={nav} onClick={onNavigate}>
+              <Settings className="size-4.5" />
+              <span>系统设置</span>
+            </NavLink>
+          </div>
+        </div>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3">
+      <div className="mt-auto pt-4 border-t border-line/60">
         <NavLink
           to="/dev"
           onClick={onNavigate}
-          className="text-[11px] text-faint transition-colors hover:text-dim"
+          className="flex items-center gap-2 px-3 py-1.5 text-xs text-faint hover:text-dim transition-colors"
         >
-          组件展示
+          <span>UI 组件画廊</span>
         </NavLink>
       </div>
-    </>
+    </div>
   )
 }
 
@@ -141,50 +179,79 @@ function Shell() {
     // 换成 `100dvh`（动态视口高度）同样不解决「要减掉 header」这件事，所以真正的修法是：
     // 让内容区的最小高度 = 视口 − header 高度，两者相加恰好等于视口。
     <div className="flex min-h-[calc(100dvh-var(--header-h))] flex-col">
-      {/* 顶栏 */}
-      <header className="sticky top-0 z-40 border-b border-line bg-panel/90 backdrop-blur">
-        <div className="flex h-14 items-center gap-3 px-4 md:px-6">
+      {/* 顶栏：流体毛玻璃质感与全局搜索 */}
+      <header className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl">
+        <div className="flex h-[var(--header-h)] items-center gap-4 px-4 md:px-8">
           <button
-            // 触摸目标 44×44（WCAG 2.2 AA 要求 ≥24，Apple HIG 推荐 44）：
-            // 图标本身仍是 20px，靠 padding 撑开命中区 —— 视觉不变、手指好点。
-            className="-ml-2 rounded-lg p-3 text-dim hover:bg-panel2 hover:text-ink lg:hidden"
+            className="-ml-2 rounded-xl p-2.5 text-dim hover:bg-panel-2 hover:text-ink lg:hidden transition-colors"
             onClick={() => setDrawer(true)}
             aria-label="打开导航"
           >
             <Menu className="size-5" />
           </button>
-          <NavLink to="/" className="flex min-h-11 items-center gap-2 py-2 lg:hidden">
-            <span className="size-2.5 rounded-full bg-accent" />
-            <span className="font-semibold tracking-tight text-ink">lxserver</span>
-            <span className="hidden text-xs text-faint sm:inline">音乐</span>
+
+          {/* 品牌标识 */}
+          <NavLink to="/" className="flex items-center gap-3 group">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-gradient-to-tr from-accent to-indigo-400 text-white shadow-sm shadow-accent/25 transition-transform group-hover:scale-105">
+              <Music2 className="size-5" />
+            </span>
+            <div className="flex flex-col">
+              <span className="font-bold tracking-tight text-ink text-base leading-none">
+                LX Music
+              </span>
+              <span className="hidden sm:inline text-[10px] font-medium text-faint tracking-wider uppercase mt-0.5">
+                Acoustic Studio
+              </span>
+            </div>
           </NavLink>
-          <div className="ml-auto flex items-center gap-2">
+
+          {/* 全局桌面搜索快捷条 */}
+          <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
+            <div
+              onClick={() => navigate('/search')}
+              className="group flex w-full cursor-pointer items-center gap-2.5 rounded-full border border-line/80 bg-panel-2/80 px-4 py-2 text-xs text-dim transition-all hover:border-accent/40 hover:bg-panel hover:shadow-xs"
+            >
+              <Search className="size-3.5 text-faint group-hover:text-accent transition-colors" />
+              <span className="flex-1 truncate">搜索海量音乐、歌手、专辑...</span>
+              <kbd className="hidden sm:inline-block rounded-md border border-line bg-panel px-1.5 py-0.5 text-[10px] font-mono text-faint shadow-2xs">
+                /
+              </kbd>
+            </div>
+          </div>
+
+          <div className="ml-auto flex items-center gap-3">
+            {/* 无损母带品质标识 */}
+            <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-ok/30 bg-ok/5 px-2.5 py-1 text-[11px] font-medium text-ok">
+              <Sparkles className="size-3" />
+              <span>Hi-Res Lossless</span>
+            </div>
+
+            {/* 正在播放抽屉开关 */}
             <button
               type="button"
               onClick={() => setPanel((v) => !v)}
               aria-pressed={panel}
               aria-label="正在播放面板"
-              title={panel ? '收起正在播放面板' : '展开正在播放面板'}
-              className="hidden size-8 items-center justify-center rounded-lg text-dim transition-colors hover:bg-panel2 hover:text-ink xl:flex"
+              title={panel ? '收起播放面板' : '展开播放面板'}
+              className="hidden size-9 items-center justify-center rounded-xl text-dim transition-all hover:bg-panel-2 hover:text-ink xl:flex border border-transparent hover:border-line/60"
             >
               {panel ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
             </button>
+
             <RoleBadge />
+
             {isLoggedIn(auth) && (
               <button
-                // 移动端 44px（Apple HIG）；桌面端紧凑。
-                // 原来是 py-1.5 → 只有 28px，手机上点「退出」容易点偏。
-                className="flex min-h-11 items-center gap-1.5 rounded-lg px-2.5 py-2.5 text-xs text-dim hover:bg-panel2 hover:text-ink md:min-h-0 md:py-1.5"
+                className="flex items-center gap-1.5 rounded-xl border border-line/70 px-3 py-1.5 text-xs font-medium text-dim hover:border-danger/30 hover:bg-danger/5 hover:text-danger transition-all"
                 onClick={async () => {
-                  // 退出即停播：否则音频元素（挂在 App 根部，跨登录态存活）
-                  // 会在登录页背后继续出声，且没有任何可见控件可以停它
                   player.clear()
                   await api.logoutAll()
                   await refresh()
                   navigate('/')
                 }}
               >
-                <LogOut className="size-3.5" /> 退出
+                <LogOut className="size-3.5" />
+                <span className="hidden sm:inline">退出</span>
               </button>
             )}
           </div>

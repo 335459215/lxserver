@@ -103,6 +103,7 @@ function MiniPlayer() {
  *  所以这个调用是零副作用的，不会引起任何页面跳动。 */
 export default function MobileTabBar() {
   const { pathname } = useLocation()
+  const isNowPlaying = pathname === '/now-playing'
   const [more, setMore] = useState(false)
 
   useEffect(() => {
@@ -128,8 +129,13 @@ export default function MobileTabBar() {
         aria-label="移动端导航"
       >
         <div className="mx-auto mb-2 w-[min(26rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-pop backdrop-blur">
-          <MiniPlayer />
-          <div className="flex items-stretch border-t border-line pb-[env(safe-area-inset-bottom)]">
+          {!isNowPlaying && <MiniPlayer />}
+          <div
+            className={cn(
+              'flex items-stretch pb-[env(safe-area-inset-bottom)]',
+              !isNowPlaying && 'border-t border-line',
+            )}
+          >
             {TAB_NAV.map((t) => (
               <NavLink
                 key={t.to}
