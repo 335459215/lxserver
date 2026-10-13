@@ -1,48 +1,43 @@
 import * as React from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Loader2, Play, RefreshCw, TriangleAlert, Trophy } from 'lucide-react'
+import { Loader2, Play, RefreshCw, TriangleAlert, Trophy, Layers } from 'lucide-react'
 import { Button, useToast } from '@/components/ui'
-import { MUSIC_SOURCES, formatTotalDuration, intervalToSeconds } from '@/lib/music'
-import { useLeaderboardBoards, useLeaderboardSongs } from '@/lib/discover'
+import { formatTotalDuration, intervalToSeconds } from '@/lib/music'
+import {
+  useAggregatedLeaderboardBoards,
+  useAggregatedLeaderboardSongs,
+} from '@/lib/discover'
 import { usePlayer } from '@/lib/player'
 import SongList from '@/components/player/SongList'
 import { cn } from '@/lib/utils'
 
-/** 排行榜：左选榜、右看曲，整榜可播。
- *  布局参考 Spotify/Apple Music 的「导航列 + 内容列」，宽屏不再浪费横向空间。 */
+/** 排行榜：全网聚合、不分平台，左选榜、右看曲，整榜可播。
+ *  榜单名直接显示纯榜单名，自动聚合主流多平台热门曲目。 */
 export default function LeaderboardPage() {
   const player = usePlayer()
   const { toast } = useToast()
 
-  const [source, setSource] = React.useState<string>('kw')
-  /** 用户手动选过的榜单；换平台后若失效则自动回到第一个榜 */
-  const [pickedBangid, setPickedBangid] = React.useState<string | null>(null)
-
-  // 支持 /leaderboard?source=yy&bangid=zz —— 首页的榜单卡直接深链过来
+  // 支持 /leaderboard?name=飙升榜
   const [params] = useSearchParams()
-  React.useEffect(() => {
-    const s = params.get('source')
-    const b = params.get('bangid')
-    if (!s && !b) return
-    // 同上：响应 URL 变化，非渲染期派生
-    /* eslint-disable react-hooks/set-state-in-effect */
-    if (s) setSource(s)
-    if (b) setPickedBangid(b)
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [params])
+  const nameParam = params.get('name')
+  const [pickedName, setPickedName] = React.useState<string | null>(null)
 
-  const boardsRes = useLeaderboardBoards(source)
-  const boards = boardsRes.data ?? []
+  const boardsRes = useAggregatedLeaderboardBoards()
+  const boards = React.useMemo(() => boardsRes.data ?? [], [boardsRes.data])
 
-  // 派生选中项，避免用 effect 同步（换平台时 pickedBangid 可能已不属于新平台）
-  const bangid =
-    pickedBangid && boards.some((b) => b.bangid === pickedBangid)
-      ? pickedBangid
-      : (boards[0]?.bangid ?? null)
-  const boardName = boards.find((b) => b.bangid === bangid)?.name ?? ''
+  // 派生当前选中的聚合榜单
+  const currentBoard = React.useMemo(() => {
+    const targetName = pickedName ?? nameParam
+    if (targetName) {
+      const match = boards.find((b) => b.name === targetName)
+      if (match) return match
+    }
+    return boards[0] ?? null
+  }, [boards, pickedName, nameParam])
 
-  const songsRes = useLeaderboardSongs(source, bangid)
-  // 缓存住引用：`data?.list ?? []` 每次渲染都会新建数组，会让下面的 useMemo 失效
+  const boardName = currentBoard?.name ?? ''
+
+  const songsRes = useAggregatedLeaderboardSongs(currentBoard?.targets)
   const songs = React.useMemo(() => songsRes.data?.list ?? [], [songsRes.data])
   const totalSeconds = React.useMemo(
     () => songs.reduce((acc, s) => acc + intervalToSeconds(s.interval), 0),
@@ -52,58 +47,36 @@ export default function LeaderboardPage() {
   const playAll = () => {
     if (!songs.length) return
     player.playQueue(songs, 0)
-    toast({ title: `开始播放「${boardName}」`, description: `${songs.length} 首` })
+    toast({ title: `开始播放「${boardName}」`, description: `全网聚合 ${songs.length} 首` })
   }
 
   return (
     <div className="rise flex w-full flex-col gap-5">
-      {/* 页头：标题与平台切换同一行，省一层高度 */}
+      {/* 页头：极简清爽，全网聚合 */}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-ink">排行榜</h1>
-          <p className="mt-0.5 text-sm text-dim">五平台榜单，选一个榜直接听。</p>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {MUSIC_SOURCES.filter((s) => s.key !== 'all').map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              onClick={() => setSource(s.key)}
-              aria-pressed={source === s.key}
-              className={cn(
-                'rounded-full border px-3 py-1 text-xs transition-colors',
-                source === s.key
-                  ? 'border-accent bg-accent text-white'
-                  : 'border-line bg-panel text-dim hover:border-accent/40 hover:text-ink',
-              )}
-            >
-              {s.label}
-            </button>
-          ))}
+          <h1 className="text-xl font-semibold tracking-tight text-ink flex items-center gap-2">
+            <span>排行榜</span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-600">
+              <Layers className="size-3" />
+              全网聚合
+            </span>
+          </h1>
+          <p className="mt-0.5 text-sm text-dim">汇聚全网多平台官方权威热度，不分平台直接畅听。</p>
         </div>
       </header>
 
       <div className="grid gap-5 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-6">
-        {/* 榜单列表 */}
-        {/*
-          【移动端横向溢出的根因，别改回去】
-          这个 section 在窄屏下是 grid 的**直接子项**，而 grid 项默认 `min-width: auto`：
-          它的最小宽度会被内容（那排 `whitespace-nowrap` 的榜单按钮）撑到 4140px，
-          于是整个 grid 跟着变宽 → 文档 scrollWidth 远超视口 → 页面能横向拖走。
-          上面的 `overflow-x-auto` 只是让**内层 ul** 可滚动，管不住外层的 grid 项。
-          修法：给 grid 项加 `min-w-0`（允许它收缩到轨道宽度以下），
-          滚动才会老老实实发生在 ul 内部。
-          宽屏（lg）下它是固定 13rem 的轨道，加 min-w-0 无副作用。
-        */}
+        {/* 榜单列表：纯榜单名，不加平台名 */}
         <section className="min-w-0 lg:sticky lg:top-20 lg:self-start">
           <p className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium tracking-widest text-faint">
-            <Trophy className="size-3.5" /> 榜单
+            <Trophy className="size-3.5" /> 聚合榜单
           </p>
 
           {boardsRes.status === 'loading' && (
             <div className="space-y-1.5">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <span key={i} className="block h-8 rounded-lg bg-panel2" />
+              {Array.from({ length: 8 }).map((_, i) => (
+                <span key={i} className="block h-8 rounded-lg bg-panel2 animate-pulse" />
               ))}
             </div>
           )}
@@ -121,23 +94,23 @@ export default function LeaderboardPage() {
           )}
 
           {boardsRes.status === 'ready' && boards.length === 0 && (
-            <p className="px-1 text-xs text-faint">该平台暂无榜单。</p>
+            <p className="px-1 text-xs text-faint">暂无榜单数据。</p>
           )}
 
           {boards.length > 0 && (
             <ul className="flex gap-1.5 overflow-x-auto pb-1 lg:max-h-[calc(100vh-11rem)] lg:flex-col lg:overflow-y-auto lg:pb-0 lg:pr-1">
               {boards.map((b) => {
-                const active = b.bangid === bangid
+                const active = b.name === boardName
                 return (
                   <li key={b.id} className="shrink-0 lg:shrink">
                     <button
                       type="button"
-                      onClick={() => setPickedBangid(b.bangid)}
+                      onClick={() => setPickedName(b.name)}
                       aria-current={active ? 'true' : undefined}
                       className={cn(
-                        'w-full whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-sm transition-colors lg:whitespace-normal',
+                        'w-full whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-sm transition-colors lg:whitespace-normal font-medium',
                         active
-                          ? 'bg-accent-soft font-medium text-accent'
+                          ? 'bg-accent-soft text-accent shadow-xs'
                           : 'text-dim hover:bg-panel2 hover:text-ink',
                       )}
                     >
@@ -150,7 +123,7 @@ export default function LeaderboardPage() {
           )}
         </section>
 
-        {/* 曲目 */}
+        {/* 聚合曲目列表 */}
         <section className="min-w-0">
           {songsRes.status === 'loading' && (
             <ul className="space-y-1" aria-busy="true" aria-label="榜单加载中">
@@ -184,10 +157,10 @@ export default function LeaderboardPage() {
             <>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-dim">
-                  <span className="font-medium text-ink">{boardName}</span>
+                  <span className="font-bold text-ink">{boardName}</span>
                   <span className="text-faint">
                     {' '}
-                    · {songs.length} 首
+                    · 全网聚合 · {songs.length} 首
                     {totalSeconds > 0 ? ` · ${formatTotalDuration(totalSeconds)}` : ''}
                   </span>
                 </p>
@@ -202,7 +175,7 @@ export default function LeaderboardPage() {
           {songsRes.status === 'ready' && songs.length === 0 && (
             <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
               <Loader2 className="mx-auto size-5 text-faint" />
-              <p className="mt-2 text-sm text-dim">这个榜单暂时没有曲目</p>
+              <p className="mt-2 text-sm text-dim">这个聚合榜单暂时没有曲目</p>
             </div>
           )}
         </section>

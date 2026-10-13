@@ -8,12 +8,12 @@ import './index.css'
 initAccent()
 
 // ===== PWA =====
-// 只注册 /app 自己的 SW（由服务端在 /app/sw.js 投放 → scope 天然是 /app/）。
-// 未登录时服务端不会挡静态资源，所以这里不需要鉴权。
+// 注册 SW，服务端已配置 Service-Worker-Allowed: / 响应头，接管整站根作用域
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/app/sw.js').catch(() => {
-      // 注册失败（如非 https/localhost、浏览器禁用）不影响正常使用，静默即可
+    const swUrl = window.location.pathname.startsWith('/app') ? '/app/sw.js' : '/sw.js'
+    navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(() => {
+      navigator.serviceWorker.register('/app/sw.js').catch(() => {})
     })
   })
 }

@@ -17,7 +17,11 @@ import {
 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { api, isAdmin, useAuth } from '@/lib/auth'
-import { useHotSearch, useLeaderboardBoards, useLeaderboardSongs } from '@/lib/discover'
+import {
+  useHotSearch,
+  useAggregatedLeaderboardBoards,
+  useAggregatedLeaderboardSongs,
+} from '@/lib/discover'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
 import SongList from '@/components/player/SongList'
@@ -152,13 +156,13 @@ export default function Dashboard() {
   const [keyword, setKeyword] = useState('')
 
   const hot = useHotSearch(HOME_SOURCE)
-  const boardsRes = useLeaderboardBoards(HOME_SOURCE)
+  const boardsRes = useAggregatedLeaderboardBoards()
   const { snapshot } = useLists()
 
   const boards = (boardsRes.data ?? []).slice(0, BOARD_PREVIEW)
-  const firstBangid = boardsRes.data?.[0]?.bangid ?? null
-  const boardName = boardsRes.data?.[0]?.name ?? ''
-  const previewRes = useLeaderboardSongs(HOME_SOURCE, firstBangid)
+  const firstBoard = boardsRes.data?.[0] ?? null
+  const boardName = firstBoard?.name ?? ''
+  const previewRes = useAggregatedLeaderboardSongs(firstBoard?.targets)
   const previewSongs = (previewRes.data?.list ?? []).slice(0, SONG_PREVIEW)
 
   // 服务器状态（仅管理员拉取并展示于底部）
@@ -200,8 +204,8 @@ export default function Dashboard() {
 
   return (
     <div className="rise flex w-full flex-col gap-8">
-      {/* 1. Hero Spotlight 焦点横幅：Apple Music / Spotify 级顶研大卡 */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 p-6 md:p-9 text-white shadow-xl">
+      {/* 1. Hero Spotlight 焦点横幅：仅在桌面端显示，移动端直接展示搜索与音乐库 */}
+      <section className="hidden md:block relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 p-6 md:p-9 text-white shadow-xl">
         {/* 动态光晕与声学背景纹理 */}
         <div className="pointer-events-none absolute -right-20 -top-20 size-96 rounded-full bg-indigo-500/20 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-20 left-1/3 size-80 rounded-full bg-purple-500/15 blur-3xl" />
@@ -407,7 +411,7 @@ export default function Dashboard() {
             {boards.map((b, i) => (
               <Link
                 key={b.id}
-                to={`/leaderboard?source=${HOME_SOURCE}&bangid=${b.bangid}`}
+                to={`/leaderboard?name=${encodeURIComponent(b.name)}`}
                 className="group rise flex flex-col rounded-2xl border border-line/80 bg-panel p-3 shadow-card transition-all hover:-translate-y-1 hover:border-line-strong hover:shadow-pop"
                 style={{ animationDelay: `${i * 40}ms` }}
               >
@@ -426,7 +430,7 @@ export default function Dashboard() {
                 <span className="mt-2.5 truncate text-xs font-bold text-ink">
                   {b.name}
                 </span>
-                <span className="text-[10px] text-faint">官方热门榜</span>
+                <span className="text-[10px] text-faint">全网聚合榜</span>
               </Link>
             ))}
           </div>

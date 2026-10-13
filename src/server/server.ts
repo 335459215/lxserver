@@ -1175,9 +1175,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         pathname === '/login.html' ||
         pathname === '/js/config.js' ||
         pathname === '/about.md' ||
-        pathname === '/LICENSE' ||
-        pathname === '/manifest.json' ||
-        pathname === '/sw.js'
+        pathname === '/LICENSE'
       )
 
     if (isLegacyPathRedirect) {
@@ -1216,6 +1214,18 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         res.end(JSON.stringify({ ...getFrontendConfig(), version: readAppVersion() }))
         return
       }
+      if (pathname === '/app/sw.js') {
+        const swPath = path.join(global.lx.staticPath, 'app', 'sw.js')
+        if (fs.existsSync(swPath)) {
+          res.writeHead(200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Service-Worker-Allowed': '/',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+          })
+          fs.createReadStream(swPath).pipe(res)
+          return
+        }
+      }
       const appSubPath = pathname.slice('/app'.length) // 恒以 / 开头
       const appRel = appSubPath === '/' ? 'app/index.html' : 'app/' + appSubPath.replace(/^\/+/, '')
       if (!appRel.includes('..')) {
@@ -1242,6 +1252,45 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       })
       res.end(JSON.stringify({ ...getFrontendConfig(), version: readAppVersion() }))
       return
+    }
+
+    // PWA Manifest: 无论访问 /manifest.webmanifest 还是 /manifest.json，均返回标准 Manifest
+    if (pathname === '/manifest.webmanifest' || pathname === '/manifest.json') {
+      const manifestPath = path.join(global.lx.staticPath, 'app', 'manifest.webmanifest')
+      if (fs.existsSync(manifestPath)) {
+        res.writeHead(200, {
+          'Content-Type': 'application/manifest+json; charset=utf-8',
+          'Cache-Control': 'no-cache, must-revalidate',
+        })
+        fs.createReadStream(manifestPath).pipe(res)
+        return
+      }
+    }
+
+    // PWA Service Worker: 投放 /sw.js 并带上 Service-Worker-Allowed: / 响应头，允许接管根作用域
+    if (pathname === '/sw.js') {
+      const swPath = path.join(global.lx.staticPath, 'app', 'sw.js')
+      if (fs.existsSync(swPath)) {
+        res.writeHead(200, {
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Service-Worker-Allowed': '/',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        })
+        fs.createReadStream(swPath).pipe(res)
+        return
+      }
+    }
+
+    // PWA 图标根路径别名：/icons/* 映射到 public/app/icons/*
+    if (pathname.startsWith('/icons/')) {
+      const iconRel = pathname.slice('/icons/'.length)
+      if (!iconRel.includes('..')) {
+        const iconPath = path.join(global.lx.staticPath, 'app', 'icons', iconRel)
+        if (fs.existsSync(iconPath) && fs.statSync(iconPath).isFile()) {
+          serveStatic(req, res, iconPath, { immutable: true })
+          return
+        }
+      }
     }
 
     // ===== 根路径投放（v2.24.0）=====

@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import {
+  Download,
   FileMusic,
   Heart,
   History,
@@ -21,6 +22,8 @@ import { api, AuthProvider, isAdmin, isLoggedIn, useAuth } from '@/lib/auth'
 import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { usePwaInstall } from '@/hooks/usePwaInstall'
+import PwaInstallModal from '@/components/pwa/PwaInstallModal'
 import PlayerBar from '@/components/player/PlayerBar'
 import MobileTabBar from '@/components/player/MobileTabBar'
 import NowPlayingPanel from '@/components/player/NowPlayingPanel'
@@ -77,7 +80,15 @@ const NAV_LIBRARY = [
 ]
 
 /** 侧栏：顶研级 Apple Music 质感，优雅分组与悬停微光 */
-function NavItems({ onNavigate }: { onNavigate?: () => void }) {
+function NavItems({
+  onNavigate,
+  onInstall,
+  isInstalled,
+}: {
+  onNavigate?: () => void
+  onInstall?: () => void
+  isInstalled?: boolean
+}) {
   const { auth } = useAuth()
   const nav = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all ${
@@ -129,6 +140,22 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       )}
 
+      {!isInstalled && onInstall && (
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={() => {
+              onInstall()
+              onNavigate?.()
+            }}
+            className="flex w-full items-center gap-3 rounded-xl border border-line/80 bg-panel px-3 py-2.5 text-sm font-medium text-ink shadow-xs hover:border-accent/40 hover:bg-accent-soft hover:text-accent transition-all"
+          >
+            <Download className="size-4.5 text-accent" />
+            <span>安装为独立应用</span>
+          </button>
+        </div>
+      )}
+
       <div className="mt-auto pt-4 border-t border-line/60">
         <NavLink
           to="/dev"
@@ -159,6 +186,7 @@ function Shell() {
   const { pathname } = useLocation()
   const [drawer, setDrawer] = useState(false)
   const [panel, setPanel] = useState(restorePanel)
+  const { isInstalled, triggerInstall, isModalOpen, setIsModalOpen } = usePwaInstall()
 
   useEffect(() => {
     try {
@@ -219,7 +247,20 @@ function Shell() {
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2 sm:gap-3">
+            {/* PWA 应用安装按钮 */}
+            {!isInstalled && (
+              <button
+                type="button"
+                onClick={triggerInstall}
+                title="安装为独立应用"
+                className="flex items-center gap-1.5 rounded-xl border border-line/70 bg-panel px-2.5 py-1.5 text-xs font-medium text-dim hover:border-accent/40 hover:bg-accent-soft hover:text-accent transition-all"
+              >
+                <Download className="size-3.5 text-accent" />
+                <span className="hidden sm:inline">安装应用</span>
+              </button>
+            )}
+
             {/* 无损母带品质标识 */}
             <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-ok/30 bg-ok/5 px-2.5 py-1 text-[11px] font-medium text-ok">
               <Sparkles className="size-3" />
@@ -269,7 +310,7 @@ function Shell() {
       >
         {/* 桌面侧边栏 */}
         <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
-          <NavItems />
+          <NavItems onInstall={triggerInstall} isInstalled={isInstalled} />
         </aside>
 
         {/* 移动抽屉 */}
@@ -283,7 +324,7 @@ function Shell() {
                   <X className="size-4" />
                 </button>
               </div>
-              <NavItems onNavigate={() => setDrawer(false)} />
+              <NavItems onNavigate={() => setDrawer(false)} onInstall={triggerInstall} isInstalled={isInstalled} />
             </div>
           </div>
         )}
@@ -315,6 +356,7 @@ function Shell() {
 
       <PlayerBar />
       <MobileTabBar />
+      <PwaInstallModal open={isModalOpen} onClose={() => setIsModalOpen(false)} />
     </div>
   )
 }

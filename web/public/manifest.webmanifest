@@ -2,9 +2,9 @@
   "name": "lxserver 音乐",
   "short_name": "lxserver",
   "description": "落雪音乐服务端 · 聚合主流平台音源，点歌即播。",
-  "start_url": "/app/",
-  "scope": "/app/",
-  "id": "/app/",
+  "start_url": "/",
+  "scope": "/",
+  "id": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#fafafa",
@@ -36,19 +36,19 @@
     {
       "name": "搜索音乐",
       "short_name": "搜索",
-      "url": "/app/search",
+      "url": "/search",
       "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "我的收藏",
-      "short_name": "收藏",
-      "url": "/app/favorites",
+      "name": "排行榜",
+      "short_name": "排行榜",
+      "url": "/leaderboard",
       "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "本地音乐",
       "short_name": "本地",
-      "url": "/app/local",
+      "url": "/local",
       "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
     }
   ]

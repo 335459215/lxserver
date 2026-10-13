@@ -96,6 +96,175 @@ export function useHotSearch(source: string): AsyncResource<string[]> {
 
 // ===== 排行榜 =====
 
+export function cleanBoardName(name: string): string {
+  const prefixRegex = /^(酷我|网易云|网易|QQ音乐|QQ|酷狗|咪咕|TME|网易云音乐)\s*[-_·\s]*/i
+  const suffixRegex = /\s*[-_·\s]*(酷我|网易云|网易|QQ音乐|QQ|酷狗|咪咕)$/i
+  return name.replace(prefixRegex, '').replace(suffixRegex, '').trim()
+}
+
+export interface AggregatedBoardTarget {
+  source: string
+  bangid: string
+}
+
+export interface AggregatedLeaderboardBoard {
+  id: string
+  name: string
+  targets: AggregatedBoardTarget[]
+}
+
+const PROMINENT_BOARD_ORDER = [
+  '飙升榜',
+  '新歌榜',
+  '热歌榜',
+  '原创榜',
+  '流行指数榜',
+  'TOP500',
+  '抖音热歌榜',
+  '说唱榜',
+  '电音榜',
+  'ACG新歌榜',
+  'ACG榜',
+  '古风金曲榜',
+  '古风音乐榜',
+  '影视金曲榜',
+  '网络歌曲榜',
+  '内地榜',
+  '欧美榜',
+  '港台榜',
+  '经典怀旧榜',
+  'KTV点唱榜',
+  '摇滚榜',
+  '民谣榜',
+  '说唱先锋榜',
+]
+
+/** 全网多平台聚合榜单列表：并发拉取酷我、网易、QQ、酷狗、咪咕，清洗平台名前缀并按纯榜单名聚合 */
+export function useAggregatedLeaderboardBoards(): AsyncResource<AggregatedLeaderboardBoard[]> {
+  return useAsyncResource('aggregated_boards', async (signal) => {
+    const sources = ['kw', 'wy', 'tx', 'kg', 'mg']
+    const results = await Promise.allSettled(
+      sources.map((src) =>
+        getJson<{ list?: LeaderboardBoard[] }>(
+          `/api/music/leaderboard/boards?source=${encodeURIComponent(src)}`,
+          signal,
+        ),
+      ),
+    )
+
+    const boardMap = new Map<string, AggregatedLeaderboardBoard>()
+
+    results.forEach((res, index) => {
+      const src = sources[index]
+      if (res.status === 'fulfilled' && Array.isArray(res.value?.list)) {
+        for (const item of res.value.list) {
+          const rawName = item.name || ''
+          const cName = cleanBoardName(rawName)
+          if (!cName) continue
+
+          const existing = boardMap.get(cName)
+          if (existing) {
+            if (!existing.targets.some((t) => t.source === src)) {
+              existing.targets.push({ source: src, bangid: String(item.bangid) })
+            }
+          } else {
+            boardMap.set(cName, {
+              id: cName,
+              name: cName,
+              targets: [{ source: src, bangid: String(item.bangid) }],
+            })
+          }
+        }
+      }
+    })
+
+    // 按知名主流榜单优先排序，后续榜单追加在后
+    const ordered: AggregatedLeaderboardBoard[] = []
+    for (const name of PROMINENT_BOARD_ORDER) {
+      const b = boardMap.get(name)
+      if (b) {
+        ordered.push(b)
+        boardMap.delete(name)
+      }
+    }
+    ordered.push(...Array.from(boardMap.values()))
+    return ordered
+  })
+}
+
+/** 聚合榜单曲目：若属于多个平台则并发拉取、智能去重交织合并 */
+export function useAggregatedLeaderboardSongs(
+  targets: AggregatedBoardTarget[] | null | undefined,
+): AsyncResource<LeaderboardPageResult> {
+  const cacheKey =
+    targets && targets.length > 0
+      ? `agg_board:${targets.map((t) => `${t.source}_${t.bangid}`).sort().join(',')}`
+      : ''
+
+  return useAsyncResource(cacheKey, async (signal) => {
+    if (!targets || targets.length === 0) {
+      return { total: 0, list: [] }
+    }
+
+    if (targets.length === 1) {
+      const { source, bangid } = targets[0]
+      const data = await getJson<{ total?: number; list?: Song[] }>(
+        `/api/music/leaderboard/list?source=${encodeURIComponent(source)}&bangid=${encodeURIComponent(
+          bangid,
+        )}&page=1`,
+        signal,
+      )
+      return { total: data.total ?? 0, list: Array.isArray(data.list) ? data.list : [] }
+    }
+
+    // 多个平台：并发请求
+    const results = await Promise.allSettled(
+      targets.map((t) =>
+        getJson<{ total?: number; list?: Song[] }>(
+          `/api/music/leaderboard/list?source=${encodeURIComponent(t.source)}&bangid=${encodeURIComponent(
+            t.bangid,
+          )}&page=1`,
+          signal,
+        ),
+      ),
+    )
+
+    const lists: Song[][] = []
+    let totalCount = 0
+
+    for (const r of results) {
+      if (r.status === 'fulfilled' && Array.isArray(r.value?.list) && r.value.list.length > 0) {
+        lists.push(r.value.list)
+        totalCount += r.value.total ?? r.value.list.length
+      }
+    }
+
+    if (lists.length === 0) {
+      return { total: 0, list: [] }
+    }
+
+    // 智能去重与交织轮询（Round-Robin）合并
+    const merged: Song[] = []
+    const seen = new Set<string>()
+    const maxLen = Math.max(...lists.map((l) => l.length))
+
+    for (let i = 0; i < maxLen; i++) {
+      for (const list of lists) {
+        if (i < list.length) {
+          const song = list[i]
+          const key = `${(song.name || '').trim().toLowerCase()}_${(song.singer || '').trim().toLowerCase()}`
+          if (!seen.has(key)) {
+            seen.add(key)
+            merged.push(song)
+          }
+        }
+      }
+    }
+
+    return { total: totalCount || merged.length, list: merged }
+  })
+}
+
 export function useLeaderboardBoards(source: string): AsyncResource<LeaderboardBoard[]> {
   return useAsyncResource(`boards:${source}`, async (signal) => {
     const data = await getJson<{ list?: LeaderboardBoard[] }>(
