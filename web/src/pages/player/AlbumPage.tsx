@@ -81,7 +81,7 @@ export default function AlbumPage() {
                   to={`/search?q=${encodeURIComponent(singerQuery)}&source=${encodeURIComponent(
                     source,
                   )}&type=singer`}
-                  className="transition-colors hover:text-accent hover:underline"
+                  className="link-inline transition-colors hover:text-accent hover:underline"
                 >
                   {singer}
                 </Link>

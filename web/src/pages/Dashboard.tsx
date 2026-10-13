@@ -51,7 +51,8 @@ function SectionHeader({
         {to && (
           <Link
             to={to}
-            className="group flex items-center gap-0.5 text-xs text-dim transition-colors hover:text-ink"
+            // link-inline：命中区抬到 24px 高而不改变排版（WCAG 2.2 AA 触摸目标）
+            className="link-inline group flex items-center gap-0.5 text-xs text-dim transition-colors hover:text-ink"
           >
             查看全部
             <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
@@ -359,7 +360,7 @@ export default function Dashboard() {
               </span>
             </>
           ) : null}
-          <Link to="/settings/system" className="text-accent hover:underline">
+          <Link to="/settings/system" className="link-inline text-accent hover:underline">
             管理 →
           </Link>
         </p>

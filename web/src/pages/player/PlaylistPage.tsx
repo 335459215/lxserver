@@ -90,7 +90,7 @@ export default function PlaylistPage() {
                 <p className="text-sm font-medium text-ink">还没有自建歌单</p>
                 <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-dim">
                   歌单由 LX 客户端（桌面/手机 App）同步上来；也可以先去
-                  <Link to="/search" className="mx-1 text-accent hover:underline">
+                  <Link to="/search" className="link-inline mx-1 text-accent hover:underline">
                     搜索
                   </Link>
                   找歌试听。

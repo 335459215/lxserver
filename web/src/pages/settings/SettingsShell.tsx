@@ -124,7 +124,9 @@ function GroupNav({ current }: { current?: string }) {
           to={`/settings/${g.key}`}
           aria-current={current === g.key ? 'page' : undefined}
           className={cn(
-            'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
+            // py-2 让命中高度到 34px（原 py-1 只有 26px，低于 WCAG 2.2 AA 的 24px 下限
+            // 之上但离 Apple HIG 的 44px 还远）。这些是设置页的主导航，值得给足。
+            'flex min-h-9 items-center gap-1.5 rounded-full border px-3 py-2 text-xs transition-colors',
             current === g.key
               ? 'border-accent bg-accent text-white'
               : 'border-line bg-panel text-dim hover:border-accent/40 hover:text-ink',

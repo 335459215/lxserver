@@ -145,13 +145,15 @@ function Shell() {
       <header className="sticky top-0 z-40 border-b border-line bg-panel/90 backdrop-blur">
         <div className="flex h-14 items-center gap-3 px-4 md:px-6">
           <button
-            className="rounded-lg p-2 text-dim hover:bg-panel2 hover:text-ink lg:hidden"
+            // 触摸目标 44×44（WCAG 2.2 AA 要求 ≥24，Apple HIG 推荐 44）：
+            // 图标本身仍是 20px，靠 padding 撑开命中区 —— 视觉不变、手指好点。
+            className="-ml-2 rounded-lg p-3 text-dim hover:bg-panel2 hover:text-ink lg:hidden"
             onClick={() => setDrawer(true)}
             aria-label="打开导航"
           >
             <Menu className="size-5" />
           </button>
-          <NavLink to="/" className="flex items-center gap-2 lg:hidden">
+          <NavLink to="/" className="flex min-h-11 items-center gap-2 py-2 lg:hidden">
             <span className="size-2.5 rounded-full bg-accent" />
             <span className="font-semibold tracking-tight text-ink">lxserver</span>
             <span className="hidden text-xs text-faint sm:inline">音乐</span>
@@ -170,7 +172,9 @@ function Shell() {
             <RoleBadge />
             {isLoggedIn(auth) && (
               <button
-                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-dim hover:bg-panel2 hover:text-ink"
+                // 移动端 44px（Apple HIG）；桌面端紧凑。
+                // 原来是 py-1.5 → 只有 28px，手机上点「退出」容易点偏。
+                className="flex min-h-11 items-center gap-1.5 rounded-lg px-2.5 py-2.5 text-xs text-dim hover:bg-panel2 hover:text-ink md:min-h-0 md:py-1.5"
                 onClick={async () => {
                   // 退出即停播：否则音频元素（挂在 App 根部，跨登录态存活）
                   // 会在登录页背后继续出声，且没有任何可见控件可以停它

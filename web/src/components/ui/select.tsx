@@ -16,7 +16,8 @@ const SelectTrigger = React.forwardRef<
     className={cn(
       'flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-ink',
       'placeholder:text-faint focus:outline-none focus:border-accent-deep focus:ring-2 focus:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-50',
-      'transition-colors',
+      // 移动端 16px 下限（同 Input）：iOS Safari 聚焦 <16px 的控件会自动放大页面
+      'transition-colors max-md:text-base',
       className,
     )}
     {...props}

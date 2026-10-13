@@ -16,10 +16,18 @@ const buttonVariants = cva(
         link: 'text-accent underline-offset-4 hover:underline',
       },
       size: {
-        default: 'h-9 px-4 py-2',
-        sm: 'h-8 rounded-md px-3 text-xs',
-        lg: 'h-10 rounded-lg px-8',
-        icon: 'h-9 w-9',
+        // 【移动端高度统一抬到 44px（Apple HIG / Material 的推荐触摸目标）】
+        // 桌面端保持紧凑（h-9=36 / h-8=32），移动端用 `max-md:` 抬到 h-11(44)。
+        // 为什么值得改：手机上「播放全部」「搜索」「退出」这类主操作
+        // 用 32~36px 高时，拇指点击的失误率明显上升；
+        // 而 44px 是两家平台规范一致推荐的数值，且不会让界面显得笨重
+        // （只在 <768px 生效）。
+        // ⚠️ 注意 `sm` 变体原本是 h-8(32px)，在移动端连 WCAG 2.2 AA 的
+        //    24px 下限都只是勉强够 —— 这里一并抬到 44。
+        default: 'h-9 max-md:h-11 px-4 py-2',
+        sm: 'h-8 max-md:h-11 rounded-md px-3 text-xs',
+        lg: 'h-10 max-md:h-11 rounded-lg px-8',
+        icon: 'h-9 w-9 max-md:h-11 max-md:w-11',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

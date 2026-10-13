@@ -113,7 +113,11 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
 
   return (
     <div className="w-full rise">
-      <Link to={backTo} className="inline-flex w-fit items-center gap-1 text-xs text-dim hover:text-ink">
+      {/* link-inline：命中区抬到 24px 高而不改变排版（WCAG 2.2 AA 触摸目标） */}
+      <Link
+        to={backTo}
+        className="link-inline inline-flex w-fit items-center gap-1 text-xs text-dim hover:text-ink"
+      >
         <ArrowLeft className="size-3.5" /> 返回歌单
       </Link>
 
@@ -160,7 +164,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
           <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
             <p className="text-sm font-medium text-ink">这个歌单还是空的</p>
             <p className="mt-1 text-xs text-dim">
-              去 <Link to="/search" className="text-accent hover:underline">搜索</Link> 找歌，或从试听列表里收藏。
+              去 <Link to="/search" className="link-inline text-accent hover:underline">搜索</Link> 找歌，或从试听列表里收藏。
             </p>
           </div>
         ) : (

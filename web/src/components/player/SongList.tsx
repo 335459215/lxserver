@@ -53,7 +53,10 @@ function SongRow({
       ? `/album/${encodeURIComponent(String(albumId))}?source=${encodeURIComponent(song.source)}`
       : null
 
-  const linkCls = 'pointer-events-auto transition-colors hover:text-accent hover:underline'
+  // link-inline：把命中区抬到 WCAG 2.2 AA 的 24px 而不改变排版（见 index.css 注释）。
+  // 列表行里的歌手名/专辑名是可点的，但行内盒只有 ~15px 高，手机上难点中。
+  const linkCls =
+    'link-inline pointer-events-auto transition-colors hover:text-accent hover:underline'
 
   return (
     <div

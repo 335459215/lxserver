@@ -354,7 +354,7 @@ export default function TokensGroup() {
                   <button
                     type="button"
                     onClick={() => setRevealed((r) => ({ ...r, [t.token]: !r[t.token] }))}
-                    className="mt-0.5 block max-w-full truncate font-mono text-[11px] text-faint hover:text-dim"
+                    className="mt-0.5 block max-w-full truncate py-1.5 font-mono text-[11px] text-faint hover:text-dim"
                     title="点击切换显示"
                   >
                     {revealed[t.token] ? t.token : maskToken(t.token)}
