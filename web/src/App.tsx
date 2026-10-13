@@ -134,7 +134,13 @@ function Shell() {
   const showPanel = panel && pathname !== '/now-playing'
 
   return (
-    <div className="min-h-screen">
+    // 【为什么是 min-h-dvh 而不是 min-h-screen】
+    // `min-h-screen` = `min-height: 100vh`，而 100vh **不减去**上面那个 sticky header 的高度
+    // （实测 57px）。于是「header + 至少 100vh 的内容」永远比视口高 57px ——
+    // 每一页都会出现一条多余的滚动条，全屏播放页尤其明显（沉浸式页面本该整屏不滚动）。
+    // 换成 `100dvh`（动态视口高度）同样不解决「要减掉 header」这件事，所以真正的修法是：
+    // 让内容区的最小高度 = 视口 − header 高度，两者相加恰好等于视口。
+    <div className="flex min-h-[calc(100dvh-var(--header-h))] flex-col">
       {/* 顶栏 */}
       <header className="sticky top-0 z-40 border-b border-line bg-panel/90 backdrop-blur">
         <div className="flex h-14 items-center gap-3 px-4 md:px-6">

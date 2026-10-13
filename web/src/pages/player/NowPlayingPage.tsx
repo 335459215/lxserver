@@ -145,8 +145,20 @@ export default function NowPlayingPage() {
         )}
       </section>
 
-      {/* 右：歌词 / 队列 */}
-      <Tabs defaultValue="lyric" className="flex h-[26rem] min-h-0 flex-col lg:h-[calc(100vh-11rem)] lg:min-h-[28rem]">
+      {/* 右：歌词 / 队列
+          【为什么高度是这串 calc 而不是 `lg:h-[calc(100vh-11rem)]`】
+          原来的 11rem 是**手工试出来的魔数，且对不上真实布局**：
+          桌面端要留出的是 顶栏(3.5625rem) + 播放栏(5rem) + main 的 p-8(4rem)
+          + grid 的 lg:py-4(2rem) = 14.5625rem。
+          少算的部分会让整页比视口高，全屏播放页凭空多出一条滚动条
+          （实测 57px，看着像「一滑就跑偏」）。
+          现在改成「从视口高度里减掉真实存在的几块」，且各块都引用 CSS 变量：
+          改顶栏/播放栏高度时它自动跟着对，不用再回头调魔数。
+          ⚠️ 改 main 的 p-* 或本 grid 的 py-* 时，这里的 rem 要同步改。 */}
+      <Tabs
+        defaultValue="lyric"
+        className="flex h-[26rem] min-h-0 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem]"
+      >
         <TabsList className="self-start">
           <TabsTrigger value="lyric">歌词</TabsTrigger>
           <TabsTrigger value="queue">播放队列</TabsTrigger>

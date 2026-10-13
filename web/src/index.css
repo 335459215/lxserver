@@ -73,6 +73,12 @@
      真正的定位是 fixed 贴文档底，不依赖这个值。 */
   --mobile-tabbar-h: 7.25rem;
 
+  /* 顶栏高度：`h-14`(3.5rem) + 1px 下边框 = 3.5625rem。
+     Shell 的内容区用它算「视口 − 顶栏」的最小高度 —— 用 `min-h-screen`(100vh)
+     会忽略这 57px，导致每页都比视口高、凭空多一条滚动条（全屏播放页尤其明显）。
+     改顶栏高度时这里要同步。 */
+  --header-h: 3.5625rem;
+
   /* ===== 通道三元组 =====
      Tailwind v3 只能对「R G B」三元组形式合成透明度。若把颜色直接定义成不透明的
      `var(--x)`，那么 `bg-panel/60`、`ring-accent/40`、`border-accent/40`、`bg-danger/5`
