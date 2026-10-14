@@ -1,68 +1,89 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
   ArrowRight,
+  Car,
+  Coffee,
   Disc3,
+  Dumbbell,
+  Feather,
   FileMusic,
   Flame,
+  Guitar,
+  Headphones,
   Heart,
   History,
+  Laptop,
+  Layers,
   ListMusic,
+  Moon,
   Music2,
   Play,
-  Search,
+  Radio,
   Sparkles,
   Trophy,
 } from 'lucide-react'
-import { Button, Input } from '@/components/ui'
-import { api, isAdmin, useAuth } from '@/lib/auth'
+import { Button } from '@/components/ui'
+import { useAuth } from '@/lib/auth'
 import {
-  useHotSearch,
   useAggregatedLeaderboardBoards,
   useAggregatedLeaderboardSongs,
 } from '@/lib/discover'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
-import SongList from '@/components/player/SongList'
+import { downloadSong } from '@/lib/download'
 import { cn } from '@/lib/utils'
 
-/** 首页默认取榜单/热搜的平台：酷我接口最稳、无需额外参数 */
-const HOME_SOURCE = 'kw'
-/** 首页榜单卡展示几个 */
-const BOARD_PREVIEW = 6
-/** 首页「热门榜单」试听几首 */
-const SONG_PREVIEW = 10
+/** 根据当前时刻生成亲切问候语 */
+function getGreeting(): { title: string; subtitle: string } {
+  const hour = new Date().getHours()
+  if (hour >= 5 && hour < 12) {
+    return { title: '早上好', subtitle: '晨光初现，让纯净原声开启元气清晨' }
+  } else if (hour >= 12 && hour < 14) {
+    return { title: '中午好', subtitle: '午后休憩，点一首舒缓惬意的旋律' }
+  } else if (hour >= 14 && hour < 19) {
+    return { title: '下午好', subtitle: '醇香午后，伴随动听节拍专注心流' }
+  } else {
+    return { title: '晚上好', subtitle: '夜阑人静，戴上耳机享受高保真慢调' }
+  }
+}
 
+/** 模块标题组件 */
 function SectionHeader({
   title,
+  subtitle,
   to,
   icon: Icon,
   extra,
 }: {
   title: string
+  subtitle?: string
   to?: string
   icon?: LucideIcon
-  extra?: ReactNode
+  extra?: React.ReactNode
 }) {
   return (
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="flex items-center gap-2 text-base font-bold tracking-tight text-ink">
-        {Icon && (
-          <span className="flex size-7 items-center justify-center rounded-lg bg-accent/10 text-accent">
-            <Icon className="size-4" />
-          </span>
-        )}
-        <span>{title}</span>
-      </h2>
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h2 className="flex items-center gap-2 text-lg font-bold tracking-tight text-ink">
+          {Icon && (
+            <span className="flex size-7 items-center justify-center rounded-xl bg-accent/10 text-accent">
+              <Icon className="size-4" />
+            </span>
+          )}
+          <span>{title}</span>
+        </h2>
+        {subtitle && <p className="mt-0.5 text-xs text-dim">{subtitle}</p>}
+      </div>
       <div className="flex items-center gap-2">
         {extra}
         {to && (
           <Link
             to={to}
-            className="group flex items-center gap-1 text-xs font-medium text-dim transition-colors hover:text-accent"
+            className="group flex items-center gap-1 text-xs font-semibold text-accent transition-colors hover:text-accent/80"
           >
-            <span>全部</span>
+            <span>查看全部</span>
             <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
           </Link>
         )}
@@ -71,428 +92,504 @@ function SectionHeader({
   )
 }
 
-function EntryCard({
+/** 预设 6 个大厂质感甄选歌单模板 */
+interface CuratedMix {
+  id: string
+  title: string
+  tag: string
+  desc: string
+  gradient: string
+  badgeColor: string
+}
+
+const CURATED_MIXES: CuratedMix[] = [
+  {
+    id: 'radar',
+    title: '每日私享雷达',
+    tag: '私享甄选',
+    desc: '基于全网五大平台热度与声学品味智能聚合',
+    gradient: 'from-indigo-600 via-indigo-700 to-purple-800',
+    badgeColor: 'bg-indigo-400/20 text-indigo-100',
+  },
+  {
+    id: 'pop',
+    title: '流行风向标',
+    tag: '潮流爆款',
+    desc: '全网华语主流热播与全球流行音乐风向速递',
+    gradient: 'from-rose-500 via-pink-600 to-rose-700',
+    badgeColor: 'bg-rose-400/20 text-rose-100',
+  },
+  {
+    id: 'nostalgia',
+    title: '复古千禧留声',
+    tag: '经典金曲',
+    desc: '回响岁月的港台经典与千禧黄金时代流行记忆',
+    gradient: 'from-amber-500 via-amber-600 to-orange-700',
+    badgeColor: 'bg-amber-400/20 text-amber-100',
+  },
+  {
+    id: 'focus',
+    title: '深度心流空间',
+    tag: '专注工作',
+    desc: '低保真器乐、环境音与纯音，助你深度对焦',
+    gradient: 'from-emerald-600 via-teal-700 to-cyan-800',
+    badgeColor: 'bg-emerald-400/20 text-emerald-100',
+  },
+  {
+    id: 'night',
+    title: '深夜治愈慢调',
+    tag: '夜幕漫游',
+    desc: '慵懒 R&B、City Pop 与温柔民谣，治愈疲惫心绪',
+    gradient: 'from-violet-700 via-purple-800 to-slate-900',
+    badgeColor: 'bg-purple-400/20 text-purple-100',
+  },
+  {
+    id: 'drive',
+    title: '公路驰骋节奏',
+    tag: '动感电音',
+    desc: '强劲节拍与电子浪潮，释放驾驶与运动活力',
+    gradient: 'from-cyan-600 via-blue-600 to-indigo-800',
+    badgeColor: 'bg-cyan-400/20 text-cyan-100',
+  },
+]
+
+/** 探索心情与场景标签 */
+const MOOD_VIBES = [
+  { label: '轻松下午茶', icon: Coffee, query: '轻松' },
+  { label: '活力运动', icon: Dumbbell, query: '运动' },
+  { label: '治愈晚安', icon: Moon, query: '晚安' },
+  { label: '专注心流', icon: Laptop, query: '专注' },
+  { label: '随风驰骋', icon: Car, query: '公路' },
+  { label: '摇滚先锋', icon: Guitar, query: '摇滚' },
+  { label: '东方国风', icon: Feather, query: '国风' },
+]
+
+/** 快捷听歌磁贴。
+ *  窄屏用「图标在上、文字在下」的居中卡片（2 列），宽屏切换为「图标在左」的横排卡片（4 列），
+ *  避免 390px 视口下横排布局把歌单数/副标题挤到省略号。 */
+function QuickTile({
   to,
   icon: Icon,
+  iconClass,
   label,
   hint,
-  color = 'accent',
-  delay = 0,
+  filled,
+  onPlay,
 }: {
   to: string
   icon: LucideIcon
+  iconClass: string
   label: string
   hint: string
-  color?: 'accent' | 'rose' | 'emerald' | 'amber' | 'blue'
-  delay?: number
+  filled?: boolean
+  onPlay?: (e: React.MouseEvent) => void
 }) {
-  const colorMap = {
-    accent: 'bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white',
-    rose: 'bg-rose-50 text-rose-600 group-hover:bg-rose-600 group-hover:text-white',
-    emerald: 'bg-emerald-50 text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white',
-    amber: 'bg-amber-50 text-amber-600 group-hover:bg-amber-600 group-hover:text-white',
-    blue: 'bg-sky-50 text-sky-600 group-hover:bg-sky-600 group-hover:text-white',
-  }
-
   return (
     <Link
       to={to}
-      className="group rise relative flex flex-col justify-between rounded-2xl border border-line/80 bg-panel p-4 shadow-card transition-all hover:-translate-y-0.5 hover:border-line-strong hover:shadow-pop"
-      style={{ animationDelay: `${delay}ms` }}
+      className="group relative flex flex-col items-center gap-2 overflow-hidden rounded-2xl border border-line/80 bg-panel p-3.5 text-center shadow-card transition-all hover:-translate-y-0.5 hover:border-line-strong hover:shadow-pop lg:flex-row lg:gap-3 lg:text-left"
     >
-      <div className="flex items-center justify-between">
-        <span
-          className={cn(
-            'flex size-10 items-center justify-center rounded-xl transition-colors duration-300',
-            colorMap[color],
-          )}
+      <span
+        className={cn(
+          'relative flex size-11 shrink-0 items-center justify-center rounded-xl text-white shadow-sm',
+          iconClass,
+        )}
+      >
+        <Icon className={cn('size-5', filled && 'fill-current')} />
+        {onPlay && (
+          <button
+            type="button"
+            onClick={onPlay}
+            aria-label={`播放${label}`}
+            className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/25 opacity-0 transition-opacity hover:opacity-100 lg:hidden"
+          >
+            <Play className="size-4 fill-current text-white translate-x-px" />
+          </button>
+        )}
+      </span>
+
+      <div className="min-w-0 w-full lg:flex-1">
+        <span className="block truncate text-xs font-bold text-ink lg:text-sm">{label}</span>
+        <span className="mt-0.5 block truncate text-[10px] text-faint lg:text-xs">{hint}</span>
+      </div>
+
+      {onPlay ? (
+        <button
+          type="button"
+          onClick={onPlay}
+          aria-label={`播放${label}`}
+          className="hidden size-8 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-md transition-all hover:scale-105 active:scale-95 lg:flex lg:opacity-0 lg:group-hover:opacity-100"
         >
-          <Icon className="size-5" />
-        </span>
-        <ArrowRight className="size-4 text-faint opacity-0 transition-all -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0" />
-      </div>
-      <div className="mt-4">
-        <span className="block truncate text-sm font-bold text-ink">{label}</span>
-        <span className="block truncate text-xs text-faint mt-0.5">{hint}</span>
-      </div>
+          <Play className="size-3.5 fill-current translate-x-px" />
+        </button>
+      ) : (
+        <ArrowRight className="mr-0.5 hidden size-4 shrink-0 text-faint transition-all lg:block lg:-translate-x-1 lg:opacity-0 lg:group-hover:translate-x-0 lg:group-hover:opacity-100" />
+      )}
     </Link>
   )
 }
 
-interface StatusShape {
-  uptime?: number
-  cpuUsage?: number | string
-  memory?: number
-  totalMemory?: number
-  freeMemory?: number
-  sourcesCount?: number
-}
-
-function fmtUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  if (d > 0) return `${d} 天 ${h} 小时`
-  if (h > 0) return `${h} 小时 ${m} 分`
-  return `${m} 分钟`
-}
-
-// 预设几种质感渐变色给排行榜卡片
-const BOARD_GRADIENTS = [
-  'from-indigo-600 to-purple-600',
-  'from-pink-500 to-rose-600',
-  'from-amber-500 to-orange-600',
-  'from-emerald-500 to-teal-600',
-  'from-cyan-500 to-blue-600',
-  'from-violet-600 to-indigo-700',
-]
-
-/** 首页：顶研级音乐中心。
- *  精选 Hero 焦点横幅 + 现代搜索热词 + 音乐库磁贴 + 热门榜单试听与即点即下。 */
 export default function Dashboard() {
   const navigate = useNavigate()
   const { auth } = useAuth()
   const player = usePlayer()
-  const [keyword, setKeyword] = useState('')
-
-  const hot = useHotSearch(HOME_SOURCE)
-  const boardsRes = useAggregatedLeaderboardBoards()
   const { snapshot } = useLists()
 
-  const boards = (boardsRes.data ?? []).slice(0, BOARD_PREVIEW)
-  const firstBoard = boardsRes.data?.[0] ?? null
-  const boardName = firstBoard?.name ?? ''
-  const previewRes = useAggregatedLeaderboardSongs(firstBoard?.targets)
-  const previewSongs = (previewRes.data?.list ?? []).slice(0, SONG_PREVIEW)
+  const greeting = useMemo(() => getGreeting(), [])
+  const username = auth.user.username || '听众'
 
-  // 服务器状态（仅管理员拉取并展示于底部）
-  const [status, setStatus] = useState<StatusShape | null>(null)
-  const adminUser = isAdmin(auth)
-  useEffect(() => {
-    if (!adminUser) return
-    let alive = true
-    const load = () =>
-      api
-        .status()
-        .then((d) => alive && setStatus(d as StatusShape))
-        .catch(() => {})
-    load()
-    const timer = setInterval(load, 10_000)
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [adminUser])
+  // 拉取全网聚合排行榜
+  const boardsRes = useAggregatedLeaderboardBoards()
+  const boards = useMemo(() => boardsRes.data ?? [], [boardsRes.data])
 
-  const hotList = hot.data ?? []
+  // 第一榜单（通常是飙升榜）
+  const topBoard = boards[0] ?? null
+  const topBoardName = topBoard?.name ?? '热歌榜'
+  const topSongsRes = useAggregatedLeaderboardSongs(topBoard?.targets)
+  const topSongs = useMemo(() => topSongsRes.data?.list ?? [], [topSongsRes.data])
+
+  // 今日热播精选曲目（取前 6 首）
+  const hotHits = useMemo(() => topSongs.slice(0, 6), [topSongs])
+
+  // 我的资料库计数
   const loveCount = snapshot?.loveList.length ?? 0
   const playlistCount = snapshot?.userList.length ?? 0
 
-  const goSearch = (q: string) => {
-    const kw = q.trim()
-    if (!kw) return
-    navigate(`/search?q=${encodeURIComponent(kw)}`)
+  // 播放整组曲目
+  const handlePlayHits = () => {
+    if (topSongs.length > 0) {
+      player.playQueue(topSongs, 0)
+    }
   }
 
-  const handlePlayHero = () => {
-    if (previewSongs.length > 0) {
-      player.playQueue(previewSongs, 0)
+  // 播放我喜欢的全部歌曲
+  const handlePlayFavorites = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (snapshot?.loveList && snapshot.loveList.length > 0) {
+      player.playQueue(snapshot.loveList, 0)
     } else {
-      navigate('/search')
+      navigate('/favorites')
+    }
+  }
+
+  // 播放精选歌单
+  const handlePlayMix = (mix: CuratedMix) => {
+    if (topSongs.length > 0) {
+      player.playQueue(topSongs, 0)
+    } else {
+      navigate(`/search?q=${encodeURIComponent(mix.tag)}`)
     }
   }
 
   return (
-    <div className="rise flex w-full flex-col gap-8">
-      {/* 1. Hero Spotlight 焦点横幅：仅在桌面端显示，移动端直接展示搜索与音乐库 */}
-      <section className="hidden md:block relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 p-6 md:p-9 text-white shadow-xl">
-        {/* 动态光晕与声学背景纹理 */}
-        <div className="pointer-events-none absolute -right-20 -top-20 size-96 rounded-full bg-indigo-500/20 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-20 left-1/3 size-80 rounded-full bg-purple-500/15 blur-3xl" />
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-          <div className="max-w-xl">
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold backdrop-blur-md text-indigo-200">
-              <Sparkles className="size-3.5 text-indigo-300" />
-              <span>今日声学精选 · 沉浸体验</span>
+    <div className="rise flex w-full flex-col gap-8 pb-10">
+      {/* 1. 顶部个性化问候与快捷听歌栏 (Greeting & Quick Picks) */}
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-ink">
+                {greeting.title}，{username}
+              </h1>
+              <span className="flex size-6 items-center justify-center rounded-full bg-accent/10 text-accent">
+                <Sparkles className="size-3.5" />
+              </span>
             </div>
-            <h1 className="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight text-white leading-tight">
-              探索海量高保真音乐，随时随地离线珍藏
-            </h1>
-            <p className="mt-2 text-sm text-slate-300 leading-relaxed">
-              聚合五大主流平台优质音源，享受母带级 Hi-Res/FLAC 纯净音质。一键在线点播、精准实时歌词同步，亦可直接下载到本地随身畅听。
-            </p>
-            <div className="mt-5 flex flex-wrap items-center gap-3">
-              <Button
-                size="lg"
-                onClick={handlePlayHero}
-                className="rounded-full bg-indigo-500 font-semibold text-white shadow-lg shadow-indigo-500/30 hover:bg-indigo-400 active:scale-95 transition-all"
-              >
-                <Play className="size-4 fill-current mr-1" />
-                <span>即刻播放精选</span>
-              </Button>
-              <Button
-                asChild
-                variant="outline"
-                size="lg"
-                className="rounded-full border-white/20 bg-white/5 font-semibold text-white backdrop-blur hover:bg-white/15 transition-all"
-              >
-                <Link to="/leaderboard">
-                  <Trophy className="size-4 mr-1 text-amber-300" />
-                  <span>浏览官方榜单</span>
-                </Link>
-              </Button>
-            </div>
+            <p className="mt-1 text-xs md:text-sm text-dim">{greeting.subtitle}</p>
           </div>
-
-          {/* 拟物专辑封面与黑胶装饰 */}
-          <div className="hidden lg:flex items-center justify-center shrink-0 pr-4">
-            <div className="relative group cursor-pointer" onClick={handlePlayHero}>
-              {/* 旋转黑胶唱片 */}
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-12 size-36 rounded-full bg-zinc-950 p-1 shadow-2xl transition-all duration-700 group-hover:translate-x-16">
-                <div
-                  className="size-full rounded-full border-2 border-zinc-900/90 flex items-center justify-center animate-vinyl"
-                  style={{
-                    background:
-                      'radial-gradient(circle, #27272a 20%, #09090b 22%, #18181b 45%, #09090b 47%, #27272a 70%, #09090b 72%)',
-                  }}
-                >
-                  <div className="size-10 rounded-full bg-indigo-500 flex items-center justify-center">
-                    <div className="size-3 rounded-full bg-zinc-950" />
-                  </div>
-                </div>
-              </div>
-
-              {/* 封套封面 */}
-              <div className="relative z-10 size-40 rounded-2xl border border-white/20 bg-gradient-to-tr from-indigo-500 to-purple-600 p-4 shadow-2xl flex flex-col justify-between">
-                <div className="flex items-center justify-between text-white/80">
-                  <Music2 className="size-5" />
-                  <span className="font-mono text-[10px] tracking-wider uppercase font-semibold">HQ AUDIO</span>
-                </div>
-                <div>
-                  <span className="block text-xs font-bold text-white">流行精选周榜</span>
-                  <span className="block text-[10px] text-white/70">Top Trending Hits</span>
-                </div>
-              </div>
-            </div>
+          <div className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-panel px-3 py-1 text-xs font-semibold text-faint shadow-xs">
+            <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>全网五大平台音源在线聚合</span>
           </div>
         </div>
-      </section>
 
-      {/* 2. 搜索：听歌第一交互通道 */}
-      <section className="rounded-3xl border border-line/80 bg-panel p-5 md:p-6 shadow-card">
-        <form
-          className="flex gap-2.5"
-          onSubmit={(e) => {
-            e.preventDefault()
-            goSearch(keyword)
-          }}
-        >
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-4 top-1/2 size-4.5 -translate-y-1/2 text-faint" />
-            <Input
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜索歌曲、歌手、专辑或歌单名称…"
-              aria-label="搜索关键词"
-              autoComplete="off"
-              className="h-12 pl-11 pr-4 text-sm rounded-2xl bg-panel-2/70 border-line/80 focus:border-accent"
-            />
-          </div>
-          <Button
-            type="submit"
-            size="lg"
-            disabled={!keyword.trim()}
-            className="h-12 px-6 rounded-2xl font-semibold shadow-xs"
-          >
-            搜索
-          </Button>
-        </form>
-
-        {/* 热搜胶囊标签 */}
-        {hot.status === 'loading' && (
-          <div className="mt-3.5 flex flex-wrap gap-2" aria-busy="true">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <span
-                key={i}
-                className="h-7 rounded-full bg-panel-2 animate-pulse"
-                style={{ width: `${60 + ((i * 19) % 50)}px` }}
-              />
-            ))}
-          </div>
-        )}
-
-        {hotList.length > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="mr-1 flex items-center gap-1 text-xs font-semibold text-faint">
-              <Flame className="size-3.5 text-amber-500" /> 热搜榜
-            </span>
-            {hotList.slice(0, 10).map((k, idx) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => goSearch(k)}
-                className="group flex items-center gap-1.5 rounded-full border border-line/70 bg-panel-2/60 px-3 py-1 text-xs font-medium text-dim transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
-              >
-                <span
-                  className={cn(
-                    'font-mono text-[10px] font-bold',
-                    idx < 3 ? 'text-accent' : 'text-faint',
-                  )}
-                >
-                  {idx + 1}
-                </span>
-                <span>{k}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 3. 我的音乐快捷入口 */}
-      <section>
-        <SectionHeader title="音乐资料库" />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <EntryCard
-            to="/search"
-            icon={Search}
-            label="搜索发现"
-            hint="五大主流平台"
-            color="accent"
-            delay={0}
-          />
-          <EntryCard
-            to="/playlist"
-            icon={ListMusic}
-            label="我的歌单"
-            hint={playlistCount > 0 ? `${playlistCount} 个歌单` : '自建与同步'}
-            color="rose"
-            delay={30}
-          />
-          <EntryCard
+        {/* 快捷听歌 4 磁贴：我喜欢的音乐、播放历史、自建歌单、本地曲库 */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <QuickTile
             to="/favorites"
             icon={Heart}
+            iconClass="bg-gradient-to-tr from-rose-500 to-pink-500 shadow-rose-500/20"
             label="我喜欢的"
-            hint={loveCount > 0 ? `${loveCount} 首歌曲` : '红心收藏'}
-            color="amber"
-            delay={60}
+            hint={`${loveCount} 首歌曲`}
+            filled
+            onPlay={loveCount > 0 ? handlePlayFavorites : undefined}
           />
-          <EntryCard
+          <QuickTile
             to="/history"
             icon={History}
+            iconClass="bg-gradient-to-tr from-emerald-500 to-teal-500 shadow-emerald-500/20"
             label="播放历史"
-            hint="最近听过的歌"
-            color="emerald"
-            delay={90}
+            hint="继续上次收听"
           />
-          <EntryCard
+          <QuickTile
+            to="/playlist"
+            icon={ListMusic}
+            iconClass="bg-gradient-to-tr from-indigo-500 to-purple-600 shadow-indigo-500/20"
+            label="我的歌单"
+            hint={`${playlistCount} 个自建歌单`}
+          />
+          <QuickTile
             to="/local"
             icon={FileMusic}
+            iconClass="bg-gradient-to-tr from-amber-500 to-orange-500 shadow-amber-500/20"
             label="本地音乐"
-            hint="离线服务端目录"
-            color="blue"
-            delay={120}
+            hint="无损离线曲库"
           />
         </div>
       </section>
 
-      {/* 4. 排行榜：顶研级多色卡片 */}
+      {/* 2. 今日精选甄选歌单 (Curated Featured Mixes) */}
       <section>
-        <SectionHeader title="权威排行榜" to="/leaderboard" icon={Trophy} />
-        {boardsRes.status === 'loading' && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {Array.from({ length: BOARD_PREVIEW }).map((_, i) => (
-              <span key={i} className="h-36 rounded-2xl bg-panel-2 animate-pulse" />
-            ))}
-          </div>
-        )}
-        {boards.length > 0 && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {boards.map((b, i) => (
-              <Link
-                key={b.id}
-                to={`/leaderboard?name=${encodeURIComponent(b.name)}`}
-                className="group rise flex flex-col rounded-2xl border border-line/80 bg-panel p-3 shadow-card transition-all hover:-translate-y-1 hover:border-line-strong hover:shadow-pop"
-                style={{ animationDelay: `${i * 40}ms` }}
+        <SectionHeader
+          title="今日甄选歌单"
+          subtitle="根据当下时刻与全网潮流为你量身精选的氛围歌单"
+          icon={Headphones}
+        />
+        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
+          {CURATED_MIXES.map((mix) => (
+            <div
+              key={mix.id}
+              onClick={() => handlePlayMix(mix)}
+              className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-line/80 bg-panel p-3 shadow-card transition-all duration-300 hover:-translate-y-1 hover:border-line-strong hover:shadow-pop"
+            >
+              {/* 大封面艺术图 */}
+              <div
+                className={cn(
+                  'relative flex aspect-square w-full items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-xs overflow-hidden',
+                  mix.gradient,
+                )}
               >
-                {/* 封面渐变色块 */}
+                {/* 装饰黑胶唱纹与微光 */}
+                <Disc3 className="size-12 opacity-40 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-45" />
                 <span
                   className={cn(
-                    'relative flex h-24 items-center justify-center rounded-xl bg-gradient-to-tr text-white shadow-xs overflow-hidden',
-                    BOARD_GRADIENTS[i % BOARD_GRADIENTS.length],
+                    'absolute left-2.5 top-2.5 rounded-full px-2 py-0.5 text-[10px] font-bold backdrop-blur-md',
+                    mix.badgeColor,
                   )}
                 >
-                  <Disc3 className="size-8 opacity-80 transition-transform duration-500 group-hover:scale-110" />
-                  <span className="absolute bottom-2 right-2 flex size-7 translate-y-1 items-center justify-center rounded-full bg-white text-ink opacity-0 shadow-md transition-all group-hover:translate-y-0 group-hover:opacity-100">
-                    <Play className="size-3.5 fill-current translate-x-0.5" />
-                  </span>
+                  {mix.tag}
                 </span>
-                <span className="mt-2.5 truncate text-xs font-bold text-ink">
-                  {b.name}
+
+                {/* 悬停一键播放圆钮 */}
+                <button
+                  type="button"
+                  aria-label={`播放 ${mix.title}`}
+                  className="absolute bottom-2.5 right-2.5 flex size-9 translate-y-2 items-center justify-center rounded-full bg-white text-ink opacity-0 shadow-lg transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 hover:scale-105 active:scale-95"
+                >
+                  <Play className="size-4 fill-current translate-x-0.5 text-accent" />
+                </button>
+              </div>
+
+              {/* 标题与描述 */}
+              <div className="mt-2.5 flex-1">
+                <span className="block truncate text-sm font-bold text-ink group-hover:text-accent transition-colors">
+                  {mix.title}
                 </span>
-                <span className="text-[10px] text-faint">全网聚合榜</span>
-              </Link>
-            ))}
-          </div>
-        )}
+                <span className="mt-0.5 block line-clamp-2 text-[11px] text-faint leading-snug">
+                  {mix.desc}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
-      {/* 5. 热门榜单精选试听与单曲下载 */}
-      {previewSongs.length > 0 && (
-        <section className="rounded-3xl border border-line/80 bg-panel p-5 md:p-6 shadow-card">
-          <SectionHeader
-            title={`榜单精选 · ${boardName || '热门推荐'}`}
-            to="/leaderboard"
-            extra={
+      {/* 3. 今日热播 · 新歌首发速递 (Today's Hits & New Releases) */}
+      <section className="rounded-3xl border border-line/80 bg-panel p-5 md:p-6 shadow-card">
+        <SectionHeader
+          title={`今日热播速递 · ${topBoardName}`}
+          subtitle="全网多平台热度极速飙升的热门单曲，点击即播"
+          icon={Flame}
+          extra={
+            topSongs.length > 0 && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => player.playQueue(previewSongs, 0)}
-                className="rounded-xl border-line font-medium hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
+                onClick={handlePlayHits}
+                className="rounded-full border-line font-medium hover:border-accent/40 hover:bg-accent-soft hover:text-accent shadow-xs"
               >
-                <Play className="size-3.5 fill-current mr-1" />
-                <span>播放全部</span>
+                <Play className="size-3.5 fill-current mr-1 text-accent" />
+                <span>播放全部 ({topSongs.length})</span>
               </Button>
-            }
-          />
-          <SongList songs={previewSongs} />
-        </section>
-      )}
+            )
+          }
+        />
 
-      {/* 6. 服务器状态：极简微型状态栏，仅对管理员展示 */}
-      {adminUser && status && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-line/60 bg-panel-2/50 px-4 py-2.5 text-xs text-faint">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="inline-flex items-center gap-1.5 font-medium text-ink">
-              <span className="size-2 rounded-full bg-ok animate-pulse" /> 服务在线
-            </span>
-            <span>·</span>
-            <span>运行时长 {fmtUptime(status.uptime ?? 0)}</span>
-            <span>·</span>
-            <span>已加载音源 {status.sourcesCount ?? 0} 个</span>
-            <span>·</span>
-            <span>
-              CPU{' '}
-              {status.cpuUsage !== undefined
-                ? typeof status.cpuUsage === 'number'
-                  ? `${status.cpuUsage.toFixed(1)}%`
-                  : `${status.cpuUsage}%`
-                : '—'}
-            </span>
-            {status.totalMemory ? (
-              <>
-                <span>·</span>
-                <span>
-                  内存 {Math.round(100 - ((status.freeMemory ?? 0) / status.totalMemory) * 100)}%
-                </span>
-              </>
-            ) : null}
+        {topSongsRes.status === 'loading' && (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 rounded-2xl bg-panel2 p-2.5 animate-pulse">
+                <span className="size-12 rounded-xl bg-panel" />
+                <div className="flex-1 space-y-1.5">
+                  <span className="block h-3.5 w-3/4 rounded bg-panel" />
+                  <span className="block h-2.5 w-1/2 rounded bg-panel" />
+                </div>
+              </div>
+            ))}
           </div>
-          <Link to="/settings/system" className="font-medium text-accent hover:underline">
-            进入控制台 →
-          </Link>
+        )}
+
+        {hotHits.length > 0 && (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {hotHits.map((song, idx) => (
+              <div
+                key={song.id || `${song.name}_${idx}`}
+                onClick={() => player.playQueue(topSongs, idx)}
+                className="group relative flex cursor-pointer items-center justify-between rounded-2xl border border-transparent p-2.5 transition-all hover:border-line/70 hover:bg-panel2/70 active:scale-[0.99]"
+              >
+                <div className="flex items-center gap-3 min-w-0 pr-2">
+                  {/* 封面 + 播放悬浮态 */}
+                  <div className="relative size-12 shrink-0 overflow-hidden rounded-xl bg-panel2 shadow-xs">
+                    {song.img ? (
+                      <img
+                        src={song.img}
+                        alt={song.name}
+                        loading="lazy"
+                        className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex size-full items-center justify-center bg-accent-soft text-accent">
+                        <Music2 className="size-5" />
+                      </div>
+                    )}
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/35 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Play className="size-4 fill-current text-white translate-x-0.5" />
+                    </span>
+                  </div>
+
+                  {/* 歌曲信息 */}
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-ink group-hover:text-accent transition-colors">
+                      {song.name}
+                    </span>
+                    <span className="block truncate text-xs text-dim mt-0.5">
+                      {song.singer}
+                      {song.albumName ? ` · ${song.albumName}` : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 右侧：时长与一键离线下载 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[11px] font-mono text-faint">
+                    {song.interval || '--:--'}
+                  </span>
+                  <button
+                    type="button"
+                    title="下载歌曲并写入高保真标签"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      downloadSong(song)
+                    }}
+                    className="flex size-7 items-center justify-center rounded-lg text-faint hover:bg-panel hover:text-ink transition-colors"
+                  >
+                    <ArrowRight className="size-3.5 -rotate-45" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* 4. 探索场景与音乐心情 (Scene & Mood Vibes) */}
+      <section>
+        <SectionHeader
+          title="场景与心情电台"
+          subtitle="选一种生活状态，让符合氛围的旋律自然流淌"
+          icon={Radio}
+        />
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+          {MOOD_VIBES.map((vibe) => (
+            <button
+              key={vibe.label}
+              type="button"
+              onClick={() => navigate(`/search?q=${encodeURIComponent(vibe.query)}`)}
+              className="group flex shrink-0 items-center gap-2 rounded-2xl border border-line/80 bg-panel px-4 py-2.5 text-xs font-semibold text-dim shadow-xs transition-all hover:-translate-y-0.5 hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
+            >
+              <vibe.icon className="size-4 text-faint group-hover:text-accent transition-colors" />
+              <span>{vibe.label}</span>
+            </button>
+          ))}
         </div>
-      )}
+      </section>
+
+      {/* 5. 全网权威聚合榜单速览 (Trending Charts Spotlight Cards) */}
+      <section>
+        <SectionHeader
+          title="权威聚合排行榜"
+          subtitle="汇聚全网多平台权威热度，不分平台直接畅听"
+          to="/leaderboard"
+          icon={Trophy}
+        />
+        {boardsRes.status === 'loading' && (
+          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <span key={i} className="h-44 rounded-2xl bg-panel2 animate-pulse" />
+            ))}
+          </div>
+        )}
+
+        {boards.length > 0 && (
+          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+            {boards.slice(0, 4).map((b, i) => {
+              const bgGradients = [
+                'from-indigo-600 to-purple-700',
+                'from-rose-500 to-pink-600',
+                'from-amber-500 to-orange-600',
+                'from-emerald-600 to-teal-700',
+              ]
+              return (
+                <Link
+                  key={b.id || b.name}
+                  to={`/leaderboard?name=${encodeURIComponent(b.name)}`}
+                  className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-line/80 bg-panel p-4 shadow-card transition-all duration-300 hover:-translate-y-1 hover:border-line-strong hover:shadow-pop"
+                >
+                  {/* 卡片顶部：榜单名与渐变装饰 */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className={cn(
+                          'flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr text-white shadow-xs',
+                          bgGradients[i % bgGradients.length],
+                        )}
+                      >
+                        <Disc3 className="size-5" />
+                      </span>
+                      <div>
+                        <span className="block truncate text-sm font-bold text-ink group-hover:text-accent transition-colors">
+                          {b.name}
+                        </span>
+                        <span className="text-[10px] text-faint">全网多源聚合榜</span>
+                      </div>
+                    </div>
+                    <span className="flex size-7 items-center justify-center rounded-full bg-panel2 text-faint transition-colors group-hover:bg-accent group-hover:text-white">
+                      <ArrowRight className="size-3.5" />
+                    </span>
+                  </div>
+
+                  {/* 中部简介 */}
+                  <div className="my-3 rounded-xl bg-panel2/60 p-2.5 text-xs text-dim">
+                    <p className="line-clamp-2 text-[11px] text-faint leading-relaxed">
+                      汇集全网各主流平台「{b.name}」热播曲目，实时并发去重交叉合并。
+                    </p>
+                  </div>
+
+                  {/* 底部：一键即听 */}
+                  <div className="flex items-center justify-between pt-1 border-t border-line/50 text-xs">
+                    <span className="text-[11px] font-semibold text-accent flex items-center gap-1">
+                      <Layers className="size-3" />
+                      点击进入完整榜单
+                    </span>
+                    <span className="text-[11px] text-faint">100+ 首</span>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
+      </section>
     </div>
   )
 }

@@ -23,7 +23,6 @@ import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
-import PwaInstallModal from '@/components/pwa/PwaInstallModal'
 import PlayerBar from '@/components/player/PlayerBar'
 import MobileTabBar from '@/components/player/MobileTabBar'
 import NowPlayingPanel from '@/components/player/NowPlayingPanel'
@@ -84,10 +83,12 @@ function NavItems({
   onNavigate,
   onInstall,
   isInstalled,
+  canPromptNative,
 }: {
   onNavigate?: () => void
   onInstall?: () => void
   isInstalled?: boolean
+  canPromptNative?: boolean
 }) {
   const { auth } = useAuth()
   const nav = ({ isActive }: { isActive: boolean }) =>
@@ -140,7 +141,7 @@ function NavItems({
         </div>
       )}
 
-      {!isInstalled && onInstall && (
+      {canPromptNative && !isInstalled && onInstall && (
         <div className="pt-2">
           <button
             type="button"
@@ -186,7 +187,7 @@ function Shell() {
   const { pathname } = useLocation()
   const [drawer, setDrawer] = useState(false)
   const [panel, setPanel] = useState(restorePanel)
-  const { isInstalled, triggerInstall, isModalOpen, setIsModalOpen } = usePwaInstall()
+  const { isInstalled, triggerInstall, canPromptNative } = usePwaInstall()
 
   useEffect(() => {
     try {
@@ -248,12 +249,12 @@ function Shell() {
           </div>
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
-            {/* PWA 应用安装按钮 */}
-            {!isInstalled && (
+            {/* PWA 原生应用安装按钮：当浏览器支持安装且未安装时展示 */}
+            {canPromptNative && !isInstalled && (
               <button
                 type="button"
                 onClick={triggerInstall}
-                title="安装为独立应用"
+                title="安装为独立桌面应用"
                 className="flex items-center gap-1.5 rounded-xl border border-line/70 bg-panel px-2.5 py-1.5 text-xs font-medium text-dim hover:border-accent/40 hover:bg-accent-soft hover:text-accent transition-all"
               >
                 <Download className="size-3.5 text-accent" />
@@ -310,7 +311,11 @@ function Shell() {
       >
         {/* 桌面侧边栏 */}
         <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
-          <NavItems onInstall={triggerInstall} isInstalled={isInstalled} />
+          <NavItems
+            onInstall={triggerInstall}
+            isInstalled={isInstalled}
+            canPromptNative={canPromptNative}
+          />
         </aside>
 
         {/* 移动抽屉 */}
@@ -320,11 +325,19 @@ function Shell() {
             <div className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-sm font-semibold">导航</span>
-                <button className="rounded-md p-1.5 text-faint hover:text-ink" onClick={() => setDrawer(false)}>
+                <button
+                  className="rounded-md p-1.5 text-faint hover:text-ink"
+                  onClick={() => setDrawer(false)}
+                >
                   <X className="size-4" />
                 </button>
               </div>
-              <NavItems onNavigate={() => setDrawer(false)} onInstall={triggerInstall} isInstalled={isInstalled} />
+              <NavItems
+                onNavigate={() => setDrawer(false)}
+                onInstall={triggerInstall}
+                isInstalled={isInstalled}
+                canPromptNative={canPromptNative}
+              />
             </div>
           </div>
         )}
@@ -356,7 +369,6 @@ function Shell() {
 
       <PlayerBar />
       <MobileTabBar />
-      <PwaInstallModal open={isModalOpen} onClose={() => setIsModalOpen(false)} />
     </div>
   )
 }
