@@ -13,8 +13,11 @@
          （已安装的实例依赖它，改 scope 等于让所有已装用户失效）。 -->
     <link rel="manifest" href="/app/manifest.webmanifest" />
     <meta name="theme-color" content="#4f46e5" />
+    <!-- 浏览器标签页 / 书签 / 桌面快捷方式的图标（部分浏览器不看 manifest 的 icons） -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon.png" />
     <!-- iOS 不吃 manifest 的 theme_color / display，这几条是老版本 Safari 的补丁 -->
-    <link rel="apple-touch-icon" href="/app/icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="lxserver" />

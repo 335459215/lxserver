@@ -8,13 +8,20 @@ import './index.css'
 initAccent()
 
 // ===== PWA =====
-// 注册 SW，服务端已配置 Service-Worker-Allowed: / 响应头，接管整站根作用域
+// 注册 Service Worker。
+//
+// 【为什么固定用根路径 /sw.js 而不是就近的 /app/sw.js】
+// Chrome 判定「可安装」时会检查 SW 的 scope 是否覆盖 manifest 的 start_url。
+// manifest 的 start_url / scope 都是 `/`，若从 /app/sw.js 注册，脚本路径会把 scope
+// 天然压到 /app/（即便服务端发了 Service-Worker-Allowed: /，也依赖响应头严格生效），
+// scope 盖不住 start_url → beforeinstallprompt 永不触发 → 装不上。
+// 服务端在 /sw.js 与 /app/sw.js 上都投放同一份脚本并带 Service-Worker-Allowed: /，
+// 这里优先根路径，scope 天然是 /，与 start_url 对齐。
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    const swUrl = window.location.pathname.startsWith('/app') ? '/app/sw.js' : '/sw.js'
-    navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(() => {
-      navigator.serviceWorker.register('/app/sw.js').catch(() => {})
-    })
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .catch(() => navigator.serviceWorker.register('/app/sw.js').catch(() => {}))
   })
 }
 

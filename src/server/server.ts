@@ -1293,6 +1293,16 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
     }
 
+    // 浏览器自动请求的 /favicon.ico：回落到 192 图标，避免日志里刷 404
+    if (pathname === '/favicon.ico') {
+      const fav = path.join(global.lx.staticPath, 'app', 'icons', 'icon-192.png')
+      if (fs.existsSync(fav)) {
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' })
+        fs.createReadStream(fav).pipe(res)
+        return
+      }
+    }
+
     // ===== 根路径投放（v2.24.0）=====
     // `/` 直接出前端登录页；根作用域下的客户端路由也回退到同一个 shell，
     // 这样用户在 `/search` 刷新、或把 `/playlist/xxx` 发给别人，都能正常打开。
