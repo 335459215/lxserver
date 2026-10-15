@@ -219,8 +219,16 @@ export const api = {
           isPublic?: boolean
           owner?: string
           version?: string
+          /** 注意后端字段名是 supportedSources，不是 platforms */
+          supportedSources?: string[]
           platforms?: string[]
           url?: string
+          /**
+           * 实测响应耗时（毫秒）。**没有样本时该字段不存在**（而不是 0）——
+           * 0 会被读成「极快」，而真相是「还没测过」。故用可选类型，
+           * 展示前必须判 undefined。
+           */
+          speedMs?: number
         }>
       >(`/api/custom-source/list?username=${encodeURIComponent(sourceOwner())}`),
     validate: (script: string, allowUnsafeVM = false) =>

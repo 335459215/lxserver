@@ -450,7 +450,13 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     // 本次解析内「链接 → 完整校验结果」的缓存。内部竞速筛死链时探过一次，
     // runCandidate 后面还要再判一次 ok/probeError 来决定它是赢家还是次选，
     // 不缓存就得对同一条链接探两遍（各 1.2s，白白多等）。
-    const innerProbeCache = new Map<string, { ok: boolean, probeError?: boolean, url: string, reason?: string }>()
+    //
+    // `costMs` 是**那次真实探测的耗时**，必须随缓存一起存下来：
+    // 命中缓存时 probeStart/probeCost 量到的是 0ms（压根没有网络等待），
+    // 早期版本拿这个 0 去记账，被「ms <= 0 视为非法」的守卫丢掉，
+    // 于是测速在「内部竞速已探过」这条最常见路径上**永远不记账**
+    // （线上实测：解析成功但 speedMs 始终为空）。
+    const innerProbeCache = new Map<string, { ok: boolean, probeError?: boolean, url: string, reason?: string, costMs?: number }>()
 
 const runCandidate = async (index: number, quality: string) => {
     const c = candidates[index]
@@ -477,8 +483,11 @@ const runCandidate = async (index: number, quality: string) => {
                 validateLink: validate ? async (url: string) => {
                     const cached = innerProbeCache.get(url)
                     if (cached) return cached.ok
+                    // 在这里量耗时：这是本次解析中**真正发生网络等待**的那一次探测。
+                    // 后续 runCandidate 复用时直接用这个值，而不是重新计一个 0ms。
+                    const t0 = Date.now()
                     const v = await resolveAndValidateUrl(url)
-                    innerProbeCache.set(url, v)
+                    innerProbeCache.set(url, { ...v, costMs: Date.now() - t0 })
                     if (!v.ok) console.warn(`[音源解析] 内部竞速筛掉死链 ${c.platform}: ${v.reason}`)
                     return v.ok
                 } : undefined,
@@ -502,9 +511,13 @@ const runCandidate = async (index: number, quality: string) => {
             // 顺带测速：这次探测本来就要等一个响应回来，给等待计时即可得到
             // 该源的响应耗时，**不额外发请求、不额外等待**。
             // 只测「探测通过」的链接 —— 死链的耗时没有意义（快也没用）。
+            //
+            // 缓存命中时 probeCost 会是 0ms（没有网络等待），所以优先用缓存里
+            // 存下的 costMs —— 那才是首次真实探测的耗时。
+            const cachedProbe = innerProbeCache.get(r.url)
             const probeStart = Date.now()
-            const v = innerProbeCache.get(r.url) ?? await resolveAndValidateUrl(r.url)
-            const probeCost = Date.now() - probeStart
+            const v = cachedProbe ?? await resolveAndValidateUrl(r.url)
+            const probeCost = cachedProbe?.costMs ?? (Date.now() - probeStart)
             if (!v.ok && validate) {
                 const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
                 console.warn(`[音源解析] 链接校验未通过 ${reason}`)
@@ -539,7 +552,11 @@ const runCandidate = async (index: number, quality: string) => {
             reportSourceResult(String(r.sourceId ?? ''), true)
             // 只有「确认可用」的链接才计入速度样本：probeError（探针被网关 RST）
             // 的耗时反映的是探针被拒的速度，与这个源给播放器的真实速度无关。
-            if (!v.probeError) recordSourceSpeed(String(r.sourceId ?? ''), probeCost)
+            //
+            // 另外必须防住「假耗时」：缓存命中时 probeCost 是 0（没发生网络等待），
+            // 而测速模块明确拒绝 0（0 会被读成「极快」，从而永久霸占排序首位）。
+            // 这种情况宁可不记账 —— 排序时按「未知」处理，比塞一个假的 0 诚实。
+            if (!v.probeError && probeCost > 0) recordSourceSpeed(String(r.sourceId ?? ''), probeCost)
             slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
             successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality, confirmed: true })
             changed()

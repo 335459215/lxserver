@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowDown, ArrowUp, Download, Plus, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Download, Plus, Trash2, Zap } from 'lucide-react'
 import { api, isAdmin, useAuth } from '@/lib/auth'
 import { useConfigForm } from '@/lib/useConfig'
 import {
@@ -25,12 +25,53 @@ interface SourceRow {
   isPublic?: boolean
   owner?: string
   version?: string
+  /** 后端字段名是 supportedSources；保留 platforms 兼容旧响应 */
+  supportedSources?: string[]
   platforms?: string[]
   url?: string
+  /** 实测响应耗时（毫秒）；无样本时字段不存在 */
+  speedMs?: number
+  status?: string
+  error?: string
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
   return <span className="rounded bg-panel2 px-1.5 py-0.5 text-[11px] text-dim">{children}</span>
+}
+
+/** 音源速度标识。
+ *
+ *  【为什么无样本时什么都不显示，而不是显示「--」或「0ms」】
+ *  显示占位符会让人以为「测过了，结果是未知」，而真相是「还没播放过、没数据」。
+ *  留空最诚实，也不会在列表里塞满无意义的灰字。
+ *
+ *  【为什么分档而不是直接显示数字】
+ *  用户在设置页要判断的是「这个源快不快」，不是精确到毫秒的读数。
+ *  分档能让颜色和图标承载这个判断，扫一眼就够；精确值放在 title 里供排障。 */
+function SpeedBadge({ ms }: { ms?: number }) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return null
+
+  // 分档阈值取常见实际体验：<400ms 几乎无感，<1200ms 可接受，再慢就有明显等待
+  //
+  // ⚠️ 只用设计系统里真实存在的语义色（ok / dim / danger）。
+  // 这里原本写的是 text-warn，而 tailwind.config.cjs 里**没有 warn** ——
+  // 类名会静默不生成，表现为「慢源没有任何视觉提示」，很难发现。
+  const tone =
+    ms < 400
+      ? 'text-ok bg-ok/10'
+      : ms < 1200
+        ? 'text-dim bg-panel2'
+        : 'text-danger bg-danger/10'
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ${tone}`}
+      title={`实测响应耗时 ${ms}ms（由链接探测顺带测量，不额外增加播放延迟）`}
+    >
+      <Zap className="size-3" />
+      {ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`}
+    </span>
+  )
 }
 
 /** 导入音源 Dialog：粘贴脚本 → 验证 → 展示元数据 → 确认导入 */
@@ -301,22 +342,45 @@ export default function SourcesGroup() {
           {sources.map((s, i) => (
             <div key={s.id} className="flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
+                {/* 第一行只放「源名 + 速度」。
+                 *
+                 * 【为什么版本要挪到第二行】
+                 * 版本号有的极长（实测「v9.3 93特供版 DeepSeek优化」），
+                 * 和源名挤在同一行时会把名字压成「全…」——
+                 * 而用户扫列表时先看的是「这是哪个源」，不是版本。
+                 * 现在名字独占第一行（只让出速度标识那点宽度），
+                 * 版本与平台一起放第二行，长了也只是换行、不影响识别。 */}
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-ink">{s.name}</span>
+                  {/* min-w-0 让 truncate 生效；速度标识 shrink-0 保证不被压变形 */}
+                  <span className="min-w-0 truncate text-sm font-medium text-ink">{s.name}</span>
+                  <span className="shrink-0">
+                    <SpeedBadge ms={s.speedMs} />
+                  </span>
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                   {s.version && <Badge>v{s.version}</Badge>}
                   {s.isPublic && <Badge>公开</Badge>}
+                  {(s.supportedSources ?? s.platforms ?? []).map((p) => <Badge key={p}>{p}</Badge>)}
                 </div>
-                {s.platforms && s.platforms.length > 0 && (
-                  <div className="mt-0.5 flex gap-1.5">
-                    {s.platforms.map((p) => <Badge key={p}>{p}</Badge>)}
-                  </div>
-                )}
               </div>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon" aria-label="上移" onClick={() => reorder(i, -1)} disabled={i === 0}>
+              {/* 右侧操作区。窄屏隐藏「上移/下移」两个排序按钮 ——
+               *  实测 430px 视口下这一行只有 430px，右侧四个控件要吃掉 164px，
+               *  与左侧信息列等宽，把源名挤到只剩 164px（差 11px 显示不全）。
+               *  排序在手机上极少用（且可用导入顺序表达），隐藏它换取源名完整显示。
+               *  md 及以上恢复显示，桌面端操作不变。 */}
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="ghost" size="icon" aria-label="上移"
+                  className="hidden md:inline-flex"
+                  onClick={() => reorder(i, -1)} disabled={i === 0}
+                >
                   <ArrowUp className="size-4" />
                 </Button>
-                <Button variant="ghost" size="icon" aria-label="下移" onClick={() => reorder(i, 1)} disabled={i === sources.length - 1}>
+                <Button
+                  variant="ghost" size="icon" aria-label="下移"
+                  className="hidden md:inline-flex"
+                  onClick={() => reorder(i, 1)} disabled={i === sources.length - 1}
+                >
                   <ArrowDown className="size-4" />
                 </Button>
                 <Switch checked={s.enabled} onCheckedChange={(v) => void toggle(s.id, v)} />

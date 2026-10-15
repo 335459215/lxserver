@@ -555,7 +555,15 @@ export const reportSourceResult = (apiId: string, ok: boolean) => recordSourceRe
 const sourceSpeed = new Map<string, number>()
 const SPEED_ALPHA = 0.35
 
-/** 记一次实测耗时（毫秒）。apiId 为空或耗时不合理时忽略。 */
+/** 记一次实测耗时（毫秒）。apiId 为空或耗时不合理时忽略。
+ *
+ *  【为什么必须拒绝 0】
+ *  0 有两种来源：真实的极快响应（罕见），以及**调用方压根没量到**
+ *  （探测缓存命中、没发生网络等待）。后者最常见，而如果放它进来，
+ *  这个源会以「0ms」永久占据排序首位 —— 那比没有数据更糟。
+ *  所以约定：**只有真实发生过的网络等待才允许上报**，调用方负责区分
+ *  （见 musicResolver 里用 innerProbeCache.costMs 取首次真实耗时的写法）。
+ *  宁可没有样本（排序时按「未知」处理），也不要一个假的 0。 */
 export const recordSourceSpeed = (apiId: string, ms: number) => {
   if (!apiId) return
   if (!Number.isFinite(ms) || ms <= 0 || ms > 60_000) return
