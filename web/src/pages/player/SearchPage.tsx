@@ -9,9 +9,9 @@ import {
 import {
   MUSIC_SOURCES,
   SOURCE_LABEL,
+  dedupeSongs,
   searchMusic,
   searchMusicAggregate,
-  songKey,
   sourceLabel,
   type Song,
 } from '@/lib/music'
@@ -138,12 +138,16 @@ export default function SearchPage() {
         source === 'all'
           ? await searchMusicAggregate({ name: searchedFor, page: next })
           : await searchMusic({ name: searchedFor, source, page: next, pages: 1 })
-      const seen = new Set(results.map(songKey))
-      const fresh = list.filter((s) => !seen.has(songKey(s)))
+      // 跨平台去重必须用 dedupeSongs（歌手集合有交集）而不是 Set(键)：
+      // 同一首歌在不同平台的 singer 写法差很多（`李玟` / `CoCo李玟` /
+      // `CoCo李玟、马毓芬、谢文德…`），键相等判不出去重。
+      // 做法：把「已有结果 + 新页」整体重跑一次去重，只追加真正新增的部分。
+      const mergedAll = dedupeSongs([...results, ...list])
+      const fresh = mergedAll.slice(results.length)
       if (fresh.length === 0) {
         setHasMore(false)
       } else {
-        setResults((prev) => [...prev, ...fresh])
+        setResults(mergedAll)
         setPage(next)
         if (list.length < PAGE_SIZE) setHasMore(false)
       }
@@ -304,18 +308,6 @@ export default function SearchPage() {
               </Button>
             ))}
           </div>
-        </div>
-      )}
-
-      {phase === 'idle' && (
-        <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
-          <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 text-faint">
-            <Search className="size-5" />
-          </span>
-          <p className="mt-3 text-sm font-medium text-ink">输入关键词开始搜索</p>
-          <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-dim">
-            选好平台后搜索，点任意一行即可播放；播放后由底部播放栏接管。
-          </p>
         </div>
       )}
 

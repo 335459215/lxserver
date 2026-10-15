@@ -104,11 +104,11 @@ Used for managing persistent API Tokens for third-party scripts and clients. Req
 - **`POST /api/data/delete-snapshot?user=<username>`**: Delete a snapshot (`{"id": "..."}`).
 - **`POST /api/data/upload-snapshot?user=<username>&filename=<name>&time=<timestamp>`**: Upload external backup (supports auto-conversion of LX Music `playList_v2` format).
 
-### 3.3 Music Library: Favorite Artists & Albums (with Subsonic 2-way Sync)
+### 3.3 Music Library: Favorite Artists & Albums
 - **`GET /api/user/library/artists`**: Get favorite artists (automatically fetches missing avatars).
-- **`POST /api/user/library/artists`**: Overwrite favorite artists (removes from dislike rules and syncs Subsonic starred).
+- **`POST /api/user/library/artists`**: Overwrite favorite artists (removes from dislike rules).
 - **`GET /api/user/library/albums`**: Get favorite albums (auto-completes cover artwork).
-- **`POST /api/user/library/albums`**: Overwrite favorite albums (syncs Subsonic starred).
+- **`POST /api/user/library/albums`**: Overwrite favorite albums.
 
 ### 3.4 Dislike Rules Library
 - **`GET /api/user/dislike/library/artists`**: Get disliked artists.
@@ -255,7 +255,7 @@ Used for managing persistent API Tokens for third-party scripts and clients. Req
 
 ### 9.1 Global Configuration & Maintenance
 - **`GET /api/config`**: Get full global configuration tree.
-- **`POST /api/config`**: Incrementally update configuration items (ports, paths, subsonic behaviors, proxy settings).
+- **`POST /api/config`**: Incrementally update configuration items (ports, paths, proxy settings).
 - **`POST /api/config/test-proxy`**: Test proxy server connectivity.
 - **`POST /api/admin/reload`**: Hot reload `config.js`, `users.json`, and user script sources.
 - **`POST /api/restart`** (alias `/api/admin/restart`): Safely restart server process.

@@ -49,7 +49,7 @@ function coverRelease() {
 }
 
 /**
- * 尽力而为地按请求尺寸改写上游图片 URL（OpenSubsonic coverArtScaling）。
+ * 尽力而为地按请求尺寸改写上游图片 URL（封面按尺寸取图）。
  *
  * 服务端没有 sharp（生产镜像 `npm install --omit=dev` 不会装它），无法真正缩放字节；
  * 但腾讯/网易的图片尺寸本来就编码在 URL 里，改写它就能拿到对应尺寸的图。

@@ -236,9 +236,11 @@ export const fetchRadios = async () => {
         }).promise
         const groupList = body?.data?.data?.groupList || []
 
-        // [修复] Subsonic 访问路径可配置(subsonic.path)，自产 streamUrl 不能再写死 /rest，
-        // 否则改了 subsonic.path 后官方电台地址会 404。
-        const subsonicBase = String((global.lx.config as any)?.['subsonic.path'] || '/rest').replace(/\/+$/, '') || '/rest'
+        // [Subsonic 移除后] 这里原先拼的是 `${subsonic.path}/stream?id=...`，
+        // 而 Subsonic 协议层已整体删除，那个地址不再存在。
+        // 该函数（fetchRadios）实测**没有任何调用方**，前端「场景与心情电台」
+        // 走的是关键词搜索、不经过它，故不再产出指向已删端点的 URL，
+        // 保留数据抓取本身以免影响将来可能的复用。
         const radioMap = new Map<string, any>()
         for (const group of groupList) {
             if (!group.radioList) continue
@@ -248,7 +250,7 @@ export const fetchRadios = async () => {
                     radioMap.set(id, {
                         id: id,
                         name: r.radioName,
-                        streamUrl: `${subsonicBase}/stream?id=${id}`,
+                        streamUrl: '',
                         coverArt: r.radioImg || id
                     })
                 }

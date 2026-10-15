@@ -14,7 +14,7 @@
  */
 import needle from 'needle'
 import { getProxyAgent } from '@/modules/utils/proxy.js'
-import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult } from '@/server/userApi'
+import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult, recordSourceSpeed } from '@/server/userApi'
 import { findServerSourceMatches, normalizeSongInfo, AUTO_SOURCE_ORDER } from '@/server/musicMatch'
 import { debugLog } from '@/server/utils/debugLog'
 
@@ -35,7 +35,7 @@ export interface ResolveMusicUrlOptions {
     crossPlatform?: boolean
     /** 音质降级顺序，默认只解析给定音质（音质降级交给播放器的播放错误策略） */
     qualities?: string[]
-    /** 限定候选平台（Subsonic 按 source.priority 限定用） */
+    /** 限定候选平台（按配置的 source.priority 限定用） */
     platformOrder?: string[]
 }
 
@@ -498,7 +498,13 @@ const runCandidate = async (index: number, quality: string) => {
             // 不是「要不要解析重定向」——早期把两者绑在一起，关掉校验就会把带
             // 重定向的原始链接直接交给客户端，等于悄悄关了一个原有能力。
             // 内部竞速可能已经探过这条链接（validateLink），复用结果别探第二遍。
+            //
+            // 顺带测速：这次探测本来就要等一个响应回来，给等待计时即可得到
+            // 该源的响应耗时，**不额外发请求、不额外等待**。
+            // 只测「探测通过」的链接 —— 死链的耗时没有意义（快也没用）。
+            const probeStart = Date.now()
             const v = innerProbeCache.get(r.url) ?? await resolveAndValidateUrl(r.url)
+            const probeCost = Date.now() - probeStart
             if (!v.ok && validate) {
                 const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
                 console.warn(`[音源解析] 链接校验未通过 ${reason}`)
@@ -531,6 +537,9 @@ const runCandidate = async (index: number, quality: string) => {
             }
             if (accepted) return
             reportSourceResult(String(r.sourceId ?? ''), true)
+            // 只有「确认可用」的链接才计入速度样本：probeError（探针被网关 RST）
+            // 的耗时反映的是探针被拒的速度，与这个源给播放器的真实速度无关。
+            if (!v.probeError) recordSourceSpeed(String(r.sourceId ?? ''), probeCost)
             slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
             successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality, confirmed: true })
             changed()
@@ -625,7 +634,7 @@ const runCandidate = async (index: number, quality: string) => {
     let arbiterDeadline = 0
     let winner: { index: number, value: any } | null = null
 
-    // 音质逐级降级：默认只有一档，Subsonic 可传多档
+    // 音质逐级降级：默认只有一档，调用方可传多档
     for (quality of qualities) {
         attemptSlots.forEach(x => { x.length = 0 })
         successes.clear()

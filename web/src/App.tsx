@@ -19,17 +19,18 @@ import {
   X,
 } from 'lucide-react'
 import { api, AuthProvider, isAdmin, isLoggedIn, useAuth } from '@/lib/auth'
+import { SETTINGS_GROUPS } from '@/lib/groups'
 import { PlayerProvider, usePlayer } from '@/lib/player'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import PlayerBar from '@/components/player/PlayerBar'
 import MobileTabBar from '@/components/player/MobileTabBar'
 import NowPlayingPanel from '@/components/player/NowPlayingPanel'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
 import SettingsShell from '@/pages/settings/SettingsShell'
-import UiShowcase from '@/pages/UiShowcase'
 import SearchPage from '@/pages/player/SearchPage'
 import PlaylistPage from '@/pages/player/PlaylistPage'
 import PlaylistDetailPage from '@/pages/player/PlaylistDetailPage'
@@ -156,16 +157,6 @@ function NavItems({
           </button>
         </div>
       )}
-
-      <div className="mt-auto pt-4 border-t border-line/60">
-        <NavLink
-          to="/dev"
-          onClick={onNavigate}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs text-faint hover:text-dim transition-colors"
-        >
-          <span>UI 组件画廊</span>
-        </NavLink>
-      </div>
     </div>
   )
 }
@@ -179,9 +170,31 @@ function restorePanel(): boolean {
   return raw === null ? true : raw === '1'
 }
 
+/** 把当前路由翻译成一句人话，供错误边界在崩溃时告诉用户「是哪一页炸了」。
+ *  设置分组复用 SETTINGS_GROUPS 的 label，避免再维护一份会漂移的对照表。 */
+function routeLabel(pathname: string): string {
+  if (pathname.startsWith('/settings')) {
+    const group = pathname.split('/')[2]
+    const hit = SETTINGS_GROUPS.find((g) => g.key === group)
+    return hit ? `设置 · ${hit.label}` : '设置'
+  }
+  const table: Array<[string, string]> = [
+    ['/now-playing', '全屏播放'],
+    ['/search', '搜索'],
+    ['/leaderboard', '排行榜'],
+    ['/playlist', '歌单'],
+    ['/favorites', '我喜欢的'],
+    ['/history', '最近播放'],
+    ['/local', '本地音乐'],
+    ['/artist', '歌手'],
+    ['/album', '专辑'],
+    ['/', '首页'],
+  ]
+  return table.find(([p]) => pathname.startsWith(p))?.[1] ?? '这一页'
+}
+
 /** 已登录骨架：顶栏（品牌 + 身份）+ 左侧边栏（桌面）/ 抽屉（移动）+ 主内容 + 右侧「正在播放」+ 底部播放栏 */
-function Shell() {
-  const { auth, refresh } = useAuth()
+function Shell() {  const { auth, refresh } = useAuth()
   const player = usePlayer()
   const navigate = useNavigate()
   const { pathname } = useLocation()
@@ -343,24 +356,28 @@ function Shell() {
         )}
 
         <main className="min-w-0 flex-1 p-4 md:p-8">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/playlist" element={<PlaylistPage />} />
-            <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
-            <Route path="/leaderboard" element={<LeaderboardPage />} />
-            <Route path="/artist/:id" element={<ArtistPage />} />
-            <Route path="/artist-name/:name" element={<ArtistNamePage />} />
-            <Route path="/album/:id" element={<AlbumPage />} />
-            <Route path="/favorites" element={<FavoritesPage />} />
-            <Route path="/local" element={<LocalMusicPage />} />
-            <Route path="/history" element={<HistoryPage />} />
-            <Route path="/now-playing" element={<NowPlayingPage />} />
-            <Route path="/settings" element={<SettingsShell />} />
-            <Route path="/settings/:group" element={<SettingsShell />} />
-            <Route path="/dev" element={<UiShowcase />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          {/* 页面级错误边界：key 绑 pathname，换路由自动重建（=崩溃后点别的导航即可恢复）。
+              放在 <main> 内部而不是整个 App 外面，是为了让崩溃时**顶栏/侧栏/底部 Tab 依然活着**，
+              用户还有路可走 —— 之前没有边界时整棵树被卸载，连导航都消失了。 */}
+          <ErrorBoundary key={pathname} label={routeLabel(pathname)}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/playlist" element={<PlaylistPage />} />
+              <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
+              <Route path="/leaderboard" element={<LeaderboardPage />} />
+              <Route path="/artist/:id" element={<ArtistPage />} />
+              <Route path="/artist-name/:name" element={<ArtistNamePage />} />
+              <Route path="/album/:id" element={<AlbumPage />} />
+              <Route path="/favorites" element={<FavoritesPage />} />
+              <Route path="/local" element={<LocalMusicPage />} />
+              <Route path="/history" element={<HistoryPage />} />
+              <Route path="/now-playing" element={<NowPlayingPage />} />
+              <Route path="/settings" element={<SettingsShell />} />
+              <Route path="/settings/:group" element={<SettingsShell />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </ErrorBoundary>
         </main>
 
         {/* 右侧「正在播放」常驻面板（≥1280px；全屏播放页不重复挂） */}

@@ -2050,12 +2050,12 @@ export const downloadAndCache = async (songInfo: any, url: string, quality?: str
     }
 
     // [去重] 同一 songKey 正在下载/写标签时直接跳过，避免并发重复下载
-    // (如 Subsonic 客户端反复请求 stream、或音流并行触发原生缓存)
+    // (如前端批量缓存时对同一首歌并行触发)
     const inFlight = cacheProgress.get(songKey)
     if (inFlight && (inFlight.status === 'downloading' || inFlight.status === 'tagging')) {
         const age = Date.now() - (inFlight.updatedAt || 0)
         // 超过 10 分钟仍无进展视为卡死，允许本次重新下载（避免永久阻塞该歌曲，
-        // 尤其 fire-and-forget 的 Subsonic 缓存触发没有 abort 信号）
+        // 尤其 fire-and-forget 的缓存触发没有 abort 信号）
         if (age < 10 * 60 * 1000) {
             console.log(`[文件缓存] 任务已在下载队列中 (${songKey})，跳过重复请求`)
             return Promise.resolve()

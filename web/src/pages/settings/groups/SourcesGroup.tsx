@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ArrowDown, ArrowUp, Download, Plus, Trash2 } from 'lucide-react'
 import { api, isAdmin, useAuth } from '@/lib/auth'
+import { useConfigForm } from '@/lib/useConfig'
 import {
   Button,
   Dialog,
@@ -13,6 +14,7 @@ import {
   DialogTrigger,
   Stack,
   Switch,
+  SwitchField,
   useToast,
 } from '@/components/ui'
 
@@ -185,7 +187,54 @@ function DeleteSourceDialog({ source, onDone }: { source: SourceRow; onDone: () 
   )
 }
 
-/** 音源组：自定义音源 CRUD（导入/启用/禁用/排序/删除）。
+/** 脚本运行安全：`system.allowUnsafeVM`。
+ *
+ *  【为什么从「系统」搬到这里】
+ *  这个开关唯一的作用是「允不允许自定义音源脚本以 VM 模式运行」——
+ *  它管的就是本页这些脚本，放在「系统」里用户根本联想不到。
+ *  按归属归类：谁的对象，就放在谁的页面。 */
+function ScriptSafetySection() {
+  const { toast } = useToast()
+  const { draft, set, submit, busy, config, error } = useConfigForm(
+    ['system.allowUnsafeVM'],
+    { 'system.allowUnsafeVM': false },
+  )
+
+  if (error) return <div className="text-sm text-danger">{error}</div>
+  if (!config) return <div className="text-sm text-dim">加载中…</div>
+
+  return (
+    <section className="rounded-2xl border border-line bg-panel p-5 shadow-card">
+      <h3 className="text-sm font-medium text-ink">脚本运行安全</h3>
+      <div className="mt-3">
+        <SwitchField
+          label="允许不安全 VM 模式"
+          description="部分音源脚本需要原生 VM 才能运行。开启等于让这些脚本在本机执行任意代码，仅对可信来源开启。"
+          checked={!!draft['system.allowUnsafeVM']}
+          onChange={(v) => set('system.allowUnsafeVM', v)}
+        />
+      </div>
+      <div className="mt-4 flex justify-end">
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={async () => {
+            try {
+              const n = await submit()
+              toast(n === 0 ? { title: '无变更' } : { title: '已保存', description: `${n} 项`, variant: 'success' })
+            } catch (e: unknown) {
+              toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+            }
+          }}
+        >
+          {busy ? '保存中…' : '保存'}
+        </Button>
+      </div>
+    </section>
+  )
+}
+
+/** 音源组：自定义音源 CRUD（导入/启用/禁用/排序/删除）+ 脚本运行安全。
  * 增删改会作废服务端粘滞缓存与熔断状态（服务端 toggle/delete handler 已处理）。 */
 export default function SourcesGroup() {
   const { auth } = useAuth()
@@ -237,6 +286,8 @@ export default function SourcesGroup() {
 
   return (
     <Stack gap={3}>
+      <ScriptSafetySection />
+
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-medium text-ink">自定义音源</h3>

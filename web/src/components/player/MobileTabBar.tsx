@@ -213,11 +213,6 @@ export default function MobileTabBar() {
                 </span>
               </NavLink>
             ))}
-            <div className="mt-2 flex items-center gap-3 border-t border-line px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-              <NavLink to="/dev" onClick={() => setMore(false)} className="text-[11px] text-faint hover:text-dim">
-                组件展示
-              </NavLink>
-            </div>
           </div>
         </div>
       )}

@@ -44,14 +44,6 @@ import needle from 'needle'
 import { getProxyAgent, resolveProxyAddress } from '../modules/utils/proxy.js'
 const { MusicTagger, MetaPicture } = require('music-tag-native')
 
-/** 当前生效的 dislike 匹配选项，下发给前端保证前后端判定一致 */
-const dislikeMatchOptions = () => ({
-  crossSource: global.lx.config['subsonic.dislikeCrossSource'] === true,
-  duetMode: (global.lx.config['subsonic.dislikeDuetMode'] || 'any') as 'any' | 'all' | 'primary',
-  normalizeName: global.lx.config['subsonic.dislikeNormalizeName'] !== false,
-  requireSinger: global.lx.config['subsonic.dislikeRequireSinger'] !== false,
-})
-
 /** 把 dislike 规则集转成可 JSON 序列化的结构（Set/Map → Array，同时聚合 dislike/library 下的 albums 和 artists） */
 const serializeDislikeRules = (rules: string, username?: string) => {
   const parsed = parseDislikeRules(rules)
@@ -1134,10 +1126,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
     // 读取路径配置（每次请求都重新读取，保存后立刻生效）
     const normalizePath = (p: string) => (p || '').replace(/\/+$/, '')
-    // [修复] Subsonic 访问路径可配置；此前这里只排除写死的 /rest/，
-    // 而本段判断先于下方的 Subsonic 路由执行，导致自定义 subsonic.path 会被当成播放器请求、后端接口整个失效。
-    const subsonicPath = normalizePath(global.lx.config['subsonic.path'] || '/rest') || '/rest'
-    const isSubsonicRequest = pathname === subsonicPath || pathname.startsWith(subsonicPath + '/')
 
     // [修复] 判断是否为 LX 同步客户端协议路由 (如 /hello, /id, /ah 以及 /<username>/hello, /<username>/ah 等)
     const isSyncProtocolRequest = /^\/([^/]+\/)?(hello|id|ah)$/.test(pathname)
@@ -1153,10 +1141,10 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
     // 现在 `/` 直接投放前端（见下方「根路径投放」），旧地址也一并跳 `/`。
     //
     // 注意要放行的东西（靠前者优先级处理，这里只判"确属旧版入口"才跳）：
-    //  - /api/*、/app/*、Subsonic、同步协议：各自有专门分支，不能抢
+    //  - /api/*、/app/*、同步协议：各自有专门分支，不能抢
     //  - /music/bin/*：fpcalc 音频指纹工具，服务端 identify.ts 在用（不是旧版播放器）
     const isLegacyPathRedirect =
-      !isSubsonicRequest &&
+      !isSyncProtocolRequest &&
       !isSyncProtocolRequest &&
       !pathname.startsWith('/api/') &&
       !pathname.startsWith('/app/') &&
@@ -1308,11 +1296,10 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
     // 这样用户在 `/search` 刷新、或把 `/playlist/xxx` 发给别人，都能正常打开。
     //
     // 【为什么用白名单而不是 catch-all（重要）】
-    // 根作用域还挂着三类**绝不能抢**的路由：
+    // 根作用域还挂着两类**绝不能抢**的路由：
     //   - 同步协议：/hello、/id、/ah、/<userName>/hello …
-    //   - Subsonic：/rest/*
     //   - 静态资源与 API：/music/bin/*、/api/*
-    // catch-all 会把它们全部吃掉（表现为「客户端连不上同步服务」「Subsonic 客户端 404」）。
+    // catch-all 会把它们全部吃掉（表现为「客户端连不上同步服务」）。
     // 白名单只认 App.tsx 里真实存在的路由，冲突面为零。
     const isRootSpaRoute = (() => {
       // 同步协议（/hello、/id、/ah、/<userName>/ah …）绝不能被 SPA 回退吃掉：
@@ -1370,13 +1357,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         serveStatic(req, res, generalFilePath)
         return
       }
-    }
-
-    // [Subsonic API]
-    const subsonicEnable = global.lx.config['subsonic.enable']
-    if (subsonicEnable && isSubsonicRequest) {
-      const { subsonicHandler } = require('./subsonic')
-      return subsonicHandler.handleRequest(req, res, urlObj)
     }
 
 
@@ -2556,7 +2536,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             const libDir = path.join(global.lx.userPath, userDirname, 'library')
             if (!fs.existsSync(libDir)) fs.mkdirSync(libDir, { recursive: true })
             const filePath = path.join(libDir, 'artists.json')
-            // 反向同步：对比旧数据计算增量，回写 Subsonic 星标
+            // 对比旧数据计算增量（用于同步 disliked 列表的剔除）
             let oldArr: any[] = []
             try { if (fs.existsSync(filePath)) oldArr = JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { /* ignore */ }
             const keyOf = (x: any) => `${x.source}::${String(x.id)}`
@@ -2583,12 +2563,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             }
 
 
-            try {
-              const { syncNativeLibraryToSubsonic } = require('./subsonic')
-              syncNativeLibraryToSubsonic(username, 'artists',
-                added.map((a: any) => ({ id: String(a.id), source: a.source, name: a.name })),
-                removed.map((a: any) => ({ id: String(a.id), source: a.source, name: a.name })))
-            } catch (e: any) { console.error('[音乐库] 反向同步 Subsonic 星标失败:', e) }
             res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true }))
           } catch (e: any) { res.writeHead(400); res.end(e.message) }
         })
@@ -2643,7 +2617,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             const libDir = path.join(global.lx.userPath, userDirname, 'library')
             if (!fs.existsSync(libDir)) fs.mkdirSync(libDir, { recursive: true })
             const filePath = path.join(libDir, 'albums.json')
-            // 反向同步：对比旧数据计算增量，回写 Subsonic 星标
+            // 对比旧数据计算增量（用于同步 disliked 列表的剔除）
             let oldArr: any[] = []
             try { if (fs.existsSync(filePath)) oldArr = JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { /* ignore */ }
             const keyOf = (x: any) => `${x.source}::${String(x.id)}`
@@ -2669,12 +2643,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               } catch { /* ignore */ }
             }
 
-            try {
-              const { syncNativeLibraryToSubsonic } = require('./subsonic')
-              syncNativeLibraryToSubsonic(username, 'albums',
-                added.map((a: any) => ({ id: String(a.id), source: a.source, name: a.name })),
-                removed.map((a: any) => ({ id: String(a.id), source: a.source, name: a.name })))
-            } catch (e: any) { console.error('[音乐库] 反向同步 Subsonic 星标失败:', e) }
             res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true }))
           } catch (e: any) { res.writeHead(400); res.end(e.message) }
         })
@@ -5966,8 +5934,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       //
       // 它们是给**旧版播放器**（挂在 / 的静态页）做的独立门禁：一套与账号体系
       // 完全并行的 HttpOnly Cookie 会话（`lx_player_session`）。旧版播放器已于
-      // v2.23.0 删除，前端在 v2.24.0 就不再调用它们，Subsonic 用的是自己的账号体系
-      // （见 subsonic.ts 的 getSubsonicUser），所以整条链路**没有任何调用方**。
+      // v2.23.0 删除，前端在 v2.24.0 就不再调用它们，所以整条链路**没有任何调用方**。
       //
       // 删掉的理由与 frontend.password 一样：留着「看起来还有一套密码在生效」的
       // 死代码，只会让人误判当前到底哪套鉴权在管事。现在全站只有一套：
@@ -6584,7 +6551,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
       }
 
       // [新增] dislike 规则 API
-      // 与 Subsonic 评分联动共用同一份 lx-music 原生规则，保证各端一致：
+      // 原生 dislike 规则集（歌曲 / 歌手 / 专辑），供播放与推荐链路过滤：
       //   GET  /api/music/dislike        返回已解析的规则集（歌曲 / 歌手 / 专辑）
       //   POST /api/music/dislike/add     body: { type, name?, singer?, source?, albumId? }
       //   POST /api/music/dislike/remove  body: 同上
@@ -6601,7 +6568,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           const data: any = serializeDislikeRules(rulesString, verified)
           data.dislikeList = dm.dislikeDataManage.dislikeRules.dislikeList || []
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-          res.end(JSON.stringify({ success: true, data, options: dislikeMatchOptions() }))
+          res.end(JSON.stringify({ success: true, data }))
         }).catch((err: any) => {
           res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, message: err.message }))
@@ -6674,17 +6641,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               }
             }
 
-            const dislikeRatingThreshold = global.lx.config['subsonic.dislikeRating'] ?? 1
-            if (global.lx.config['subsonic.linkDislikeToRating'] && dislikeRatingThreshold > 0 && id && source) {
-              const subId = id.startsWith(`${source}_`) ? id : `${source}_${id}`
-              try {
-                const { syncDislikeToRating } = require('./subsonic')
-                await syncDislikeToRating(verified, subId, isAdd ? 1 : 0)
-              } catch (e) {
-                console.error('[黑名单 API] 评分回写失败:', e)
-              }
-            }
-
             if (!isAdd && removeKeys.size > 0) {
               const rulesString = dm.dislikeDataManage.getDislikeRulesString()
               const lines = rulesString.split('\n').filter((l: string) => l.trim())
@@ -6706,7 +6662,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             const data: any = serializeDislikeRules(finalRulesString, verified)
             data.dislikeList = dm.dislikeDataManage.dislikeRules.dislikeList || []
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-            res.end(JSON.stringify({ success: true, data, options: dislikeMatchOptions() }))
+            res.end(JSON.stringify({ success: true, data }))
           } catch (err: any) {
             console.error('[黑名单 API] 处理异常:', err?.message)
             res.writeHead(500, { 'Content-Type': 'application/json' })
@@ -7019,35 +6975,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'download.ownerGid': global.lx.config['download.ownerGid'] ?? 100,
             'admin.path': global.lx.config['admin.path'] ?? '/music',
             'player.path': global.lx.config['player.path'] ?? '/',
-            'subsonic.enable': global.lx.config['subsonic.enable'] ?? true,
-            'subsonic.path': global.lx.config['subsonic.path'] ?? '/rest',
-            'subsonic.port': global.lx.config['subsonic.port'] ?? 0,
-            'subsonic.enableDebug': global.lx.config['subsonic.enableDebug'] ?? false,
-            'subsonic.onlineSearch': global.lx.config['subsonic.onlineSearch'] ?? true,
-            'subsonic.onlineSearchMode': global.lx.config['subsonic.onlineSearchMode'] ?? 'fallback',
-            'subsonic.onlineSearchSources': global.lx.config['subsonic.onlineSearchSources'] ?? 'wy,tx,kw,kg,mg',
-            'subsonic.publicLeaderboards': global.lx.config['subsonic.publicLeaderboards'] ?? false,
-            'subsonic.leaderboardSource': global.lx.config['subsonic.leaderboardSource'] ?? 'tx',
-            'subsonic.sharedListMode': global.lx.config['subsonic.sharedListMode'] ?? 'leaderboard',
-            'subsonic.sharedListSort': global.lx.config['subsonic.sharedListSort'] ?? 'hot',
-            'subsonic.dislikeRating': global.lx.config['subsonic.dislikeRating'] ?? 1,
-            'subsonic.linkRatingToDislike': global.lx.config['subsonic.linkRatingToDislike'] ?? false,
-            'subsonic.linkDislikeToRating': global.lx.config['subsonic.linkDislikeToRating'] ?? false,
-            'subsonic.hideDisliked': global.lx.config['subsonic.hideDisliked'] ?? true,
-            'subsonic.dislikeCrossSource': global.lx.config['subsonic.dislikeCrossSource'] ?? false,
-            'subsonic.dislikeNoRecommend': global.lx.config['subsonic.dislikeNoRecommend'] ?? true,
-            'subsonic.dislikeDuetMode': global.lx.config['subsonic.dislikeDuetMode'] ?? 'any',
-            'subsonic.dislikeNormalizeName': global.lx.config['subsonic.dislikeNormalizeName'] ?? true,
-            'subsonic.dislikeRequireSinger': global.lx.config['subsonic.dislikeRequireSinger'] ?? true,
-            'subsonic.lyricTranslation': global.lx.config['subsonic.lyricTranslation'] ?? true,
-            'subsonic.cacheOnPlay': global.lx.config['subsonic.cacheOnPlay'] ?? false,
-            'subsonic.playCacheFirst': global.lx.config['subsonic.playCacheFirst'] ?? true,
-            'subsonic.quality.enabled': global.lx.config['subsonic.quality.enabled'] ?? true,
-            'subsonic.quality.priority': global.lx.config['subsonic.quality.priority'] ?? 'flac,320k,128k',
-            'subsonic.quality.clientCapMode': global.lx.config['subsonic.quality.clientCapMode'] ?? 'soft',
-            'subsonic.source.priority': global.lx.config['subsonic.source.priority'] ?? 'kw,tx,wy,mg,kg',
-            'subsonic.source.crossPlatform': global.lx.config['subsonic.source.crossPlatform'] ?? true,
-            'subsonic.source.autoSwitchCustom': global.lx.config['subsonic.source.autoSwitchCustom'] ?? true,
             'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'] ?? true,
             'music.url.race': global.lx.config['music.url.race'] ?? true,
             'music.url.raceStagger': global.lx.config['music.url.raceStagger'] ?? 180,
@@ -7069,7 +6996,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'configBackup.retentionDays': global.lx.config['configBackup.retentionDays'] ?? 7,
             'configBackup.dir': global.lx.config['configBackup.dir'] ?? '',
             'snapshot.backupPath': global.lx.config['snapshot.backupPath'] ?? '',
-            subsonicPortConflict: global.lx.subsonicPortConflict || null,
             configFilePath: global.lx.configPath || process.env.CONFIG_PATH || path.join(global.lx.dataPath, 'config.js'),
           }
           res.writeHead(200, {
@@ -7250,60 +7176,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 }
               }
 
-              // 新增：Subsonic 配置保存逻辑
-              if (newConfig['subsonic.enable'] !== undefined) global.lx.config['subsonic.enable'] = newConfig['subsonic.enable']
-              if (newConfig['subsonic.path'] !== undefined) {
-                global.lx.config['subsonic.path'] = newConfig['subsonic.path'].replace(/\/+$/, '') || '/rest'
-              }
-              if (newConfig['subsonic.port'] !== undefined) {
-                const port = parseInt(newConfig['subsonic.port'], 10)
-                global.lx.config['subsonic.port'] = !isNaN(port) && port >= 0 ? port : 0
-              }
-              if (newConfig['subsonic.enableDebug'] !== undefined) global.lx.config['subsonic.enableDebug'] = newConfig['subsonic.enableDebug']
-              // [本地配置备份] configBackup 配置
-              if (newConfig['configBackup.enable'] !== undefined) global.lx.config['configBackup.enable'] = !!newConfig['configBackup.enable']
-              if (newConfig['configBackup.retentionDays'] !== undefined) {
-                const rd = Number(newConfig['configBackup.retentionDays'])
-                global.lx.config['configBackup.retentionDays'] = Number.isFinite(rd) && rd > 0 ? Math.floor(rd) : 7
-              }
-              if (newConfig['subsonic.onlineSearch'] !== undefined) global.lx.config['subsonic.onlineSearch'] = newConfig['subsonic.onlineSearch']
-              if (newConfig['subsonic.onlineSearchMode'] !== undefined) global.lx.config['subsonic.onlineSearchMode'] = newConfig['subsonic.onlineSearchMode']
-              if (newConfig['subsonic.onlineSearchSources'] !== undefined) global.lx.config['subsonic.onlineSearchSources'] = newConfig['subsonic.onlineSearchSources']
-              if (newConfig['subsonic.publicLeaderboards'] !== undefined) global.lx.config['subsonic.publicLeaderboards'] = newConfig['subsonic.publicLeaderboards']
-              if (newConfig['subsonic.leaderboardSource'] !== undefined) {
-                const s = String(newConfig['subsonic.leaderboardSource']).trim().toLowerCase()
-                if (['tx', 'wy', 'kg', 'kw', 'mg'].includes(s)) global.lx.config['subsonic.leaderboardSource'] = s
-              }
-              if (newConfig['subsonic.sharedListMode'] !== undefined) {
-                const m = String(newConfig['subsonic.sharedListMode']).trim().toLowerCase()
-                if (['leaderboard', 'playlist', 'both'].includes(m)) global.lx.config['subsonic.sharedListMode'] = m as any
-              }
-              if (newConfig['subsonic.sharedListSort'] !== undefined) {
-                const st = String(newConfig['subsonic.sharedListSort']).trim().toLowerCase()
-                if (['hot', 'new'].includes(st)) global.lx.config['subsonic.sharedListSort'] = st as any
-              }
-              if (newConfig['subsonic.dislikeRating'] !== undefined) global.lx.config['subsonic.dislikeRating'] = Number(newConfig['subsonic.dislikeRating'])
-              if (newConfig['subsonic.hideDisliked'] !== undefined) global.lx.config['subsonic.hideDisliked'] = !!newConfig['subsonic.hideDisliked']
-              if (newConfig['subsonic.dislikeCrossSource'] !== undefined) global.lx.config['subsonic.dislikeCrossSource'] = !!newConfig['subsonic.dislikeCrossSource']
-              if (newConfig['subsonic.dislikeNoRecommend'] !== undefined) global.lx.config['subsonic.dislikeNoRecommend'] = !!newConfig['subsonic.dislikeNoRecommend']
-              if (newConfig['subsonic.dislikeDuetMode'] !== undefined) {
-                const dm = String(newConfig['subsonic.dislikeDuetMode']).trim().toLowerCase()
-                if (['any', 'all', 'primary'].includes(dm)) global.lx.config['subsonic.dislikeDuetMode'] = dm as any
-              }
-              if (newConfig['subsonic.dislikeNormalizeName'] !== undefined) global.lx.config['subsonic.dislikeNormalizeName'] = !!newConfig['subsonic.dislikeNormalizeName']
-              if (newConfig['subsonic.dislikeRequireSinger'] !== undefined) global.lx.config['subsonic.dislikeRequireSinger'] = !!newConfig['subsonic.dislikeRequireSinger']
-              if (newConfig['subsonic.linkRatingToDislike'] !== undefined) global.lx.config['subsonic.linkRatingToDislike'] = !!newConfig['subsonic.linkRatingToDislike']
-              if (newConfig['subsonic.linkDislikeToRating'] !== undefined) global.lx.config['subsonic.linkDislikeToRating'] = !!newConfig['subsonic.linkDislikeToRating']
-              if (newConfig['subsonic.recommendPoolSize'] !== undefined) global.lx.config['subsonic.recommendPoolSize'] = Number(newConfig['subsonic.recommendPoolSize'])
-              if (newConfig['subsonic.lyricTranslation'] !== undefined) global.lx.config['subsonic.lyricTranslation'] = newConfig['subsonic.lyricTranslation']
-              if (newConfig['subsonic.cacheOnPlay'] !== undefined) global.lx.config['subsonic.cacheOnPlay'] = newConfig['subsonic.cacheOnPlay']
-              if (newConfig['subsonic.playCacheFirst'] !== undefined) global.lx.config['subsonic.playCacheFirst'] = newConfig['subsonic.playCacheFirst']
-              if (newConfig['subsonic.quality.enabled'] !== undefined) global.lx.config['subsonic.quality.enabled'] = !!newConfig['subsonic.quality.enabled']
-              if (newConfig['subsonic.quality.priority'] !== undefined) global.lx.config['subsonic.quality.priority'] = String(newConfig['subsonic.quality.priority'])
-              if (newConfig['subsonic.quality.clientCapMode'] !== undefined && ['hard', 'soft'].includes(newConfig['subsonic.quality.clientCapMode'])) global.lx.config['subsonic.quality.clientCapMode'] = newConfig['subsonic.quality.clientCapMode']
-              if (newConfig['subsonic.source.priority'] !== undefined) global.lx.config['subsonic.source.priority'] = String(newConfig['subsonic.source.priority'])
-              if (newConfig['subsonic.source.crossPlatform'] !== undefined) global.lx.config['subsonic.source.crossPlatform'] = !!newConfig['subsonic.source.crossPlatform']
-              if (newConfig['subsonic.source.autoSwitchCustom'] !== undefined) global.lx.config['subsonic.source.autoSwitchCustom'] = !!newConfig['subsonic.source.autoSwitchCustom']
               if (newConfig['music.url.crossPlatform'] !== undefined) global.lx.config['music.url.crossPlatform'] = !!newConfig['music.url.crossPlatform']
               if (newConfig['music.url.race'] !== undefined) global.lx.config['music.url.race'] = !!newConfig['music.url.race']
               if (newConfig['music.url.raceStagger'] !== undefined && !Number.isNaN(Number(newConfig['music.url.raceStagger']))) global.lx.config['music.url.raceStagger'] = Number(newConfig['music.url.raceStagger'])
@@ -7393,36 +7265,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'download.ownerGid': global.lx.config['download.ownerGid'] ?? 100,
             'admin.path': global.lx.config['admin.path'] ?? '/admin',
                 'player.path': global.lx.config['player.path'] ?? '/',
-                'subsonic.enable': global.lx.config['subsonic.enable'],
-                'subsonic.path': global.lx.config['subsonic.path'],
-                'subsonic.port': global.lx.config['subsonic.port'] ?? 0,
-                'subsonic.enableDebug': global.lx.config['subsonic.enableDebug'],
-                'subsonic.onlineSearch': global.lx.config['subsonic.onlineSearch'],
-                'subsonic.onlineSearchMode': global.lx.config['subsonic.onlineSearchMode'],
-                'subsonic.onlineSearchSources': global.lx.config['subsonic.onlineSearchSources'],
-                'subsonic.publicLeaderboards': global.lx.config['subsonic.publicLeaderboards'],
-                'subsonic.leaderboardSource': global.lx.config['subsonic.leaderboardSource'],
-                'subsonic.sharedListMode': global.lx.config['subsonic.sharedListMode'],
-                'subsonic.sharedListSort': global.lx.config['subsonic.sharedListSort'],
-                'subsonic.dislikeRating': global.lx.config['subsonic.dislikeRating'],
-                'subsonic.linkRatingToDislike': global.lx.config['subsonic.linkRatingToDislike'],
-                'subsonic.linkDislikeToRating': global.lx.config['subsonic.linkDislikeToRating'],
-                'subsonic.hideDisliked': global.lx.config['subsonic.hideDisliked'],
-                'subsonic.dislikeCrossSource': global.lx.config['subsonic.dislikeCrossSource'],
-                'subsonic.dislikeNoRecommend': global.lx.config['subsonic.dislikeNoRecommend'],
-                'subsonic.dislikeDuetMode': global.lx.config['subsonic.dislikeDuetMode'],
-                'subsonic.dislikeNormalizeName': global.lx.config['subsonic.dislikeNormalizeName'],
-                'subsonic.dislikeRequireSinger': global.lx.config['subsonic.dislikeRequireSinger'],
-                'subsonic.recommendPoolSize': global.lx.config['subsonic.recommendPoolSize'],
-                'subsonic.lyricTranslation': global.lx.config['subsonic.lyricTranslation'],
-                'subsonic.cacheOnPlay': global.lx.config['subsonic.cacheOnPlay'],
-                'subsonic.playCacheFirst': global.lx.config['subsonic.playCacheFirst'],
-                'subsonic.quality.enabled': global.lx.config['subsonic.quality.enabled'],
-                'subsonic.quality.priority': global.lx.config['subsonic.quality.priority'],
-                'subsonic.quality.clientCapMode': global.lx.config['subsonic.quality.clientCapMode'],
-                'subsonic.source.priority': global.lx.config['subsonic.source.priority'],
-                'subsonic.source.crossPlatform': global.lx.config['subsonic.source.crossPlatform'],
-                'subsonic.source.autoSwitchCustom': global.lx.config['subsonic.source.autoSwitchCustom'],
                 'music.url.crossPlatform': global.lx.config['music.url.crossPlatform'],
                 'music.url.race': global.lx.config['music.url.race'],
                 'music.url.raceStagger': global.lx.config['music.url.raceStagger'],
@@ -8707,70 +8549,6 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
   httpServer.listen(port, ip)
 })
 
-// [Subsonic 独立端口] 在独立监听端口上只暴露 Subsonic API。
-// 鉴权复用 subsonic 自身 verifyAuth（subsonic.ts 内部实现）——只有携带合法 Subsonic 凭据(用户/密码/token)的请求才会被处理，
-// 未通过鉴权的请求一律返回错误，从而实现「只允许 Subsonic 用户通过」。
-const startSubsonicStandaloneServer = () => {
-  const subEnabled = global.lx.config['subsonic.enable'] !== false
-  const subPort = global.lx.config['subsonic.port']
-  if (!subEnabled || !(typeof subPort === 'number' && subPort > 0)) return
-
-  // 不绑定特定 IP：监听所有网卡，访问控制交由防火墙处理
-  const subBindIP = '0.0.0.0'
-  const subServer = http.createServer(async (req, res) => {
-    // 与主端口一致的 CORS 头，兼容跨域 Subsonic 客户端
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', '*')
-    res.setHeader('Access-Control-Allow-Private-Network', 'true')
-
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204)
-      res.end()
-      return
-    }
-
-    try {
-      const { subsonicHandler } = require('./subsonic')
-      const urlObj = new URL(req.url ?? '', `http://${req.headers.host}`)
-
-      // [路由守卫] 仅允许 /rest/{method} 形式的 Subsonic API 调用，其余路径一律 404。
-      // 真正的 Subsonic 客户端请求形如 /rest/ping.view，会正常进入处理方法；
-      // 浏览器裸访问（/、/rest、/rest/ 等）及爬虫请求返回「像资源不存在」的 404：
-      // 只给状态码、不附带任何服务器说明文案，避免暴露「这是一个服务器 / 服务在响应」的特征。
-      if (!/^\/rest\/.+/.test(urlObj.pathname)) {
-        res.writeHead(404)
-        res.end()
-        return
-      }
-
-      // 直接交给 subsonic 处理；handleRequest 内部 verifyAuth 只会放行通过 Subsonic 鉴权的用户
-      await subsonicHandler.handleRequest(req, res, urlObj)
-    } catch (err: any) {
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
-        res.end('Internal Server Error')
-      }
-    }
-  })
-
-  subServer.on('error', (err: any) => {
-    global.lx.subsonicPortConflict = {
-      port: subPort,
-      error: err.code === 'EADDRINUSE' ? `端口 ${subPort} 已被占用` : (err.message || '端口绑定失败'),
-      time: Date.now(),
-    }
-    startupLog.error(`Subsonic standalone server failed on ${subBindIP}:${subPort}: ${err.message}`)
-    console.error('[Subsonic] 独立服务发生异常:', err)
-  })
-
-  subServer.listen(subPort, subBindIP, () => {
-    global.lx.subsonicPortConflict = undefined
-    startupLog.info(`Subsonic standalone server listening on ${subBindIP}:${subPort}`)
-    console.log(`[Subsonic] 独立服务已监听: http://${subBindIP}:${subPort}`)
-  })
-}
-
 // const handleStopServer = async() => new Promise<void>((resolve, reject) => {
 //   if (!wss) return
 //   for (const client of wss.clients) client.close(SYNC_CLOSE_CODE.normal)
@@ -8960,9 +8738,6 @@ export const startServer = async (port: number, ip: string) => {
     status.message = ''
     scheduler.startScheduler()
     status.address = ip == '0.0.0.0' ? getAddress() : [ip]
-
-    // [Subsonic 独立端口] 主端口就绪后启动（独立端口失败不影响主服务）
-    startSubsonicStandaloneServer()
 
 
 

@@ -81,7 +81,7 @@ module.exports = {
   // 环境变量: MAX_SNAPSHOT_NUM
   "maxSnapshotNum": 10,
 
-  // 添加歌曲到列表时的位置，Web 播放器与 Subsonic API 均使用此配置 (top: 顶部, bottom: 底部)
+  // 添加歌曲到列表时的位置 (top: 顶部, bottom: 底部)
   // 环境变量: LIST_ADD_MUSIC_LOCATION_TYPE
   "list.addMusicLocationType": "top",
 
@@ -214,63 +214,6 @@ module.exports = {
   // Web播放器访问路径（默认为根路径 /）
   // 环境变量: PLAYER_PATH
   "player.path": "/",
-
-  // Subsonic 协议配置
-  // 是否启用 Subsonic 协议支持 (服务默认开启)
-  // 环境变量: SUBSONIC_ENABLE
-  "subsonic.enable": true,
-
-  // Subsonic 访问路径 (默认为 /rest)
-  // 环境变量: SUBSONIC_PATH
-  "subsonic.path": "/rest",
-
-  // Subsonic 独立监听端口 (0 为不启用独立端口，共用主服务端口；>0 时单独监听指定端口)
-  // 环境变量: SUBSONIC_PORT
-  "subsonic.port": 0,
-
-  // 是否开启 Subsonic 调试日志模式 (默认关闭)
-  // 环境变量: SUBSONIC_ENABLE_DEBUG
-  "subsonic.enableDebug": false,
-
-  // 是否开启 Subsonic 在线全网搜索
-  // 环境变量: SUBSONIC_ONLINE_SEARCH
-  "subsonic.onlineSearch": true,
-
-  // Subsonic 在线搜索模式 (fallback: 回退模式, merge: 合并模式, local_only: 仅本地)
-  // 环境变量: SUBSONIC_ONLINE_SEARCH_MODE
-  "subsonic.onlineSearchMode": "fallback",
-
-  // Subsonic 在线搜索默认平台
-  // 环境变量: SUBSONIC_ONLINE_SEARCH_SOURCES
-  "subsonic.onlineSearchSources": "wy,tx,kw,kg,mg",
-
-  // 是否开启 Subsonic 公开排行榜歌单 (将在线排行榜映射为只读歌单)
-  // 环境变量: SUBSONIC_PUBLIC_LEADERBOARDS (true/false)
-  "subsonic.publicLeaderboards": false,
-
-  // Subsonic 公开排行榜默认音源平台 (tx / wy / kg / kw / mg)
-  // 环境变量: SUBSONIC_LEADERBOARD_SOURCE
-  "subsonic.leaderboardSource": "tx",
-
-  // 是否在 Subsonic 歌词中包含翻译
-  // 环境变量: SUBSONIC_LYRIC_TRANSLATION
-  "subsonic.lyricTranslation": true,
-
-  // 是否在 Subsonic 播放音乐时触发服务器缓存保存 (落盘到该用户缓存目录，已缓存自动跳过)
-  // 环境变量: SUBSONIC_CACHE_ON_PLAY (true/false)
-  "subsonic.cacheOnPlay": false,
-
-  // 是否在 Subsonic 播放音乐时优先使用本地缓存/下载文件直接流式传输 (默认开启)
-  // 环境变量: SUBSONIC_PLAY_CACHE_FIRST (true/false)
-  "subsonic.playCacheFirst": true,
-
-  // Subsonic 音质优选总开关 (按优先级主动选最优可用音质，关闭则仅做单次解析)
-  // 环境变量: SUBSONIC_QUALITY_ENABLED (true/false)
-  "subsonic.quality.enabled": true,
-
-  // Subsonic 音质优先级列表 (从高到低，以英文逗号分隔)
-  // 环境变量: SUBSONIC_QUALITY_PRIORITY (例如: flac,320k,128k)
-  "subsonic.quality.priority": "flac,320k,128k",
 
   // 歌手信息源优先级 (多个源用逗号分隔，如 tx,wy)
   // 环境变量: SINGER_SOURCE_PRIORITY

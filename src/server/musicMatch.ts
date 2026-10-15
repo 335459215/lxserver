@@ -1,9 +1,9 @@
 /**
  * 跨平台歌曲匹配：把「在别的平台按歌名+歌手搜到替身」这件事从 server.ts 里抽出来。
  *
- * 单独成模块的原因：server.ts 与 subsonic.ts 互相都要用这套匹配逻辑（前者走 /api/music/url，
- * 后者走 Subsonic stream），但 server.ts import 了 subsonic.ts。逻辑留在 server.ts 里的话，
- * subsonic.ts 反向 import 会形成循环依赖，所以抽到这里由两边共同依赖。
+ * 单独成模块的原因：这套匹配逻辑被多个上层复用（/api/music/url 的音源解析、
+ * 自动换源等）。逻辑留在 server.ts 里的话，各消费方反向 import server.ts 会形成循环依赖，
+ * 所以抽到这里由各方共同依赖。
  */
 import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 import { isSourceSupported } from '@/server/userApi'

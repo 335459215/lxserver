@@ -444,9 +444,6 @@ if (envParams.ADMIN_PATH !== undefined) {
 if (envParams.PLAYER_PATH !== undefined) {
   global.lx.config['player.path'] = envParams.PLAYER_PATH
 }
-if (envParams.SUBSONIC_ENABLE !== undefined) {
-  setBoolConfig('subsonic.enable', envParams.SUBSONIC_ENABLE)
-}
 // 代理分类开关。setBoolConfig 只在值能解析成布尔时才写入，因此
 // "未设置该变量" 与 "显式设为 false" 可以区分开：
 // 未设置 -> 保持 config.js/defaultConfig 的 undefined（沿用 proxy.all.*）
@@ -476,65 +473,6 @@ for (const [category, suffix] of proxyCategoryEnvKeys) {
   } else if (value) {
     global.lx.config[`proxy.${category}.address` as keyof LX.Config] = value as never
   }
-}
-if (envParams.SUBSONIC_PATH !== undefined) {
-  global.lx.config['subsonic.path'] = envParams.SUBSONIC_PATH
-}
-if (envParams.SUBSONIC_PORT !== undefined) {
-  const port = parseInt(envParams.SUBSONIC_PORT, 10)
-  if (!isNaN(port) && port >= 0) global.lx.config['subsonic.port'] = port
-}
-if (envParams.SUBSONIC_ENABLE_DEBUG !== undefined) {
-  setBoolConfig('subsonic.enableDebug', envParams.SUBSONIC_ENABLE_DEBUG)
-}
-if (envParams.SUBSONIC_ONLINE_SEARCH !== undefined) {
-  setBoolConfig('subsonic.onlineSearch', envParams.SUBSONIC_ONLINE_SEARCH)
-}
-if (envParams.SUBSONIC_ONLINE_SEARCH_MODE) {
-  const mode = envParams.SUBSONIC_ONLINE_SEARCH_MODE as any
-  if (['fallback', 'merge', 'local_only'].includes(mode)) {
-    global.lx.config['subsonic.onlineSearchMode'] = mode
-  }
-}
-if (envParams.SUBSONIC_ONLINE_SEARCH_SOURCES) {
-  global.lx.config['subsonic.onlineSearchSources'] = envParams.SUBSONIC_ONLINE_SEARCH_SOURCES
-}
-if (envParams.SUBSONIC_PUBLIC_LEADERBOARDS !== undefined) {
-  setBoolConfig('subsonic.publicLeaderboards', envParams.SUBSONIC_PUBLIC_LEADERBOARDS)
-}
-if (envParams.SUBSONIC_LEADERBOARD_SOURCE) {
-  const src = envParams.SUBSONIC_LEADERBOARD_SOURCE.trim().toLowerCase()
-  if (['tx', 'wy', 'kg', 'kw', 'mg'].includes(src)) {
-    global.lx.config['subsonic.leaderboardSource'] = src
-  }
-}
-if (envParams.SUBSONIC_LYRIC_TRANSLATION !== undefined) {
-  setBoolConfig('subsonic.lyricTranslation', envParams.SUBSONIC_LYRIC_TRANSLATION)
-}
-if (envParams.SUBSONIC_CACHE_ON_PLAY !== undefined) {
-  setBoolConfig('subsonic.cacheOnPlay', envParams.SUBSONIC_CACHE_ON_PLAY)
-}
-if (envParams.SUBSONIC_PLAY_CACHE_FIRST !== undefined) {
-  setBoolConfig('subsonic.playCacheFirst', envParams.SUBSONIC_PLAY_CACHE_FIRST)
-}
-if (envParams.SUBSONIC_QUALITY_ENABLED !== undefined) {
-  setBoolConfig('subsonic.quality.enabled', envParams.SUBSONIC_QUALITY_ENABLED)
-}
-if (envParams.SUBSONIC_QUALITY_PRIORITY) {
-  global.lx.config['subsonic.quality.priority'] = envParams.SUBSONIC_QUALITY_PRIORITY.split(',').map((s: string) => s.trim()).filter(Boolean).join(',')
-}
-if (envParams.SUBSONIC_QUALITY_CLIENT_CAP_MODE) {
-  const mode = envParams.SUBSONIC_QUALITY_CLIENT_CAP_MODE as any
-  if (mode === 'hard' || mode === 'soft') global.lx.config['subsonic.quality.clientCapMode'] = mode
-}
-if (envParams.SUBSONIC_SOURCE_PRIORITY) {
-  global.lx.config['subsonic.source.priority'] = envParams.SUBSONIC_SOURCE_PRIORITY.split(',').map((s: string) => s.trim()).filter(Boolean).join(',')
-}
-if (envParams.SUBSONIC_SOURCE_CROSS_PLATFORM !== undefined) {
-  setBoolConfig('subsonic.source.crossPlatform', envParams.SUBSONIC_SOURCE_CROSS_PLATFORM)
-}
-if (envParams.SUBSONIC_SOURCE_AUTOSWITCH_CUSTOM !== undefined) {
-  setBoolConfig('subsonic.source.autoSwitchCustom', envParams.SUBSONIC_SOURCE_AUTOSWITCH_CUSTOM)
 }
 if (envParams.ARTIST_MAX_FETCH_PAGES) {
   const pages = parseInt(envParams.ARTIST_MAX_FETCH_PAGES, 10)
@@ -606,14 +544,6 @@ global.lx.config['proxy.all.address'] = sanitizeProxyAddress(global.lx.config['p
     (global.lx.config as any)[kAddress] = sanitizeProxyAddress(val, kAddress)
   }
 })
-
-// Subsonic 路径冗余校正（确保以 / 开头，去除尾部多余斜杠）
-if (typeof global.lx.config['subsonic.path'] === 'string') {
-  let subPath = global.lx.config['subsonic.path'].trim()
-  if (!subPath.startsWith('/')) subPath = '/' + subPath
-  subPath = subPath.replace(/\/+$/, '') || '/rest'
-  global.lx.config['subsonic.path'] = subPath
-}
 
 // 缓存大小边界防护（避免 <= 0 的非法值）
 if (typeof global.lx.config['user.cacheSizeLimit'] === 'number') {

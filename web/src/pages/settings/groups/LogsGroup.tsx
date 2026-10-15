@@ -10,7 +10,6 @@ const LOG_TYPES = [
   { value: 'access', label: '访问日志' },
   { value: 'login', label: '登录日志' },
   { value: 'token', label: '令牌日志' },
-  { value: 'subsonic', label: 'Subsonic' },
   { value: 'errors', label: '错误日志' },
 ]
 

@@ -1,8 +1,21 @@
-import { Link } from 'react-router-dom'
-import { Heart, Loader2, ListMusic, RefreshCw, TriangleAlert } from 'lucide-react'
-import { Button } from '@/components/ui'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Heart, ListMusic, Loader2, Plus, RefreshCw, TriangleAlert } from 'lucide-react'
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  Input,
+  useToast,
+} from '@/components/ui'
 import { coverUrl } from '@/lib/music'
-import { LIST_DEFAULT_ID, LIST_LOVE_ID, type Playlist } from '@/lib/lists'
+import { createPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, type Playlist } from '@/lib/lists'
 import { useLists } from '@/lib/useLists'
 
 /** 歌单卡片：封面取第一首有封面的曲目 */
@@ -35,15 +48,85 @@ function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' |
   )
 }
 
-/** 歌单总览：试听列表 + 我的收藏 + 自建/导入歌单 */
+/** 新建歌单：输入名字 → 服务端整份恢复写回 → 直接进新歌单页加歌。
+ *
+ *  【为什么建完要跳进去】
+ *  刚建的歌单一定是空的，停在列表页只会看到多了一张「0 首」的卡片，
+ *  用户下一步必然是想往里加歌。直接送进详情页，那里有搜索入口，少一次点击。 */
+function CreatePlaylistDialog({ onDone }: { onDone: (id: string) => void }) {
+  const { toast } = useToast()
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  const submit = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    setBusy(true)
+    try {
+      const id = await createPlaylist(trimmed)
+      toast({ title: '歌单已创建', description: trimmed, variant: 'success' })
+      setOpen(false)
+      setName('')
+      onDone(id)
+    } catch (e: unknown) {
+      toast({
+        title: '创建失败',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setName('') }}>
+      <DialogTrigger asChild>
+        <Button size="sm">
+          <Plus className="size-4" /> 新建歌单
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>新建歌单</DialogTitle>
+          <DialogDescription>给歌单起个名字，建好后就能往里加歌。</DialogDescription>
+        </DialogHeader>
+        <div className="mt-2">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="例如：深夜循环"
+            autoFocus
+            maxLength={60}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submit()
+            }}
+          />
+        </div>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="ghost" type="button">取消</Button>
+          </DialogClose>
+          <Button onClick={submit} disabled={busy || !name.trim()}>
+            {busy ? '创建中…' : '创建'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 歌单总览：试听列表 + 我的收藏 + 自建歌单（可新建）。 */
 export default function PlaylistPage() {
   const { snapshot, loading, error, reload } = useLists()
+  const navigate = useNavigate()
 
   return (
     <div className="w-full rise">
-      <header>
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight text-ink">歌单</h1>
-        <p className="mt-1 text-sm text-dim">试听列表、我的收藏，以及同步账号里的自建歌单。</p>
+        <CreatePlaylistDialog onDone={(id) => navigate(`/playlist/${encodeURIComponent(id)}`)} />
       </header>
 
       {loading && (
@@ -68,8 +151,7 @@ export default function PlaylistPage() {
       {snapshot && !loading && !error && (
         <>
           <section className="mt-6">
-            <h2 className="text-[11px] font-medium tracking-widest text-faint">内置</h2>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <PlaylistCard
                 playlist={{ id: LIST_DEFAULT_ID, name: '试听列表', songs: snapshot.defaultList }}
                 icon="list"
@@ -81,34 +163,16 @@ export default function PlaylistPage() {
             </div>
           </section>
 
-          <section className="mt-8">
-            <h2 className="text-[11px] font-medium tracking-widest text-faint">
-              我的歌单{snapshot.userList.length > 0 && ` · ${snapshot.userList.length}`}
-            </h2>
-            {snapshot.userList.length === 0 ? (
-              <div className="mt-3 rounded-2xl border border-dashed border-line bg-panel/60 p-8 text-center">
-                <p className="text-sm font-medium text-ink">还没有自建歌单</p>
-                <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-dim">
-                  歌单由 LX 客户端（桌面/手机 App）同步上来；也可以先去
-                  <Link to="/search" className="link-inline mx-1 text-accent hover:underline">
-                    搜索
-                  </Link>
-                  找歌试听。
-                </p>
-              </div>
-            ) : (
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {/* 自建歌单：有就列出来，没有就什么都不显示（不再摆一个虚线空框） */}
+          {snapshot.userList.length > 0 && (
+            <section className="mt-8">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {snapshot.userList.map((l) => (
                   <PlaylistCard key={l.id} playlist={l} />
                 ))}
               </div>
-            )}
-          </section>
-
-          <p className="mt-8 text-xs text-faint">
-            内置列表共 {snapshot.defaultList.length + snapshot.loveList.length} 首，
-            {snapshot.userList.length} 个自建歌单。
-          </p>
+            </section>
+          )}
         </>
       )}
     </div>

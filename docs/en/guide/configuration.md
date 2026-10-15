@@ -90,19 +90,7 @@ The underlying periodic polling asynchronous daemon of the service will only be 
 | :--- | :--- | :--- | :--- |
 | `LIST_ADD_MUSIC_LOCATION_TYPE` | `top` | String | **New song location**. `top` (add to the top) or `bottom` (add to the bottom). |
 
-### VII. Subsonic Protocol Configuration
-
-| Environment Variable Mapping Key (ENV) | System Default Value | Data Type | Scope and Applicable Scenarios |
-| :--- | :--- | :--- | :--- |
-| `SUBSONIC_ENABLE` | `true` | Boolean | **Enable Subsonic protocol**. Allows connections from Subsonic-compatible clients. |
-| `SUBSONIC_PATH` | `'/rest'` | String | **Subsonic access path**. Default is `/rest`. |
-| `SUBSONIC_ENABLE_DEBUG` | `false` | Boolean | **Enable Subsonic debug log mode**. Default is `false`. |
-| `SUBSONIC_ONLINE_SEARCH` | `true` | Boolean | **Enable Subsonic online search**. Supports searching and streaming external online tracks in Subsonic clients. |
-| `SUBSONIC_ONLINE_SEARCH_MODE` | `'fallback'` | String | **Subsonic online search mode**. `fallback`, `merge`, or `local_only`. |
-| `SUBSONIC_ONLINE_SEARCH_SOURCES` | `'wy,tx,kw,kg,mg'` | String | **Subsonic default online search sources**. Comma-separated platform codes. |
-| `SUBSONIC_LYRIC_TRANSLATION` | `true` | Boolean | **Include translations in Subsonic lyrics**. |
-
-### VIII. Business Feature Extension Configuration
+### VI. Business Feature Extension Configuration
 
 | Environment Variable Mapping Key (ENV) | System Default Value | Data Type | Scope and Applicable Scenarios |
 | :--- | :--- | :--- | :--- |
@@ -111,7 +99,7 @@ The underlying periodic polling asynchronous daemon of the service will only be 
 | `CACHE_NAMING_PATTERN` | `'simple'` | String | **Cache file naming pattern**. `simple` or `custom`. |
 | `SYSTEM_ALLOW_UNSAFE_VM` | `false` | Boolean | **Allow unsafe VM custom source scripts**. If enabled, allows running custom source scripts requiring VM sandbox features (use with caution). |
 
-### IX. (Advanced Feature) Silent Preset Accounts in CLI Environment
+### VII. (Advanced Feature) Silent Preset Accounts in CLI Environment
 
 With the pre-declaration strategy at the operating system level, users can statically write accounts into the data persistence layer within the server initialization startup sequence without skipping graphical interface configuration:
 

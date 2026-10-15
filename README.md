@@ -109,16 +109,7 @@
   <img src="md/singer.png" width="400" alt="歌手展示">
 </p>
 
-### 10. Subsonic 协议与全网检索支持
-
-全面适配 Subsonic 协议，支持使用各类 Subsonic 客户端（如音流、Feishin 等）连接并播放本站资源。可通过客户端的音乐目录选择本地、全部在线或指定平台，也可在关键词前使用 `wy:`、`kg:`、`tx:`、`kw:`、`mg:` 指定平台，使用 `all:` / `online:` 或 `local:` 强制全部在线或本地搜索。
-
-<p align="center">
-  <img src="md/subsonic.png" width="400" alt="Subsonic 支持">
-  <img src="md/subsonic-search.png" width="400" alt="Subsonic 在线全网搜索">
-</p>
-
-### 11. 公共曲库与共享收藏
+### 10. 公共曲库与共享收藏
 
 在后台系统配置中开启 **“开启公共收藏和歌曲”** 之后，所有用户（无论未登录或不同账号）均可共同拥有并共享一个公共曲库与公开歌单列表。
 
@@ -300,20 +291,6 @@ npm start
 | `PROXY_ALL_ENABLED`                   | `proxy.all.enabled`                | 是否启用外发请求代理 (针对 Music SDK)                              | `false`          |
 | `PROXY_ALL_ADDRESS`                   | `proxy.all.address`                | 代理地址 (支持 http:// 或 socks5://)                               | -                  |
 | `SINGER_SOURCE_PRIORITY`              | `singer.sourcePriority`            | 歌手信息获取来源优先级 (如 `tx,wy` 或 `wy,tx`)                 | `tx,wy`          |
-| `SUBSONIC_ENABLE`                     | `subsonic.enable`                  | 是否启用 Subsonic 协议支持                                         | `true`           |
-| `SUBSONIC_PATH`                       | `subsonic.path`                    | Subsonic 接口访问路径 (默认为 `/rest`)                              | `/rest`          |
-| `SUBSONIC_PORT`                       | `subsonic.port`                    | Subsonic 独立监听端口 (`0` 为关闭独立端口，与主服务共用端口)       | `0`              |
-| `SUBSONIC_ENABLE_DEBUG`               | `subsonic.enableDebug`             | 是否开启 Subsonic 调试日志模式                                     | `false`          |
-| `SUBSONIC_ONLINE_SEARCH`              | `subsonic.onlineSearch`            | 是否开启 Subsonic 在线全网搜索                                     | `true`           |
-| `SUBSONIC_ONLINE_SEARCH_MODE`         | `subsonic.onlineSearchMode`        | Subsonic 在线搜索模式 (`fallback` / `merge` / `local_only`)        | `fallback`       |
-| `SUBSONIC_ONLINE_SEARCH_SOURCES`      | `subsonic.onlineSearchSources`     | Subsonic 在线搜索默认音源列表                                      | `wy,tx,kw,kg,mg` |
-| `SUBSONIC_PUBLIC_LEADERBOARDS`        | `subsonic.publicLeaderboards`      | 是否开启 Subsonic 公开排行榜 (将在线排行榜映射为只读歌单)          | `true`           |
-| `SUBSONIC_LEADERBOARD_SOURCE`         | `subsonic.leaderboardSource`       | Subsonic 公开排行榜默认音源平台 (仅支持单选, 如 `tx`, `wy` 等)     | `tx`             |
-| `SUBSONIC_LYRIC_TRANSLATION`          | `subsonic.lyricTranslation`        | Subsonic 歌词中是否包含翻译                                        | `true`           |
-| `SUBSONIC_CACHE_ON_PLAY`            | `subsonic.cacheOnPlay`             | Subsonic 播放时是否触发服务器自动缓存保存 (落盘到用户目录)          | `false`          |
-| `SUBSONIC_PLAY_CACHE_FIRST`          | `subsonic.playCacheFirst`          | Subsonic 播放时是否优先使用服务器已有的本地缓存/下载文件直接传输      | `true`           |
-| `SUBSONIC_QUALITY_ENABLED`            | `subsonic.quality.enabled`         | Subsonic 是否开启音质优选                                          | `true`           |
-| `SUBSONIC_QUALITY_PRIORITY`           | `subsonic.quality.priority`        | Subsonic 音质优选优先级列表 (如 `flac,320k,128k`)                  | `flac,320k,128k` |
 | `ARTIST_MAX_FETCH_PAGES`              | `artist.maxFetchPages`             | 歌手歌曲最大抓取页数                                               | `20`             |
 | `CACHE_NAMING_PATTERN`                | `cache.namingPattern`              | 缓存文件命名规则 (`simple` / `custom`)                            | `simple`         |
 | `SYSTEM_ALLOW_UNSAFE_VM`              | `system.allowUnsafeVM`             | 是否允许运行 VM 模式自定义源脚本 (需注意安全风险)                  | `false`          |

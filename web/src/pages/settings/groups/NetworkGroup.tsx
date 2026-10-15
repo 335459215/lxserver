@@ -4,14 +4,15 @@ import { Button, InputField, Stack, SwitchField, useToast } from '@/components/u
 const KEYS = [
   'proxy.all.enabled', 'proxy.all.address',
   'proxy.music.enabled', 'proxy.customSource.enabled', 'proxy.app.enabled',
-  'subsonic.enable', 'subsonic.port', 'subsonic.path',
-  'subsonic.onlineSearch', 'subsonic.onlineSearchMode',
+  // 从「系统 → 代理与安全」按归属搬过来：这两项都是**入站反向代理**相关，
+  // 与上面那组「出站代理」是两件不同的事，此前却被拆在两个菜单里，
+  // 而且系统组把 proxy.enabled 描述成「Music SDK 外发请求代理总开关」
+  // （那是 proxy.all.enabled 的职责），标签是错的。
+  'proxy.enabled', 'proxy.header',
 ] as const
 
 const DEFAULTS: Record<string, unknown> = {
-  'subsonic.port': 0,
-  'subsonic.path': '/rest',
-  'subsonic.onlineSearchMode': 'fallback',
+  'proxy.header': 'x-real-ip',
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -23,7 +24,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-/** 网络组：代理配置（含细分分类） + Subsonic 协议设置。
+/** 网络组：出站代理配置（含细分分类） + 入站反向代理。
  * 注意 music/customSource 在 NAS 上强制直连（needle + tunnel 经代理 ECONNRESET） */
 export default function NetworkGroup() {
   const { toast } = useToast()
@@ -87,42 +88,20 @@ export default function NetworkGroup() {
           </Stack>
         </Section>
 
-        <Section title="Subsonic 协议">
+        <Section title="反向代理（入站）">
           <Stack gap={3}>
             <SwitchField
-              label="启用 Subsonic"
-              description="允许 Subsonic 兼容客户端连接"
-              checked={draft['subsonic.enable'] as boolean}
-              onChange={(v) => set('subsonic.enable', v)}
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <InputField
-                label="独立端口"
-                description="0 = 与主服务共用端口"
-                type="number"
-                value={draft['subsonic.port'] as number}
-                onChange={(v) => set('subsonic.port', Number(v))}
-              />
-              <InputField
-                label="路径"
-                value={draft['subsonic.path'] as string}
-                onChange={(v) => set('subsonic.path', v)}
-                placeholder="/rest"
-                mono
-              />
-            </div>
-            <SwitchField
-              label="在线全网搜索"
-              description="本地无匹配时搜索在线音源"
-              checked={draft['subsonic.onlineSearch'] as boolean}
-              onChange={(v) => set('subsonic.onlineSearch', v)}
+              label="信任反代请求头"
+              description="部署在 Nginx / 群晖反代后面时开启，用于记录真实客户端 IP。配置了「IP 头」后服务端会自动把它置为 true。"
+              checked={draft['proxy.enabled'] as boolean}
+              onChange={(v) => set('proxy.enabled', v)}
             />
             <InputField
-              label="搜索模式"
-              description="fallback（本地优先）/ merge（合并）/ local_only（仅本地）"
-              value={draft['subsonic.onlineSearchMode'] as string}
-              onChange={(v) => set('subsonic.onlineSearchMode', v)}
-              placeholder="fallback"
+              label="真实 IP 头名"
+              description="反代写入客户端真实 IP 的请求头，如 x-real-ip / x-forwarded-for"
+              value={draft['proxy.header'] as string}
+              onChange={(v) => set('proxy.header', v)}
+              placeholder="x-real-ip"
               mono
             />
           </Stack>

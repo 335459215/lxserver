@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -17,6 +17,7 @@ import {
   Laptop,
   Layers,
   ListMusic,
+  Loader2,
   Moon,
   Music2,
   Play,
@@ -24,12 +25,13 @@ import {
   Sparkles,
   Trophy,
 } from 'lucide-react'
-import { Button } from '@/components/ui'
+import { Button, useToast } from '@/components/ui'
 import { useAuth } from '@/lib/auth'
 import {
   useAggregatedLeaderboardBoards,
   useAggregatedLeaderboardSongs,
 } from '@/lib/discover'
+import { searchMusicAggregate } from '@/lib/music'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
 import { downloadSong } from '@/lib/download'
@@ -100,6 +102,23 @@ interface CuratedMix {
   desc: string
   gradient: string
   badgeColor: string
+  /** 点这张卡片时真正拿去搜的关键词。
+   *
+   *  【为什么每张卡必须有自己的关键词】
+   *  此前 `handlePlayMix` **完全忽略传入的 mix**，六张卡一律
+   *  `player.playQueue(topSongs, 0)` —— 也就是不管点哪张，播的都是「今日热播」
+   *  那一批歌。用户的原话是「几个歌单的歌都一样的，这有什么用」，完全属实。
+   *  现在每张卡各自去搜自己的关键词，卡片之间才是真的不同。
+   *
+   *  关键词取的是「在歌名里高频出现、且贴合场景」的词，与下面 MOOD_VIBES
+   *  用的是同一套思路（那七个心情标签本来就用关键词跳搜索页）。
+   *
+   *  【关键词是实测选出来的，不是拍脑袋】
+   *  搜「经典」「怀旧」「经典老歌」在五大平台返回的**第一首都是《吻别》**——
+   *  也就是说这三个词做出来的歌单看起来还是一样。现在的六个词
+   *  （经典 / 流行 / 时光 / 纯音乐 / 晚安 / 摇滚）实测首曲互不相同、结果集基本不重叠。
+   *  改词前请先跑 `.playwright/_probe-mixwords.py` 看一眼首曲会不会撞。 */
+  query: string
 }
 
 const CURATED_MIXES: CuratedMix[] = [
@@ -110,6 +129,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '基于全网五大平台热度与声学品味智能聚合',
     gradient: 'from-indigo-600 via-indigo-700 to-purple-800',
     badgeColor: 'bg-indigo-400/20 text-indigo-100',
+    query: '经典',
   },
   {
     id: 'pop',
@@ -118,6 +138,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '全网华语主流热播与全球流行音乐风向速递',
     gradient: 'from-rose-500 via-pink-600 to-rose-700',
     badgeColor: 'bg-rose-400/20 text-rose-100',
+    query: '流行',
   },
   {
     id: 'nostalgia',
@@ -126,6 +147,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '回响岁月的港台经典与千禧黄金时代流行记忆',
     gradient: 'from-amber-500 via-amber-600 to-orange-700',
     badgeColor: 'bg-amber-400/20 text-amber-100',
+    query: '时光',
   },
   {
     id: 'focus',
@@ -134,6 +156,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '低保真器乐、环境音与纯音，助你深度对焦',
     gradient: 'from-emerald-600 via-teal-700 to-cyan-800',
     badgeColor: 'bg-emerald-400/20 text-emerald-100',
+    query: '纯音乐',
   },
   {
     id: 'night',
@@ -142,6 +165,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '慵懒 R&B、City Pop 与温柔民谣，治愈疲惫心绪',
     gradient: 'from-violet-700 via-purple-800 to-slate-900',
     badgeColor: 'bg-purple-400/20 text-purple-100',
+    query: '晚安',
   },
   {
     id: 'drive',
@@ -150,6 +174,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '强劲节拍与电子浪潮，释放驾驶与运动活力',
     gradient: 'from-cyan-600 via-blue-600 to-indigo-800',
     badgeColor: 'bg-cyan-400/20 text-cyan-100',
+    query: '摇滚',
   },
 ]
 
@@ -233,7 +258,11 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const { auth } = useAuth()
   const player = usePlayer()
+  const { toast } = useToast()
   const { snapshot } = useLists()
+
+  /** 正在解析的甄选卡片 id（用于卡上转圈）。同一时刻只允许点一张，避免并发搜五路。 */
+  const [mixingId, setMixingId] = useState<string | null>(null)
 
   const greeting = useMemo(() => getGreeting(), [])
   const username = auth.user.username || '听众'
@@ -273,12 +302,40 @@ export default function Dashboard() {
     }
   }
 
-  // 播放精选歌单
-  const handlePlayMix = (mix: CuratedMix) => {
-    if (topSongs.length > 0) {
-      player.playQueue(topSongs, 0)
-    } else {
-      navigate(`/search?q=${encodeURIComponent(mix.tag)}`)
+  /** 播放精选歌单：**用这张卡片自己的关键词**去全网搜一批歌再播。
+   *
+   *  之前的实现是 `if (topSongs.length > 0) player.playQueue(topSongs, 0)`，
+   *  压根没用上 mix 参数 —— 六张卡点下去听的是同一批「今日热播」，
+   *  卡片上的标题/描述纯属装饰。现在每张卡搜自己的词，内容才真正不同。
+   *
+   *  搜不到时不静默失败：给一条提示并把人送到搜索页，让他能自己换词。 */
+  const handlePlayMix = async (mix: CuratedMix) => {
+    if (mixingId) return
+    setMixingId(mix.id)
+    try {
+      const songs = await searchMusicAggregate({ name: mix.query })
+      if (songs.length === 0) {
+        toast({
+          title: `「${mix.title}」没搜到歌`,
+          description: `关键词「${mix.query}」在五大平台都没有结果，去搜索页换个词试试`,
+        })
+        navigate(`/search?q=${encodeURIComponent(mix.query)}`)
+        return
+      }
+      player.playQueue(songs, 0)
+      toast({
+        title: `开始播放「${mix.title}」`,
+        description: `共 ${songs.length} 首 · 关键词「${mix.query}」`,
+        variant: 'success',
+      })
+    } catch (e: unknown) {
+      toast({
+        title: '搜索失败',
+        description: e instanceof Error ? e.message : '未知错误',
+        variant: 'destructive',
+      })
+    } finally {
+      setMixingId(null)
     }
   }
 
@@ -347,51 +404,66 @@ export default function Dashboard() {
           icon={Headphones}
         />
         <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
-          {CURATED_MIXES.map((mix) => (
-            <div
-              key={mix.id}
-              onClick={() => handlePlayMix(mix)}
-              className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-line/80 bg-panel p-3 shadow-card transition-all duration-300 hover:-translate-y-1 hover:border-line-strong hover:shadow-pop"
-            >
-              {/* 大封面艺术图 */}
+          {CURATED_MIXES.map((mix) => {
+            const loading = mixingId === mix.id
+            return (
               <div
+                key={mix.id}
+                onClick={() => void handlePlayMix(mix)}
+                aria-busy={loading}
                 className={cn(
-                  'relative flex aspect-square w-full items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-xs overflow-hidden',
-                  mix.gradient,
+                  'group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-line/80 bg-panel p-3 shadow-card transition-all duration-300 hover:-translate-y-1 hover:border-line-strong hover:shadow-pop',
+                  loading && 'pointer-events-none opacity-90',
+                  mixingId && !loading && 'opacity-60',
                 )}
               >
-                {/* 装饰黑胶唱纹与微光 */}
-                <Disc3 className="size-12 opacity-40 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-45" />
-                <span
+                {/* 大封面艺术图 */}
+                <div
                   className={cn(
-                    'absolute left-2.5 top-2.5 rounded-full px-2 py-0.5 text-[10px] font-bold backdrop-blur-md',
-                    mix.badgeColor,
+                    'relative flex aspect-square w-full items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-xs overflow-hidden',
+                    mix.gradient,
                   )}
                 >
-                  {mix.tag}
-                </span>
+                  {/* 装饰黑胶唱纹与微光 */}
+                  <Disc3 className="size-12 opacity-40 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-45" />
+                  <span
+                    className={cn(
+                      'absolute left-2.5 top-2.5 rounded-full px-2 py-0.5 text-[10px] font-bold backdrop-blur-md',
+                      mix.badgeColor,
+                    )}
+                  >
+                    {mix.tag}
+                  </span>
 
-                {/* 悬停一键播放圆钮 */}
-                <button
-                  type="button"
-                  aria-label={`播放 ${mix.title}`}
-                  className="absolute bottom-2.5 right-2.5 flex size-9 translate-y-2 items-center justify-center rounded-full bg-white text-ink opacity-0 shadow-lg transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 hover:scale-105 active:scale-95"
-                >
-                  <Play className="size-4 fill-current translate-x-0.5 text-accent" />
-                </button>
-              </div>
+                  {/* 解析中：盖一层转圈，让「正在搜这批歌」可见（跨五个平台搜索要几秒） */}
+                  {loading && (
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/35 backdrop-blur-[1px]">
+                      <Loader2 className="size-6 animate-spin text-white" />
+                    </span>
+                  )}
 
-              {/* 标题与描述 */}
-              <div className="mt-2.5 flex-1">
-                <span className="block truncate text-sm font-bold text-ink group-hover:text-accent transition-colors">
-                  {mix.title}
-                </span>
-                <span className="mt-0.5 block line-clamp-2 text-[11px] text-faint leading-snug">
-                  {mix.desc}
-                </span>
+                  {/* 悬停一键播放圆钮 */}
+                  <button
+                    type="button"
+                    aria-label={`播放 ${mix.title}`}
+                    className="absolute bottom-2.5 right-2.5 flex size-9 translate-y-2 items-center justify-center rounded-full bg-white text-ink opacity-0 shadow-lg transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 hover:scale-105 active:scale-95"
+                  >
+                    <Play className="size-4 fill-current translate-x-0.5 text-accent" />
+                  </button>
+                </div>
+
+                {/* 标题与描述 */}
+                <div className="mt-2.5 flex-1">
+                  <span className="block truncate text-sm font-bold text-ink group-hover:text-accent transition-colors">
+                    {mix.title}
+                  </span>
+                  <span className="mt-0.5 block line-clamp-2 text-[11px] text-faint leading-snug">
+                    {loading ? `正在全网搜索「${mix.query}」…` : mix.desc}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </section>
 

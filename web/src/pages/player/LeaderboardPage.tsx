@@ -62,7 +62,6 @@ export default function LeaderboardPage() {
               全网聚合
             </span>
           </h1>
-          <p className="mt-0.5 text-sm text-dim">汇聚全网多平台官方权威热度，不分平台直接畅听。</p>
         </div>
       </header>
 

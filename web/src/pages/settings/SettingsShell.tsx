@@ -5,11 +5,9 @@ import { api, isAdmin, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { Button, Input, Stack } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import SystemGroup from './groups/SystemGroup'
 import UsersGroup from './groups/UsersGroup'
 import TokensGroup from './groups/TokensGroup'
 import DataGroup from './groups/DataGroup'
-import AboutGroup from './groups/AboutGroup'
 import LogsGroup from './groups/LogsGroup'
 import PlaybackGroup from './groups/PlaybackGroup'
 import NetworkGroup from './groups/NetworkGroup'
@@ -82,8 +80,6 @@ function AdminGate() {
 function GroupPage() {
   const { group } = useParams()
   switch (group) {
-    case 'system':
-      return <SystemGroup />
     case 'users':
       return <UsersGroup />
     case 'tokens':
@@ -100,14 +96,12 @@ function GroupPage() {
       return <SourcesGroup />
     case 'appearance':
       return <AppearanceGroup />
-    case 'about':
-      return <AboutGroup />
     default:
       // 【为什么是重定向而不是占位文案】
-      // 十个分组已全部实现，走到这里只剩一种情况：用户直接访问 `/settings`
-      // （不带分组）。原先显示「该分组将在阶段 B 的后续切片接入」—— 那是
-      // 迁移期的占位话术，现在**既过时又误导**：它让人以为功能还没做，
-      // 实际只是少了个路由段。直接跳到第一个分组，符合「点设置就该看到内容」的预期。
+      // 走到这里只剩两种情况：用户直接访问 `/settings`（不带分组），
+      // 或者访问了本次已删除的分组（`/settings/system`、`/settings/about` —— 老书签
+      // 或浏览器历史里可能有）。两者都应该落到第一个分组，而不是显示一句
+      // 让人以为「功能还没做」的占位话术。删除的分组由此自然失效，不必单独处理。
       return <Navigate to={`/settings/${SETTINGS_GROUPS[0].key}`} replace />
   }
 }

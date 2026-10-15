@@ -21,7 +21,7 @@ import * as React from 'react'
 // 它给整个站点发 HttpOnly Cookie，与账号体系完全并行。旧版已于 v2.23.0 删除，
 // 新版前端本来就由「登录门」守着（未登录不露任何导航），再加一层播放器密码
 // 只会让用户登录两次。故 playerLogin/playerVerify 及其配置项一并移除。
-// 服务端 `/api/music/auth*` 端点保留（Subsonic/外部工具可能仍在用），只是前端不再调用。
+// 服务端 `/api/music/auth*` 端点保留（外部工具可能仍在用），只是前端不再调用。
 
 const USER_TOKEN_KEY = 'lx.user.token'
 const USER_NAME_KEY = 'lx.user.name'
@@ -56,6 +56,13 @@ export function getUserName(): string {
 export function setUserName(name: string) {
   if (name) localStorage.setItem(USER_NAME_KEY, name)
   else localStorage.removeItem(USER_NAME_KEY)
+}
+
+/** 自定义音源管理接口的归属用户（见下面 `api.sources` 的说明）。
+ *  未登录时退回 `'default'` —— 服务端对 `default` 的处理是「只返回 _open 共享源」，
+ *  是一个安全的降级：宁可少显示，也不会把别的用户的私有源暴露出来。 */
+function sourceOwner(): string {
+  return getUserName() || 'default'
 }
 
 /**
@@ -164,10 +171,44 @@ export const api = {
         enableAutoDownload?: boolean
       }>
     >('/api/users'),
-  backups: () =>
-    adminFetchJson<Array<{ name: string; size: number; time: number; type: 'auto' | 'manual' }>>(
-      '/api/config/backups',
-    ),
+  /**
+   * 配置备份列表。
+   *
+   * 【为什么这里必须解包 `.list`，不能直接把响应当数组返回】
+   * 服务端 `GET /api/config/backups` 返回的是**信封对象**：
+   *   `{ success, backupDir, autoBackupEnabled, retentionDays, list: [...] }`
+   * 而这里原先声明的返回类型是 `Array<...>`，等于对一个对象撒谎。调用方
+   * （DataGroup）按声明去 `(backups ?? []).map(...)`，拿到对象后 `.map` 不存在，
+   * 渲染期抛 `is not a function` → 整棵 React 树被卸载 → 全站白屏。
+   * 修在 API 层而不是调用方：类型声明与运行时形状必须一致，否则每个调用方
+   * 都要各自防一手，漏一个就再炸一次。
+   */
+  backups: async (): Promise<
+    Array<{ name: string; size: number; time: number; type: 'auto' | 'manual' }>
+  > => {
+    const data = await adminFetchJson<{
+      list?: Array<{ name: string; size: number; time: number; type: 'auto' | 'manual' }>
+    }>('/api/config/backups')
+    return Array.isArray(data?.list) ? data.list : []
+  },
+  /**
+   * 自定义音源管理。**所有操作都必须带当前登录用户名**。
+   *
+   * 【为什么不能写死 `default` / `open`（这是一次真实事故）】
+   * 服务端把音源按用户名归属落盘：`data/users/source/<user>/`。而 `handleList`
+   * 里有一句 `(username && username !== 'default')` —— 也就是说：
+   *   - 传 `username=default` → **只返回 `_open` 共享源，用户自己的源一个都不返回**；
+   *   - 传真实用户名      → 返回 `_open` + 该用户的源（合并去重）。
+   * 这里原先固定传 `default`（list）与 `'open'`（增删改），于是拥有 14 个音源的账号
+   * 在「设置 → 音源」里看到的是「暂无音源，点右上角导入」，而同一个账号的歌
+   * 却能正常播放 —— 因为播放链路走的是 `userAuthHeaders()`（带真实用户名），
+   * 只有这个管理页漏了。`userAuthHeaders()` 上面那段注释记的是同一类坑。
+   *
+   * 附带修掉的一个更隐蔽的问题：写操作原先固定发 `username: 'open'`，
+   * 而 `handleToggle` 在 `open` 目录里找不到用户私有源时会直接抛「源不存在」
+   * （它只在 targetOwner !== 'open' 时才回退去查 `_open`）。所以就算列表显示出来了，
+   * 用户也点不动自己那些源的开关。统一传真实用户名后两条路径才自洽。
+   */
   sources: {
     list: () =>
       adminFetchJson<
@@ -181,31 +222,31 @@ export const api = {
           platforms?: string[]
           url?: string
         }>
-      >('/api/custom-source/list?username=default'),
+      >(`/api/custom-source/list?username=${encodeURIComponent(sourceOwner())}`),
     validate: (script: string, allowUnsafeVM = false) =>
       adminFetch('/api/custom-source/validate', {
         method: 'POST',
-        body: JSON.stringify({ script, username: 'open', allowUnsafeVM }),
+        body: JSON.stringify({ script, username: sourceOwner(), allowUnsafeVM }),
       }),
     import: (script: string, allowUnsafeVM = false) =>
       adminFetch('/api/custom-source/import', {
         method: 'POST',
-        body: JSON.stringify({ script, username: 'open', allowUnsafeVM }),
+        body: JSON.stringify({ script, username: sourceOwner(), allowUnsafeVM }),
       }),
     toggle: (id: string, enabled: boolean) =>
       adminFetch('/api/custom-source/toggle', {
         method: 'POST',
-        body: JSON.stringify({ id, enabled, username: 'open' }),
+        body: JSON.stringify({ id, enabled, username: sourceOwner() }),
       }),
     delete: (id: string) =>
       adminFetch('/api/custom-source/delete', {
         method: 'POST',
-        body: JSON.stringify({ id, username: 'open' }),
+        body: JSON.stringify({ id, username: sourceOwner() }),
       }),
     reorder: (sourceIds: string[]) =>
       adminFetch('/api/custom-source/reorder', {
         method: 'POST',
-        body: JSON.stringify({ sourceIds, username: 'open' }),
+        body: JSON.stringify({ sourceIds, username: sourceOwner() }),
       }),
   },
   /**

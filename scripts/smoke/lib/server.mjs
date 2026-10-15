@@ -34,7 +34,6 @@ export async function startServer({ dataPath, logPath, port = 19527, mockPort = 
     FRONTEND_PASSWORD: ADMIN_PASSWORD,
     ENABLE_WEBPLAYER_AUTH: 'false',
     WEBPLAYER_PASSWORD: '',
-    SUBSONIC_ENABLE: 'false',
     WEBDAV_ENABLE: 'false',
     CONFIG_BACKUP_ENABLE: 'false',
     DISABLE_TELEMETRY: 'true',

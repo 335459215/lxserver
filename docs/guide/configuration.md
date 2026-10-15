@@ -90,19 +90,7 @@ LX Music Sync Server 构建了统一的基础模型骨架（位于 `src/defaultC
 | :--- | :--- | :--- | :--- |
 | `LIST_ADD_MUSIC_LOCATION_TYPE` | `top` | String | **新歌添加位置**。可选值为 `top`（添加到列表顶部）或 `bottom`（添加到列表底部）。 |
 
-### 七、 Subsonic 协议配置
-
-| 环境变量映射键 (ENV) | 系统默认值 | 数据类型 | 作用域与适用场景 |
-| :--- | :--- | :--- | :--- |
-| `SUBSONIC_ENABLE` | `true` | Boolean | **启用 Subsonic 协议**。开启后允许使用兼容 Subsonic 协议的客户端连接。 |
-| `SUBSONIC_PATH` | `'/rest'` | String | **Subsonic 访问路径**。默认为 `/rest`。 |
-| `SUBSONIC_ENABLE_DEBUG` | `false` | Boolean | **是否开启 Subsonic 调试日志模式**。默认为 `false`。 |
-| `SUBSONIC_ONLINE_SEARCH` | `true` | Boolean | **是否开启 Subsonic 在线全网搜索**。开启后支持自动在线匹配并播放库外资源。 |
-| `SUBSONIC_ONLINE_SEARCH_MODE` | `'fallback'` | String | **Subsonic 在线搜索模式**。可选值为 `fallback`（回退模式）、`merge`（合并模式）、`local_only`（仅本地）。 |
-| `SUBSONIC_ONLINE_SEARCH_SOURCES` | `'wy,tx,kw,kg,mg'` | String | **Subsonic 在线搜索默认音源列表**。多个音源用英文逗号分割。 |
-| `SUBSONIC_LYRIC_TRANSLATION` | `true` | Boolean | **Subsonic 歌词中是否包含翻译**。开启后在 Subsonic 客户端中请求歌词时将带上翻译。 |
-
-### 八、 业务功能扩展配置
+### 六、 业务功能扩展配置
 
 | 环境变量映射键 (ENV) | 系统默认值 | 数据类型 | 作用域与适用场景 |
 | :--- | :--- | :--- | :--- |
@@ -111,7 +99,7 @@ LX Music Sync Server 构建了统一的基础模型骨架（位于 `src/defaultC
 | `CACHE_NAMING_PATTERN` | `'simple'` | String | **缓存文件命名规则**。可选值为 `simple`（简单规则）或 `custom`（自定义规则）。 |
 | `SYSTEM_ALLOW_UNSAFE_VM` | `false` | Boolean | **是否允许运行 VM 模式自定义源脚本**。开启后允许加载含有高风险 VM 沙箱特性的自定义源脚本（需注意安全风险）。 |
 
-### 九、 (高阶特性) CLI 环境下静默预置账户
+### 七、 (高阶特性) CLI 环境下静默预置账户
 
 借助操作系统层面的预声明策略，用户可以在跳过图形界面配置的情况下，在服务端初始化启动序列内向数据持久层静态写入账户：
 

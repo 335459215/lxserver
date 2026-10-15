@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
 import { Disc3, Download, Loader2, Play, X } from 'lucide-react'
-import { coverUrl, formatTime, intervalToSeconds, sameSong, sourceLabel, type Song } from '@/lib/music'
+import { coverUrl, formatTime, intervalToSeconds, sameSong, songKey, sourceLabel, type Song } from '@/lib/music'
 import { firstSingerName, supportsArtistPages } from '@/lib/discover'
 import { usePlayer } from '@/lib/player'
 import { useToast } from '@/components/ui'
@@ -231,6 +231,27 @@ export interface SongListProps {
 }
 
 /** 曲目列表：自动高亮当前播放曲、显示加载态、支持在线点播与单曲下载 */
+/** 生成「位置无关」且「组内唯一」的 React key。
+ *
+ *  【为什么不能直接用 song.id】
+ *  真实搜索结果里 `id` 是 **null**（各平台统一用的是 `songmid`，见 /api/music/search
+ *  的返回结构），于是 `String(song.id ?? \`${source}-${name}-${i}\`)` 这条旧写法
+ *  永远走回落分支。而回落串里带 index —— 去重后行号整体前移、翻页追加、
+ *  移除某首歌，都会让同一个 DOM 节点换到别的曲目上，表现为列表闪烁、
+ *  正在播放的高亮跳错行。
+ *
+ *  【为什么还要带 index 兜底】
+ *  songKey 是「平台 + songmid」，同一首歌在同一列表里理论上不会重复；
+ *  但歌单确实可能被塞进两条完全相同的曲目（用户手动重复添加），
+ *  那时 key 会撞车并触发 React 警告。加 `#i` 只在这类重复时才起作用，
+ *  正常去重后的列表里它恒定对应同一条曲目，不会引起重挂载。 */
+function listKey(song: Song, seen: Map<string, number>): string {
+  const base = songKey(song) || `${song.source}:${song.name}|${song.singer}`
+  const n = seen.get(base) ?? 0
+  seen.set(base, n + 1)
+  return n === 0 ? base : `${base}#${n}`
+}
+
 export default function SongList({
   songs,
   onPlay,
@@ -243,10 +264,15 @@ export default function SongList({
 }: SongListProps) {
   const player = usePlayer()
 
+  const keys = React.useMemo(() => {
+    const seen = new Map<string, number>()
+    return songs.map((s) => listKey(s, seen))
+  }, [songs])
+
   return (
     <ul className={cn('space-y-1', className)}>
       {songs.map((song, i) => (
-        <li key={String(song.id ?? `${song.source}-${song.name}-${i}`)}>
+        <li key={keys[i]}>
           <SongRow
             song={song}
             index={i}

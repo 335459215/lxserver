@@ -170,35 +170,19 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
         </Link>
       </div>
 
-      {/* 歌单主信息区：Apple Music 风格大画幅 */}
-      <header className="flex flex-col gap-6 md:flex-row md:items-end rounded-3xl border border-line/80 bg-panel p-6 md:p-8 shadow-card">
-        <ListCover songs={playlist.songs} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-accent mb-2">
-            <span>官方歌单</span>
-            <span>·</span>
-            <span>{listId === LIST_LOVE_ID ? '特别收藏' : '自建珍藏'}</span>
-          </div>
-          <h1 className="truncate text-2xl md:text-3xl font-extrabold tracking-tight text-ink">
-            {playlist.name}
-          </h1>
-          <p className="mt-2 text-sm text-dim flex items-center gap-2">
-            <span className="font-semibold text-ink">{playlist.songs.length} 首歌曲</span>
-            {totalSeconds > 0 && (
-              <>
-                <span className="text-faint">·</span>
-                <span>总时长 {formatTotalDuration(totalSeconds)}</span>
-              </>
-            )}
-            {listId === LIST_LOVE_ID && (
-              <>
-                <span className="text-faint">·</span>
-                <span className="text-rose-500 font-medium">心动喜好</span>
-              </>
-            )}
-          </p>
+      {/* 歌单主信息区。
+          布局按用户要求定：**封面在左，三个操作按钮在封面右侧竖向排列，
+          名称/歌曲数/总时长放在封面下方**。
+          上一版是「封面 + 右侧一大段文字（官方歌单 · 自建珍藏 / 标题 / 元信息 / 按钮）」，
+          文字里那句「官方歌单 · 自建珍藏」纯属装饰（所有自建歌单都长这样，
+          不携带任何信息），已按要求删掉；按钮也挪到封面旁边，让封面下方只剩
+          用户真正要看的三样东西。 */}
+      <header className="rounded-3xl border border-line/80 bg-panel p-6 md:p-8 shadow-card">
+        <div className="flex items-start gap-5">
+          <ListCover songs={playlist.songs} />
 
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+          {/* 三个按钮：竖向排列在封面右侧 */}
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
             <Button
               size="lg"
               disabled={!playlist.songs.length}
@@ -206,7 +190,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
                 player.playQueue(playlist.songs, 0)
                 toast({ title: `开始播放「${playlist.name}」`, description: `共 ${playlist.songs.length} 首` })
               }}
-              className="rounded-full px-6 font-semibold shadow-md shadow-accent/20 hover:scale-102 active:scale-95 transition-all"
+              className="w-full justify-center rounded-full px-5 font-semibold shadow-md shadow-accent/20 transition-all hover:scale-102 active:scale-95"
             >
               <Play className="size-4 fill-current mr-1.5" /> 播放全部
             </Button>
@@ -223,7 +207,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
                 player.playQueue(shuffled, 0)
               }}
               disabled={playlist.songs.length < 2}
-              className="rounded-full px-5 font-medium border-line hover:border-line-strong hover:bg-panel-2"
+              className="w-full justify-center rounded-full px-5 font-medium border-line hover:border-line-strong hover:bg-panel-2"
             >
               <RefreshCw className="size-4 mr-1.5" /> 随机播放
             </Button>
@@ -234,7 +218,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
               disabled={!playlist.songs.length || batchDownloading}
               onClick={handleDownloadAll}
               title={`下载本歌单全部 ${playlist.songs.length} 首歌`}
-              className="rounded-full px-5 font-medium border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
+              className="w-full justify-center rounded-full px-5 font-medium border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
             >
               {batchDownloading ? (
                 <>
@@ -251,6 +235,22 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
               )}
             </Button>
           </div>
+        </div>
+
+        {/* 封面下方：只留歌单名称 + 歌曲数量 + 总时长 */}
+        <div className="mt-4 min-w-0">
+          <h1 className="truncate text-2xl md:text-3xl font-extrabold tracking-tight text-ink">
+            {playlist.name}
+          </h1>
+          <p className="mt-2 text-sm text-dim flex items-center gap-2">
+            <span className="font-semibold text-ink">{playlist.songs.length} 首歌曲</span>
+            {totalSeconds > 0 && (
+              <>
+                <span className="text-faint">·</span>
+                <span>总时长 {formatTotalDuration(totalSeconds)}</span>
+              </>
+            )}
+          </p>
         </div>
       </header>
 

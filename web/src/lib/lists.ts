@@ -129,6 +129,51 @@ export async function removeSongsFromPlaylist(listId: string, songIds: string[])
   }
 }
 
+/** 新建一个空歌单，返回新歌单 id。
+ *
+ *  【为什么是「整份读出来 → 加一条 → 整份写回」这么绕】
+ *  服务端**没有**「新建歌单」这种增量接口。`POST /api/user/list` 的语义是
+ *  **整份恢复（restore）**：它先 `allMusicList.clear()`、`userLists = []`，
+ *  再按传入的 defaultList/loveList/userList 重建（见 listDataManage.restore）。
+ *  所以想只加一个歌单，就必须先把当前全量读出来、在 userList 末尾追加一条空歌单、
+ *  再整份写回；漏掉任何一段都会把别的歌单清掉。
+ *
+ *  id 用 `user_<时间戳>`：服务端只要求 id 唯一（userListCreate 里查重），
+ *  带时间戳既避免撞车，排查时也能一眼看出是什么时候建的。 */
+export async function createPlaylist(name: string): Promise<string> {
+  const trimmed = name.trim()
+  if (!trimmed) throw new ListsApiError('歌单名不能为空')
+  const auth = userAuthHeaders()
+  if (!auth['x-user-token']) throw new ListsApiError('歌单属于登录账号，请先登录')
+
+  const res = await fetch('/api/user/list', { headers: auth, cache: 'no-store' })
+  if (res.status === 401) throw new ListsApiError('登录已过期，请重新登录后再建歌单')
+  if (!res.ok) throw new ListsApiError(`读取歌单失败（HTTP ${res.status}）`)
+  const data = (await res.json().catch(() => null)) as RawListData | null
+  if (!data) throw new ListsApiError('读取歌单失败：返回内容不是 JSON')
+
+  const id = `user_${Date.now()}`
+  const next = {
+    defaultList: data.defaultList ?? [],
+    loveList: data.loveList ?? [],
+    userList: [
+      ...(data.userList ?? []).map((l) => ({ ...l, list: l.list ?? [] })),
+      { id, name: trimmed, list: [] as Song[] },
+    ],
+  }
+
+  const put = await fetch('/api/user/list', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify(next),
+  })
+  if (!put.ok) {
+    const msg = await put.text().catch(() => '')
+    throw new ListsApiError(msg || `新建歌单失败（HTTP ${put.status}）`)
+  }
+  return id
+}
+
 /** 歌单曲目的稳定 key（id 优先，回落 平台+歌名+歌手） */
 export function songKeyOf(song: Song, index: number): string {
   return String(song.id ?? `${song.source}-${song.name}-${song.singer}-${index}`)

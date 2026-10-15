@@ -537,11 +537,62 @@ const recordSourceResult = (apiId: string, ok: boolean) => {
 /** 供解析器在「音源返回了不可用的链接」时上报——这类源不会抛异常，只能由外部记账 */
 export const reportSourceResult = (apiId: string, ok: boolean) => recordSourceResult(apiId, ok)
 
+// === 音源测速 ===
+//
+// 【为什么需要】熔断只回答「这个源能不能用」，不回答「用起来快不快」。
+// 一个稳定返回 200、但 TTFB 三秒起步的源永远不会被熔断（它没失败），
+// 却是「点歌后一直转圈」的典型元凶。播放链路此前完全没有速度概念，
+// 因此无法把这类源降级到更快的备用源后面。
+//
+// 【为什么不增加任何延迟】测量搭在**已有的链接可用性探测**上顺带完成：
+// 那段探测本来就要等一个响应回来，这里只是给等待计时，不额外发请求、
+// 不额外等待。关掉校验（music.url.validate=false）时不探测，也就没有速度数据，
+// 此时排序回落到原有的优先级语义。
+//
+// 【为什么用 EMA 而不是平均】音源速度波动很大（同一条 CDN 在高峰期能差十倍）。
+// 简单平均会被历史极值长期拖住，EMA 让近期样本占更大权重，
+// 源变快/变慢能在几次播放内反映出来。
+const sourceSpeed = new Map<string, number>()
+const SPEED_ALPHA = 0.35
+
+/** 记一次实测耗时（毫秒）。apiId 为空或耗时不合理时忽略。 */
+export const recordSourceSpeed = (apiId: string, ms: number) => {
+  if (!apiId) return
+  if (!Number.isFinite(ms) || ms <= 0 || ms > 60_000) return
+  const prev = sourceSpeed.get(apiId)
+  sourceSpeed.set(apiId, prev === undefined ? ms : prev * (1 - SPEED_ALPHA) + ms * SPEED_ALPHA)
+  // 上限保护：源被大量增删时不让这张表无限增长
+  if (sourceSpeed.size > 500) {
+    const it = sourceSpeed.keys()
+    for (let i = 0; i < 100; i++) {
+      const k = it.next()
+      if (k.done) break
+      sourceSpeed.delete(k.value)
+    }
+  }
+}
+
+/** 取该源的平滑耗时（毫秒）；无样本返回 null（调用方据此判定「未知」）。 */
+export const getSourceSpeed = (apiId: string): number | null => sourceSpeed.get(apiId) ?? null
+
+/** 快照，供诊断接口展示 */
+export const snapshotSourceSpeeds = (): Array<{ sourceId: string, ms: number }> =>
+  [...sourceSpeed.entries()]
+    .map(([sourceId, ms]) => ({ sourceId, ms: Math.round(ms) }))
+    .sort((a, b) => a.ms - b.ms)
+
+/** 音源被增删改或重载时作废速度样本（换了脚本，旧速度不再代表新行为） */
+export const resetAllSourceSpeeds = () => { sourceSpeed.clear() }
+
+/** 是否启用「同优先级内按实测速度微调顺序」 */
+const orderSpeedTuneEnabled = () => global.lx.config['music.url.speedTune'] !== false
+
 /** 供后台「测试音源」成功后解除该源的熔断状态 */
 export const resetSourceBreaker = (apiId: string) => { sourceBreakers.delete(apiId) }
 
-/** 自定义源被增删改或重新加载时整体作废熔断状态 */
-export const resetAllSourceBreakers = () => { sourceBreakers.clear() }
+/** 自定义源被增删改或重新加载时整体作废熔断状态。
+ *  同时清掉速度样本：换了脚本之后，旧速度不再代表这个源的新行为。 */
+export const resetAllSourceBreakers = () => { sourceBreakers.clear(); sourceSpeed.clear() }
 
 export interface MusicUrlRaceOptions {
     /** 外层置 true 后，内部竞速立刻停止发起新的候选并尽快返回——
@@ -786,6 +837,35 @@ export async function callUserApiGetMusicUrl(
                 const ia = idToIndex.has(a.info.id) ? idToIndex.get(a.info.id)! : 999999
                 const ib = idToIndex.has(b.info.id) ? idToIndex.get(b.info.id)! : 999999
                 return ia - ib
+            })
+        }
+
+        // === 测速微调：同优先级内把快的源排前面 ===
+        //
+        // 【为什么只做「同优先级内」的微调，而不是全局按速度排序】
+        // order.json 是用户显式表达的偏好（「我就想先用这个源」）。用实测速度
+        // 去覆盖它，等于替用户改配置 —— 一旦测速样本受网络抖动影响，
+        // 用户会发现自己的排序莫名失效。所以只处理 order.json **没表态**的那部分：
+        // 两个源同在排序表里时按表来；都不在表里（或名次相同）时才用速度决定先后。
+        //
+        // 【为什么缺样本的排前面】
+        // 没有样本 = 还没被探过 = 可能是个刚加进来的好源。把它沉底会形成
+        // 「没样本→排后面→永远不被选中→永远没样本」的死循环。
+        if (orderSpeedTuneEnabled()) {
+            const rankOf = (id: string) => {
+                const idx = orderData.indexOf(id)
+                return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
+            }
+            candidates.sort((a: any, b: any) => {
+                const ra = rankOf(a.info.id)
+                const rb = rankOf(b.info.id)
+                if (ra !== rb) return ra - rb          // order.json 说了算
+                const sa = sourceSpeed.get(a.info.id)
+                const sb = sourceSpeed.get(b.info.id)
+                if (sa === undefined && sb === undefined) return 0
+                if (sa === undefined) return -1        // 无样本优先，给它一次机会
+                if (sb === undefined) return 1
+                return sa - sb
             })
         }
     }

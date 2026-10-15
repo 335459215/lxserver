@@ -69,7 +69,7 @@ const config: LX.Config = {
   // Web播放器配置
   // 【v2.25.0 已删除 'player.enableAuth' / 'player.password'】
   // 那是给旧版播放器（挂在 / 的静态页）做的 Cookie 门禁。旧版已于 v2.23.0 删除，
-  // 新版前端由登录门守着，且这两项**没有任何调用方**（Subsonic 用的是自己的账号体系）。
+  // 新版前端由登录门守着，且这两项**没有任何调用方**。
   // 保留一个空配置项只会让「到底哪套在生效」变得难以判断。
 
   // 代理配置
@@ -97,36 +97,6 @@ const config: LX.Config = {
   // 访问路径配置
   'admin.path': '/admin', // 后台管理路径
   'player.path': '/', // 播放器路径，默认为根路径 /
-  'subsonic.enable': true, // 是否启用 Subsonic 服务
-  'subsonic.path': '/rest', // Subsonic 访问路径
-  'subsonic.port': 0, // Subsonic 独立端口: 0=不启用(走主端口 subsonic.path); >0 时单独监听该端口, 只允许通过 Subsonic 鉴权的用户访问
-  'subsonic.enableDebug': false, // 是否开启 Subsonic 调试日志模式
-  'subsonic.onlineSearch': true, // 是否开启 Subsonic 在线全网搜索
-  'subsonic.onlineSearchMode': 'fallback', // 在线搜索模式: fallback | merge | local_only
-  'subsonic.onlineSearchSources': 'wy,tx,kw,kg,mg', // 在线搜索默认平台
-  'subsonic.publicLeaderboards': false, // 是否在 Subsonic 中公开在线排行榜(只读虚拟播放列表)
-  'subsonic.leaderboardSource': 'tx', // 在线排行榜平台: tx | wy | kg | kw | mg
-  'subsonic.sharedListMode': 'leaderboard', // 共享歌单内容模式: leaderboard | playlist | both
-  'subsonic.sharedListSort': 'hot', // 共享歌单排序: hot | new
-  'subsonic.dislikeRating': 1, // 评分联动 dislike 阈值: 0 < rating <= 该值 视为不喜欢(写回原生 dislike 规则); 设为 0 关闭联动
-  'subsonic.linkRatingToDislike': false, // 解耦开关(正向): 评星 -> 不喜欢 是否自动联动; false=不联动(仅记录评分)
-  'subsonic.linkDislikeToRating': false, // 解耦开关(反向): 不喜欢 -> 评星 是否自动联动; false=不联动(仅记录不喜欢)
-  'subsonic.hideDisliked': true, // 是否在 Subsonic 列表中隐藏 dislike 命中的歌曲(关闭则只评分不剔除)
-  'subsonic.dislikeCrossSource': false, // dislike 是否跨平台同名命中(各平台 ID 不互通, 开启会误伤同名歌手/专辑)
-  'subsonic.dislikeNoRecommend': true, // 推荐类接口(每日推荐/随机/相似)是否排除 dislike 歌曲(与 hideDisliked 独立)
-  'subsonic.dislikeDuetMode': 'any', // 合唱歌曲匹配模式: any=任一歌手命中 / all=全部命中 / primary=仅主唱
-  'subsonic.dislikeNormalizeName': true, // 歌名去版本后缀归一化: 「晴天 (Live)」也能命中「晴天」规则
-  'subsonic.dislikeRequireSinger': true, // 歌曲/专辑级别都要求歌手同时匹配(关闭则纯歌名规则可单独命中, 会误杀同名)
-  'subsonic.recommendPoolSize': 100, // 推荐池容量: 专辑列表可翻页数 ≈ 容量 / size
-  'subsonic.lyricTranslation': true, // 是否在 Subsonic 歌词中包含翻译
-  'subsonic.cacheOnPlay': false, // 是否在 Subsonic 播放时触发服务器缓存保存（落盘）
-  'subsonic.playCacheFirst': true, // 是否在 Subsonic 播放时优先使用服务器已有的本地缓存/下载文件直接传输
-  'subsonic.quality.enabled': true, // 音质优选总开关: 按优先级主动选最优可用音质(非失败降级); 关闭则 stream 仅单次解析
-  'subsonic.quality.priority': 'flac,320k,128k', // 音质优先级(从高到低, 逗号分隔), 按此顺序主动优选
-  'subsonic.quality.clientCapMode': 'soft', // 客户端 maxBitrate 上界模式: hard 仅选≤上限的最高优先级; soft 上限内都取不到再突破上限选更高优先级
-  'subsonic.source.priority': 'kw,tx,wy,mg,kg', // 跨平台优选顺序(逗号分隔, 客户端所选源始终优先)
-  'subsonic.source.crossPlatform': true, // 是否允许跨平台优选(按歌名+歌手在其它平台搜索替身)
-  'subsonic.source.autoSwitchCustom': true, // 同源是否切换其它自定义源脚本(callUserApiGetMusicUrl 内部循环同平台候选脚本)
   'music.url.crossPlatform': true, // 不分平台解析: 按歌名+歌手在其它有自定义源的平台并发搜替身
   'music.url.race': true, // 自定义源并发竞速(关闭则回退按 order.json 串行轮询)
   'music.url.raceStagger': 180, // 竞速错峰间隔(ms)
@@ -141,10 +111,7 @@ const config: LX.Config = {
   'music.url.breakerEnabled': true, // 死源熔断
   'music.url.breakerThreshold': 3, // 连续失败达到该次数后熔断
   'music.url.breakerCooldown': 300, // 熔断冷却时长(秒)
-  'subsonic.transcode.enabled': false, // 服务端转码总开关(需安装 ffmpeg);音源无客户端请求音质时降码率转发以省客户端流量
-  'subsonic.transcode.onQualityMiss': true, // 仅音源缺失对应低音质时才转码;关闭则永不转码
-  'subsonic.transcode.format': 'mp3', // 转码目标格式: mp3 | opus | aac
-  'subsonic.transcode.maxConcurrent': 2, // 转码并发上限,防 CPU 过载
+  'music.url.speedTune': true, // 同优先级内按实测响应速度微调音源顺序(不覆盖 order.json 的显式排序)
   'singer.sourcePriority': ['tx', 'wy'], // 歌手信息源优先级
   'artist.maxFetchPages': 20, // 歌手歌曲最大抓取页数
   'cache.namingPattern': 'simple', // 缓存命名规则

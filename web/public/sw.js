@@ -98,10 +98,9 @@ self.addEventListener('fetch', (event) => {
   // 红线 3：跨域（封面 CDN 等）一律放行
   if (url.origin !== self.location.origin) return
 
-  // 红线 1：接口、Subsonic、同步握手协议、动态配置绝不缓存
+  // 红线 1：接口、同步握手协议、动态配置绝不缓存
   if (
     url.pathname.startsWith('/api/') ||
-    url.pathname.startsWith('/rest/') ||
     url.pathname === '/hello' ||
     url.pathname === '/id' ||
     url.pathname === '/ah' ||

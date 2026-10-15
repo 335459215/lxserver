@@ -5,7 +5,7 @@ import { normalizeText, normalizeSongName } from '@/server/utils/songVersion'
 /**
  * dislike 规则匹配（lxserver 通用）
  *
- * 面向 Subsonic / 推荐 / web 等所有消费方，统一判定一首歌是否命中不喜欢规则。
+ * 面向推荐 / web 等所有消费方，统一判定一首歌是否命中不喜欢规则。
  * 三个维度：歌曲（歌名@歌手）、歌手（@歌手）、专辑（!<source>:<albumId>@<singer>）。
  */
 
