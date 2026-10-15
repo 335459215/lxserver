@@ -14,7 +14,7 @@
  * （"Source kw does not support singer search" / "Cannot read properties of undefined"）。
  * 故所有入口都要先过 `supportsArtistPages()`，不要在这两个平台之外渲染链接，否则就是死链。
  */
-import { MusicApiError, type Song } from '@/lib/music'
+import { MusicApiError, dedupeSongs, type Song } from '@/lib/music'
 import { getJson, useAsyncResource, type AsyncResource } from '@/lib/asyncResource'
 
 // 通用异步资源已抽到 lib/asyncResource.ts（本地音乐也要用）。
@@ -243,24 +243,23 @@ export function useAggregatedLeaderboardSongs(
       return { total: 0, list: [] }
     }
 
-    // 智能去重与交织轮询（Round-Robin）合并
-    const merged: Song[] = []
-    const seen = new Set<string>()
+    // 交织轮询（Round-Robin）合并，再去重。
+    //
+    // 【为什么改用 dedupeSongs 而不是本地 Set(键)】
+    // 这里原本用的是 `name.toLowerCase()_singer.toLowerCase()` 做键 ——
+    // 与搜索页修掉的那个是同一类问题：各平台对全角括号、feat 子句、
+    // 歌手顺序、以及「CoCo李玟 / 李玟」的写法都不统一，整串相等判不出重复。
+    // 榜单是跨平台聚合的（页面上写着「全网聚合」），重复率只会比搜索更高。
+    // 统一走 dedupeSongs，语义与搜索页保持一致：歌手集合有交集即同曲。
+    const interleaved: Song[] = []
     const maxLen = Math.max(...lists.map((l) => l.length))
-
     for (let i = 0; i < maxLen; i++) {
       for (const list of lists) {
-        if (i < list.length) {
-          const song = list[i]
-          const key = `${(song.name || '').trim().toLowerCase()}_${(song.singer || '').trim().toLowerCase()}`
-          if (!seen.has(key)) {
-            seen.add(key)
-            merged.push(song)
-          }
-        }
+        if (i < list.length) interleaved.push(list[i])
       }
     }
 
+    const merged = dedupeSongs(interleaved)
     return { total: totalCount || merged.length, list: merged }
   })
 }
