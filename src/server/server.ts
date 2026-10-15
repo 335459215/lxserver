@@ -6989,6 +6989,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             'music.url.breakerEnabled': global.lx.config['music.url.breakerEnabled'] ?? true,
             'music.url.breakerThreshold': global.lx.config['music.url.breakerThreshold'] ?? 3,
             'music.url.breakerCooldown': global.lx.config['music.url.breakerCooldown'] ?? 300,
+            'music.url.speedTune': global.lx.config['music.url.speedTune'] ?? true,
             'singer.sourcePriority': (global.lx.config['singer.sourcePriority'] || ['tx', 'wy']).join(','),
             'artist.maxFetchPages': global.lx.config['artist.maxFetchPages'] ?? 20,
             'system.allowUnsafeVM': global.lx.config['system.allowUnsafeVM'] || false,
@@ -7190,6 +7191,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               if (newConfig['music.url.breakerEnabled'] !== undefined) global.lx.config['music.url.breakerEnabled'] = !!newConfig['music.url.breakerEnabled']
               if (newConfig['music.url.breakerThreshold'] !== undefined && !Number.isNaN(Number(newConfig['music.url.breakerThreshold']))) global.lx.config['music.url.breakerThreshold'] = Number(newConfig['music.url.breakerThreshold'])
               if (newConfig['music.url.breakerCooldown'] !== undefined && !Number.isNaN(Number(newConfig['music.url.breakerCooldown']))) global.lx.config['music.url.breakerCooldown'] = Number(newConfig['music.url.breakerCooldown'])
+              if (newConfig['music.url.speedTune'] !== undefined) global.lx.config['music.url.speedTune'] = !!newConfig['music.url.speedTune']
               if (newConfig['singer.sourcePriority'] !== undefined) {
                 const priority = String(newConfig['singer.sourcePriority']).split(',').filter(s => s === 'tx' || s === 'wy') as Array<'tx' | 'wy'>
                 if (priority.length > 0) global.lx.config['singer.sourcePriority'] = priority
@@ -7279,6 +7281,7 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
                 'music.url.breakerEnabled': global.lx.config['music.url.breakerEnabled'],
                 'music.url.breakerThreshold': global.lx.config['music.url.breakerThreshold'],
                 'music.url.breakerCooldown': global.lx.config['music.url.breakerCooldown'],
+                'music.url.speedTune': global.lx.config['music.url.speedTune'],
                 'configBackup.enable': global.lx.config['configBackup.enable'],
                 'configBackup.retentionDays': global.lx.config['configBackup.retentionDays'],
                 'configBackup.dir': global.lx.config['configBackup.dir'],
