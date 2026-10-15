@@ -181,6 +181,23 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   /** 由下面的 recoverFromAudioFailure 填充；挂载期的事件监听通过它回调 */
   const recoverRef = React.useRef<() => void>(() => {})
 
+  /** 「卡死看门狗」定时器。
+   *
+   *  【为什么需要它，光有 error 事件不够】
+   *  `error` 只在链接**明确失败**时触发（404/格式不支持/连接被拒）。
+   *  但更常见的一类坏源是**连得上、就是慢**：连接正常建立、服务端也不报错，
+   *  只是迟迟不吐数据。此时 `<audio>` 会一直停在 `waiting` 状态 ——
+   *  既不触发 error，也不触发 canplay，界面永远转圈。
+   *  因为连接是活的，服务端那套「链接探测 + 熔断」也抓不到它
+   *  （探测只看能不能拿到响应码，不看传得快不快）。
+   *  结果就是用户看到「一直缓冲」，而系统认为一切正常、永远不会换源。
+   *
+   *  这里做客户端唯一能做的事：等待超时后主动判它不可用，
+   *  走既有的换源恢复流程（排除这个源、重新解析）。
+   *  时长取 20s —— 比任何合理网络的首次缓冲都宽，又短到用户还愿意等。 */
+  const stallTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const STALL_TIMEOUT_MS = 20_000
+
   /** 本次「正在播」已经上报过历史的曲目 key。
    *
    *  做这层守卫是因为 `play` 事件会重复触发（暂停后恢复、缓冲后重播、
@@ -203,6 +220,50 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const patch = React.useCallback((p: Partial<PlayerState>) => {
     setState((s) => ({ ...s, ...p }))
   }, [])
+
+  /** 起/重置「卡死看门狗」。见 stallTimerRef 的说明。
+   *
+   *  判定条件刻意保守 —— 只有同时满足下面全部条件才判死，避免误杀：
+   *    - 仍在**等待数据**的状态（loading = 正在起播、playing = 播着播着卡住了）
+   *    - 还没拿到可播数据（ready === false）
+   *    - audio.readyState < 3（HAVE_FUTURE_DATA；>=3 说明数据够了，只是播得慢）
+   *
+   *  【为什么必须把 'loading' 也算进来】
+   *  第一版只认 'playing'，结果看门狗**永远不会触发**：
+   *  loadAndPlay 期间状态是 'loading'（patch({status:'loading'}) 在前），
+   *  而慢源根本不会走到 onPlay 把状态翻成 'playing' ——
+   *  于是「点了歌一直转圈」这个最该被救的场景恰好被漏掉。
+   *  （实测见 .playwright/_verify-stall.py：注入黑洞地址后 40s 内毫无反应。）
+   *
+   *  【为什么不认 paused/idle/error】
+   *  paused 有两种来源：用户主动暂停、以及自动播放被浏览器拦截
+   *  （play() reject → patch({status:'paused'})）。这两种都不该被自动换源打扰。
+   *  error 态已经走过换源流程，再触发会重复。 */
+  const STALL_WATCHABLE: PlaybackStatus[] = ['loading', 'playing']
+  const armStallWatchdog = React.useCallback(() => {
+    if (stallTimerRef.current) clearTimeout(stallTimerRef.current)
+    stallTimerRef.current = setTimeout(() => {
+      stallTimerRef.current = null
+      const s = stateRef.current
+      if (s.ready || !STALL_WATCHABLE.includes(s.status)) return
+      const el = audioRef.current
+      if (!el || el.readyState >= 3) return
+      setState((prev) => ({
+        ...prev,
+        error: prev.error ?? '音源响应太慢，正在换源重试…',
+        ready: false,
+      }))
+      recoverRef.current()
+    }, STALL_TIMEOUT_MS)
+  }, [])
+
+  const clearStallWatchdog = React.useCallback(() => {
+    if (stallTimerRef.current) {
+      clearTimeout(stallTimerRef.current)
+      stallTimerRef.current = null
+    }
+  }, [])
+
   // ===== 音频元素事件绑定（只绑一次）=====
   React.useEffect(() => {
     const el = audioRef.current
@@ -218,17 +279,28 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const onPlay = () => {
       // 真的播起来了：清掉本曲的自动换源计数，后续再失败仍有重试额度
       audioFailRef.current = { key: songKey(stateRef.current.current), count: 0 }
+      // 也清掉卡死看门狗：能播起来就说明这个源是好的（慢一点但能出数据）
+      clearStallWatchdog()
       setState((s) => (s.status === 'playing' ? s : { ...s, status: 'playing', error: null }))
       reportPlayback(stateRef.current.current)
     }
     const onPause = () =>
       setState((s) => (s.status === 'idle' || s.status === 'error' ? s : { ...s, status: 'paused' }))
-    const onWaiting = () => setState((s) => (s.status === 'playing' ? { ...s, ready: false } : s))
-    const onCanPlay = () => setState((s) => (s.ready ? s : { ...s, ready: true }))
+    const onWaiting = () => {
+      setState((s) => (s.status === 'playing' ? { ...s, ready: false } : s))
+      // 缓冲中且尚无可用数据 → 起表。已在播时拖进度条也会触发 waiting，
+      // 但那种情况 ready 已为 true，armStallWatchdog 内部会自我否决。
+      if (!stateRef.current.ready) armStallWatchdog()
+    }
+    const onCanPlay = () => {
+      clearStallWatchdog()
+      setState((s) => (s.ready ? s : { ...s, ready: true }))
+    }
     const onErr = () => {
       // 媒体元素自身错误 = 这条链接不可播（失效/格式不支持/源站返回非音频）
       // 不直接落 error 态：交给自动换源重试，把刚失败的源排除掉再解析一次
       // （对齐旧版播放器的「播放失败自动恢复」）
+      clearStallWatchdog()
       setState((s) => ({
         ...s,
         error: s.error ?? '音频加载失败，正在换源重试…',
@@ -254,8 +326,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       el.removeEventListener('waiting', onWaiting)
       el.removeEventListener('canplay', onCanPlay)
       el.removeEventListener('error', onErr)
+      // 看门狗必须一并清掉：否则它会在组件卸载后触发，
+      // 那时 recoverRef 里的 setState 已经落到一个不存在的组件上
+      clearStallWatchdog()
     }
-  }, [])
+  }, [armStallWatchdog, clearStallWatchdog])
 
   // 音量/静音同步到元素
   React.useEffect(() => {
@@ -366,6 +441,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
           el.src = result.url
           el.load()
+          // 设置 src 后立即起表，而不是等 `waiting` 事件。
+          // 慢源在拿到第一个字节前可能**根本不触发 waiting**（连接建立中），
+          // 只靠事件起表会漏掉最典型的「点了歌一直转圈」那一类。
+          armStallWatchdog()
           try {
             await el.play()
           } catch {
