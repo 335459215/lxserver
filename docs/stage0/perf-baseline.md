@@ -3,6 +3,11 @@
 > 测量对象：`public/music/` 播放器（挂在 `/`）+ `public/` 后台（挂在 `/admin/`）。
 > 测量方式：`node scripts/smoke/run.mjs --surface old --only perf`（用例见 `scripts/smoke/cases/perf.cases.mjs`）。
 > 采集时间：2026-10-05，Node v25.6.0，无头 Chromium，本机回环（非 NAS）；数字用于纵向对比，绝对值随机器浮动。
+>
+> ⚠️ **本文是历史基线，不是当前性能数据。** 2026-10-16（v2.27.6）核实：
+> 被测量的旧前端（`public/music/**`、`public/index.html`、`public/app.js`）**已全部删除**，
+> 现为 `web/` 的 React 前端（构建产物 `public/app/`，带 gzip/brotli 预压缩）。
+> 因此下表数字**无法用 `--surface old` 复现**，仅作为"旧版有多重"的历史对照。
 
 ## 一、实测数据（旧前端，阶段 0 基线）
 

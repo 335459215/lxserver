@@ -8,6 +8,12 @@
 > 且每项都要能由冒烟测试或人工步骤判定通过与否——判定不了的项不算完成。
 >
 > 逐项明细（含旧实现 file:line）：[`feature-detail-player.md`](feature-detail-player.md)、[`feature-detail-admin.md`](feature-detail-admin.md)
+>
+> ⚠️ **2026-10-16（v2.27.6）核实**：本文引用的旧前端
+> （`public/music/**`、`public/index.html`、`public/app.js`）**已全部删除**，
+> 现由 `web/` 的 React 前端取代。因此文中所有 `index.html:NNN` / `app.js:NNN`
+> 行号都已失效。**契约本身仍然有效**（"新前端要能验收这些能力"），
+> 失效的只是"旧实现在哪一行"这类定位信息。
 
 难度：`低`=静态或纯展示 / `中`=有状态或需联调 / `高`=复杂交互、音频链路、ID3、协议
 

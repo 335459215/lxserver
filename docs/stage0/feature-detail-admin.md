@@ -2,8 +2,20 @@
 
 > 对应契约 [`feature-inventory.md`](feature-inventory.md) 的展开。
 > `index.html`/`app.js` 指 `public/` 根下的后台壳（`public/index.html`、`public/app.js`）。
-> 断点：style.css 使用 640 / 768 / 900 / 1024 / 1200 px（**与播放器断点不一致，见缺陷台账 D-07**）。
+> 断点：style.css 使用 640 / 768 / 900 / 1024 / 1200 px（**与播放器断点不一致，见缺陷台账 D-007**）。
 > 勘查时间：2026-10-05，commit `191edb0`。
+>
+> ⚠️ **本文是历史快照，不是现行实现说明。**
+> 2026-10-16（v2.27.6）核实：`public/index.html`、`public/app.js`、`public/style.css`
+> 与整个 `public/music/**` **均已删除**，后台已由 `web/` 的 React 前端（`/settings` 路由）
+> 取代。因此本文所有 `index.html:NNN` / `app.js:NNN` 行号**都已失效**。
+> 保留它的价值在于：它是「旧后台有哪些能力」的完整清单，是重构「没丢功能」的比对基准
+> （契约来源见 [`README.md`](README.md)）。
+> 需要看**当前**实现请读 `web/src/pages/settings/`；需要看**当前**配置键请读
+> [`config-keys.md`](config-keys.md)（已更新至 v2.27.6）。
+>
+> 文中第 65、66、67、68 项是 Subsonic 协议配置卡，**该功能已于 v2.27.0 整体删除**，
+> 此处保留为历史记录。
 
 | # | 功能 | 入口/位置 | 说明 | 桌面 | 移动 | 难度 |
 |---|---|---|---|---|---|---|

@@ -2,17 +2,31 @@
 
 > 规则（来自重构计划）：**移植过程中发现的缺陷只记录，不顺手改**。每个缺陷单独排期，
 > 修复时先在这里登记，避免同一问题在新前端里复活。
-> 状态：`待排期` / `修复中` / `已修复(附提交)` / `不修(附理由)`。
+> 状态：`待排期` / `修复中` / `已修复(附提交)` / `不修(附理由)` / `随实现消失`。
+>
+> **2026-10-16 更新（v2.27.6）**：旧版前端（`public/music/**`、`public/index.html`、
+> `public/app.js`）与 `src/server/subsonic.ts` 均已删除，新前端为 `web/`（React）。
+> 因此凡引用这些路径的缺陷，**要么随实现消失，要么需重新定位**——见下表状态列。
 
 | 编号 | 位置 | 一句话 | 严重度 | 状态 |
 |---|---|---|---|---|
-| D-001 | `public/music/js/batch_pagination.js:523` | `goToPage is not defined`，加载即抛错并中断后续 export，分页控件全废 | 高 | 待排期 |
-| D-002 | `public/music/js/dislike_manager.js:77` | 首屏 dislike 偶发 401，控制台报错（用户态未就绪就发请求） | 中 | 待排期 |
-| D-003 | `src/server/customSourceHandlers.ts` + 用户 sources.json | 自定义源 `lx.send` 写成三参会**静默丢 sources**，自愈逻辑再把 `sources.json` 覆写成 `[]` | 高 | 待排期 |
-| D-004 | `src/modules/utils/musicSdk/kw/musicSearch.js:100-108` + `server.ts:5758` | kw 空页/越界页 → 重试 3 次后抛 `try max num` → 搜索接口整体 500 | 中 | 待排期 |
-| D-005 | `/api/music/url` 成功响应 | 成功路径不返回 `attempts`，换源过程不可观测 | 中 | 待排期 |
+| D-001 | `public/music/js/batch_pagination.js:523` | `goToPage is not defined`，加载即抛错并中断后续 export，分页控件全废 | 高 | 随实现消失（旧前端已删） |
+| D-002 | `public/music/js/dislike_manager.js:77` | 首屏 dislike 偶发 401，控制台报错（用户态未就绪就发请求） | 中 | 随实现消失（旧前端已删） |
+| D-003 | `src/server/customSourceHandlers.ts` + 用户 sources.json | 自定义源 `lx.send` 写成三参会**静默丢 sources**，自愈逻辑再把 `sources.json` 覆写成 `[]` | 高 | 待排期（**仍需处理**，文件仍在） |
+| D-004 | `src/modules/utils/musicSdk/kw/musicSearch.js:100-108` + `server.ts:5758` | kw 空页/越界页 → 重试 3 次后抛 `try max num` → 搜索接口整体 500 | 中 | 待排期（**仍需处理**，文件仍在） |
+| D-005 | `/api/music/url` 成功响应 | 成功路径不返回 `attempts`，换源过程不可观测 | 中 | 已修复（musicResolver 现返回 `attempts`） |
 | D-006 | `/api/config` POST 错误分支 | 出错只回 `Server Error`，无任何细节 | 低 | 待排期 |
 | D-007 | `serveStatic` 静态资源 | 每次请求重读文件 + 重压 gzip，无缓存 | 中 | 阶段 A 一并处理 |
+| D-008 | `src/server/subsonic.ts:539,718-722` | Subsonic 单例可变字段跨请求共享（原文档记作 D-05） | 中 | 随实现消失（`subsonic.ts` 已删） |
+| D-009 | 后台「需重启」提示 | 改了只在 `startServer()` 消费的键（`port`/`bindIP`/`cache.namingPattern`/`serverCacheLocation`）却没有任何提示 | 低 | **待排期**（新前端无「重启」提示，问题完整存在） |
+
+> **说明**：原文档正文里出现过 `D-05` 这样的短编号引用，与表里的 `D-005` 不是同一项 ——
+> 前者指 Subsonic 的单例可变字段（现已随实现消失，在此登记为 D-008 以消除歧义）。
+>
+> **D-009 补充**：原描述是「后台 UI 已只提示 `subsonic.*` 两项，漏了另外 3 个」。
+> `subsonic.*` 随功能删除后，那两条提示也一并消失；新前端（`web/`）里**没有任何
+> 重启提示**（已全量搜索确认）。也就是说这个缺陷从「提示不全」变成了「完全没有提示」，
+> 仍需实现：设置页对这几个键标注「需重启生效」。
 
 ---
 

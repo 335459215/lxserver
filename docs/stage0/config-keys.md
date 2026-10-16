@@ -1,4 +1,4 @@
-# 配置键全景（全局 105 键 + 用户 60 键 + 音效 9 键 + 外观若干）
+# 配置键全景（全局 70 键 + 用户 60 键 + 音效 9 键 + 外观若干）
 
 > 两套命名空间**在合并的"设置中心"里必须分开呈现**，否则用户会把"服务器配置"
 > 当成"我的偏好"改，或反之。
@@ -6,6 +6,8 @@
 > - 用户 = `public/music/app.js:82-145` 的 `DEFAULT_SETTINGS` ↔ `data/users/<dir>/settings.json`，**每人一份**
 >
 > 勘查时间 2026-10-05，commit `191edb0`。
+> **2026-10-16 更新（v2.27.6）**：移除已删除的 `subsonic.*` 键组、补入 `music.url.speedTune`；
+> 全局键由 105 降至 70（下表实际行数）。
 
 ## 1. 全局配置键（A 表）
 
@@ -64,41 +66,6 @@
 | `configBackup.enable` | `true` | 本地 config.js 每日备份开关 | 本地配置备份 | 否 |
 | `configBackup.retentionDays` | `7` | 本地备份保留天数 | 本地配置备份 | 否 |
 | `configBackup.dir` | `''` | 备份目录（空=`<data>/backups`） | 本地配置备份 | 否 |
-| `subsonic.enable` | `true` | Subsonic 协议总开关 | Subsonic | 否 |
-| `subsonic.path` | `'/rest'` | Subsonic 访问路径 | Subsonic | 否 |
-| `subsonic.port` | `0` | 独立监听端口，0=走主端口 | Subsonic | 是 |
-| `subsonic.enableDebug` | `false` | Subsonic 调试日志 | Subsonic | 否 |
-| `subsonic.onlineSearch` | `true` | 在线全网搜索总开关 | Subsonic 搜索 | 否 |
-| `subsonic.onlineSearchMode` | `'fallback'` | fallback/merge/local_only | Subsonic 搜索 | 否 |
-| `subsonic.onlineSearchSources` | `'wy,tx,kw,kg,mg'` | 在线搜索默认平台 | Subsonic 搜索 | 否 |
-| `subsonic.publicLeaderboards` | `false` | 在线排行榜映射为只读虚拟歌单 | Subsonic 搜索 | 否 |
-| `subsonic.leaderboardSource` | `'tx'` | 排行榜平台 | Subsonic 搜索 | 否 |
-| `subsonic.sharedListMode` | `'leaderboard'` | 共享歌单内容模式 | Subsonic 搜索 | 否 |
-| `subsonic.sharedListSort` | `'hot'` | 共享歌单排序 | Subsonic 搜索 | 否 |
-| `subsonic.lyricTranslation` | `true` | 歌词是否含翻译 | Subsonic 歌词 | 否 |
-| `subsonic.cacheOnPlay` | `false` | 播放时触发落盘缓存 | Subsonic 播放 | 否 |
-| `subsonic.playCacheFirst` | `true` | 优先直传本地缓存 | Subsonic 播放 | 否 |
-| `subsonic.recommendPoolSize` | `100` | 推荐池容量 | Subsonic 推荐 | 否 |
-| `subsonic.dislikeRating` | `1` | 评分≤该值视为不喜欢，0=关 | dislike 策略 | 否 |
-| `subsonic.linkRatingToDislike` | `false` | 正向解耦：评星→不喜欢 | dislike 策略 | 否 |
-| `subsonic.linkDislikeToRating` | `false` | 反向解耦：不喜欢→评星 | dislike 策略 | 否 |
-| `subsonic.hideDisliked` | `true` | 列表中剔除命中 dislike 的歌曲 | dislike 策略 | 否 |
-| `subsonic.dislikeCrossSource` | `false` | 跨平台同名命中（误伤风险） | dislike 策略 | 否 |
-| `subsonic.dislikeNoRecommend` | `true` | 推荐类接口排除 dislike | dislike 策略 | 否 |
-| `subsonic.dislikeDuetMode` | `'any'` | 多歌手匹配 any/all/primary | dislike 策略 | 否 |
-| `subsonic.dislikeNormalizeName` | `true` | 歌名去版本后缀归一化 | dislike 策略 | 否 |
-| `subsonic.dislikeRequireSinger` | `true` | 歌曲/专辑级均要求歌手匹配 | dislike 策略 | 否 |
-| `subsonic.quality.enabled` | `true` | 音质优选总开关 | 音质优选 | 否 |
-| `subsonic.quality.priority` | `'flac,320k,128k'` | 音质优先级 | 音质优选 | 否 |
-| `subsonic.quality.clientCapMode` | `'soft'` | 客户端 maxBitrate 上界 hard/soft | 音质优选 | 否 |
-| `subsonic.quality.sources` | 无（仅类型定义） | 逐平台音质优先级覆盖 | 音质优选 | 否 |
-| `subsonic.source.priority` | `'kw,tx,wy,mg,kg'` | 跨平台优选顺序 | 音质优选 | 否 |
-| `subsonic.source.crossPlatform` | `true` | 是否允许跨平台搜替身 | 音质优选 | 否 |
-| `subsonic.source.autoSwitchCustom` | `true` | 同源是否切换其它自定义源 | 音质优选 | 否 |
-| `subsonic.transcode.enabled` | `false` | 服务端转码（需 ffmpeg） | 转码 | 否 |
-| `subsonic.transcode.onQualityMiss` | `true` | 仅音质缺失时才转码 | 转码 | 否 |
-| `subsonic.transcode.format` | `'mp3'` | mp3/opus/aac | 转码 | 否 |
-| `subsonic.transcode.maxConcurrent` | `2` | 转码并发上限 | 转码 | 否 |
 | `music.url.crossPlatform` | `true` | 不分平台并发搜替身 | 音源解析 | 否 |
 | `music.url.race` | `true` | 自定义源并发竞速 | 音源解析 | 否 |
 | `music.url.raceStagger` | `180` | 竞速错峰间隔 ms | 音源解析 | 否 |
@@ -113,10 +80,17 @@
 | `music.url.breakerEnabled` | `true` | 死源熔断 | 音源解析 | 否 |
 | `music.url.breakerThreshold` | `3` | 连续失败熔断阈值 | 音源解析 | 否 |
 | `music.url.breakerCooldown` | `300` | 熔断冷却秒数 | 音源解析 | 否 |
+| `music.url.speedTune` | `true` | 同优先级内按实测响应速度微调音源顺序（不覆盖 `order.json` 显式排序） | 音源解析 | 否 |
 | `singer.sourcePriority` | `['tx','wy']` | 歌手信息源优先级 | 元数据 | 否 |
 | `artist.maxFetchPages` | `20` | 歌手歌曲最大抓取页数 | 元数据 | 否 |
 
-**热加载行为**：`config.js` 有文件监听并合并进内存（index.ts:897-927）；`POST /api/config` 原地重写大部分键。例外：`port`、`bindIP`、`subsonic.port`、`cache.namingPattern`、`serverCacheLocation` 只在 `startServer()` 消费 → 改这些必须重启（现有后台 UI 已只提示 `subsonic.*` 两项，**漏了另外 3 个**，台账 D-09）。
+> **v2.27.0 起已删除**：`subsonic.*` 全部键（含 `subsonic.quality.*` / `subsonic.source.*` /
+> `subsonic.transcode.*` / `subsonic.dislike*`）随 Subsonic 协议层一并移除。
+> 这些键**没有改名保留，也没有迁移**——`margeConfig` 按 `defaultConfig` 的键名过滤，
+> 残留的旧键不会进入内存，且启动时 `saveConfigToFile()` 会把它们从磁盘覆盖掉。
+> 本文档原第 67–101 行的 34 个 `subsonic.*` 行即为此历史记录。
+
+**热加载行为**：`config.js` 有文件监听并合并进内存（index.ts:897-927）；`POST /api/config` 原地重写大部分键。例外：`port`、`bindIP`、`cache.namingPattern`、`serverCacheLocation` 只在 `startServer()` 消费 → 改这些必须重启（原 `subsonic.port` 随该功能一并删除，台账 D-09 涉及的后台提示已相应收敛）。
 
 ## 2. 用户播放设置键（B 表，60 键）
 
@@ -172,7 +146,7 @@
 ├─ 播放偏好（我的）           ← B 表：播放与逻辑 / 歌词 / 音质下载 / 音效 / 外观
 ├─ 数据（我的）               ← 歌单 / 收藏 / 厌恶 / 本地音乐 / 同步
 ├─ 服务器配置（全局）         ← A 表：基础服务 / 访问与鉴权 / 用户与权限 / 缓存与存储
-├─ 网络（全局）               ← 代理 / WebDAV / Subsonic
+├─ 网络（全局）               ← 代理 / WebDAV
 ├─ 用户（全局，管理员）        ← 用户管理 + per-user 授权
 ├─ 仪表盘（全局，管理员）
 ├─ 日志（全局，管理员）

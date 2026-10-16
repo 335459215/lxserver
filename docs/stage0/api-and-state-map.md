@@ -13,14 +13,22 @@
 | `/js/config.js` | 注入 `window.CONFIG` | 无 | server.ts:1133-1176 |
 | `/music/**`、`/{prefix}/manifest.json`、`/music/sw.js` | PWA manifest 动态生成 / 旧前缀兼容 | 继承播放器规则 | server.ts:1043-1051,1086-1109 |
 | 其它非 `/api/` | 通用静态文件（`staticPath`） | 无 | server.ts:1192-1207 |
-| `subsonic.path`（`/rest`） | 转发 Subsonic 处理器 | Subsonic 参数 | server.ts:1209-1214 → subsonic.ts:992 |
 | `/{…}/hello`、`/{…}/id`、`/{…}/ah` | LX 同步协议握手/取 ID/认证 | LX 同步协议(RSA+AES) | server.ts:8152-8237, auth.ts:80 |
 | WS upgrade 同上 + `?i=<clientId>` | LX 同步 WebSocket | LX 同步协议 | server.ts:8388 → auth.ts:128 |
 | 兜底未匹配 | `process.cwd()/public` 静态文件，否则 404 | 无 | server.ts:8210-8236 |
 
 ## 2. `/api` 端点（按鉴权方式分组）
 
-鉴权图例：`admin` = `x-frontend-auth` 头等于 `frontend.password`；`cookie` = `lx_player_session`；`token` = `x-user-token`；`混合` = 条件见下。
+鉴权图例（**2026-10-16 更新至 v2.27.6**）：`cookie` = `lx_player_session`；
+`token` = `x-user-token` + `x-user-name`；`混合` = 条件见下。
+
+> **v2.25.0 起 `x-frontend-auth` 已整条链路删除**。此前管理接口认
+> `x-frontend-auth`（等于 `frontend.password`），听歌接口认 `x-user-token`，
+> 两套并存导致「MCP 一搜索就 401」等问题。现在**管理接口与听歌接口一律认
+> `x-user-token`**（管理员身份由用户表里的 `isAdmin` 判定），
+> 本文档后续表格里若仍出现 `admin` 图例，按 `token` 理解。
+>
+> **v2.27.0 起** `/rest/*`（Subsonic）路由已删除，全部返回 404。
 
 **管理员专属**（32 个）
 `GET /api/status` · `GET/POST/PUT/DELETE /api/users` · `POST /api/data/delete-playlist` · `POST /api/data/delete-song` · `POST /api/data/rename-playlist` · `POST /api/data/batch-delete-songs` · `POST /api/utils/check-dir` · `ANY /api/elfinder/connector` · `GET/POST /api/config` · `GET /api/config/backups` · `POST /api/config/backup-now` · `GET /api/config/backups/download` · `DELETE /api/config/backups/{file}` · `POST /api/config/backups/restore` · `GET /api/config/proxy-status` · `POST /api/config/test-proxy` · `GET /api/logs` · `GET /api/stats` · `POST /api/webdav/test` · `POST /api/webdav/sync-file` · `POST /api/webdav/backup` · `POST /api/webdav/sync` · `GET /api/webdav/backups` · `DELETE /api/webdav/backup` · `POST /api/webdav/restore` · `GET /api/webdav/logs` · `GET /api/webdav/progress`(SSE) · `GET /api/backup/download` · `POST /api/backup/upload` · `POST /api/admin/reload` · `POST /api/restart` · `GET /api/files` · `GET /api/files/download` · `POST/PUT /api/files` · `DELETE /api/files`
@@ -54,8 +62,13 @@
 | `UserDataManage.devicesInfo.clients` | src/user/data.ts:159/191 | clientId → KeyInfo{AES key, deviceName, isMobile} | `devices.json`，100ms throttle | 最多 101 个 | 是 |
 | `users`（UserSpace Map） | src/user/index.ts:14 | username → {dataManage,listManage,dislikeManage} | 否 | `releaseUserSpace` 1h 延迟释放 | 是 |
 | `status.devices` / `wss.clients` | server.ts:488/8243 | 在线 LX 同步设备 / 全部 WS 连接 | 否 | 30s ping 心跳 | 是 |
-| `playbackReportState` | subsonic.ts:539 | username → now-playing | 否 | 15 分钟窗口 | 是 |
-| `loveIdSets` / `userRatingsCache` / `currentUsername` | subsonic.ts:718-722 | starred 集合 / 评分缓存 / **单例可变字段（跨请求共享，台账 D-05）** | 否 | 每请求覆盖 | 是 |
+
+> **v2.27.0 起**：`playbackReportState`（username → now-playing）与
+> `loveIdSets` / `userRatingsCache` / `currentUsername`（starred 集合 / 评分缓存 /
+> 单例可变字段，台账 D-05）随 `subsonic.ts` 一并删除。
+> 前者只服务于 Subsonic 客户端的 now-playing 上报，后者只服务于 Subsonic 的
+> starred 与评分；PWA 前端不引用这两组状态，故**无替代实现，也无需迁移**。
+> D-05（单例可变字段跨请求共享）随该文件删除而消失，不再是待修项。
 
 **结论**：真正需要迁到 Redis 的是 `playerSessions`、`userSessions`、`persistentTokens(+Meta)`。其余要么有权威落盘文件、要么是纯连接态（重启丢失是正确行为）。
 
