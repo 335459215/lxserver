@@ -244,6 +244,16 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
     // 创建事件处理映射
     const eventHandlers = new Map<string, Function>()
     let registeredSources: any = {}
+    /** 本次加载是否**真的收到了** sources 声明（D-003）。
+     *
+     *  【为什么需要这个标记】
+     *  `lx.send('inited', {})`（漏带 sources）或三参写法
+     *  `lx.send('inited', {sources}, extra)` 都会让 registeredSources 保持空对象，
+     *  但 initResolve 照样 resolve —— 加载被判 success、info.sources 为空。
+     *  上层自愈逻辑拿这个「空」当权威结果，会把 sources.json 里已存的
+     *  supportedSources 覆写成 `[]`，用户什么都没做错源却坏掉，且无任何提示。
+     *  有了这个标记，上层才能区分「脚本声明了 0 个源」与「压根没拿到声明」。 */
+    let sourcesDeclared = false
 
     // ========== 关键修改：提前创建 initPromise ==========
     let initResolve: (() => void) | null = null
@@ -316,15 +326,34 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
                 console.log(`[自定义源] [更新嗅探] 嗅探到源 ${fullApiInfo.name} 的更新提示: ${alert.log}`)
             }
         ),
-        send: (eventName: string, data: any) => {
+        send: (eventName: string, data: any, ...extraArgs: any[]) => {
+            // 本服务端的 send 是**两参**形式 (eventName, data)。音源脚本常见的
+            // 三参写法 `lx.send('inited', {sources}, something)` 会让 sources 丢失，
+            // 而自愈逻辑随后会把 sources.json 里的声明覆写成空（D-003，高危）。
+            // 这里给出**可见警告**，让写错签名的人当场发现，而不是事后丢配置。
+            if (extraArgs.length > 0 && eventName === 'inited') {
+                console.warn(
+                    `[自定义源] ${fullApiInfo.name}: lx.send 只接受两个参数 (eventName, data)，` +
+                    `收到 ${2 + extraArgs.length} 个 —— 多余参数会被忽略。` +
+                    `请写成 lx.send('inited', { sources: { ... } })`
+                )
+            }
             const dData = decontextify(data)
             // console.log(`[自定义源-${fullApiInfo.name}] send:`, eventName)
             if (eventName === 'inited') {
                 if (dData && dData.sources) {
                     registeredSources = dData.sources
+                    sourcesDeclared = true
                     if (global.lx.config['debug.enabled']) {
                         console.log(`[自定义源-${fullApiInfo.name}] 已注册音源:`, Object.keys(registeredSources).join(', '))
                     }
+                } else {
+                    // 收到了 inited 但没有 sources —— 明确告警，并且**不**把它
+                    // 当成「这个源支持 0 个平台」的权威声明（见 sourcesDeclared）。
+                    console.warn(
+                        `[自定义源] ${fullApiInfo.name}: lx.send('inited', …) 未携带 sources 字段，` +
+                        `本次不会更新已保存的支持平台列表`
+                    )
                 }
                 if (initResolve) initResolve()
             } else if (eventName === 'updateAlert') {
@@ -439,6 +468,9 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
         // 保存加载 of the API
         const apiInstance = {
             info: { ...fullApiInfo, sources: registeredSources },
+            /** 本次是否真的收到了 sources 声明。上层自愈据此决定能否覆写
+             *  sources.json —— 没拿到声明时绝不能把已存的支持平台列表清空（D-003）。 */
+            sourcesDeclared,
             handlers: eventHandlers,
             callRequest: (action: string, source: string, info: any, requestOpts?: { signal?: SourceSignal, requestTimeoutMs?: number }) => {
                 const pending = runSourceRequest<any>(signal => sourceRequestContext.run(signal, () => {
@@ -458,7 +490,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
         if (persist) loadedApis.set(`${fullApiInfo.owner}_${apiInfo.id}`, apiInstance)
         console.log(`[自定义源] ✓ 成功加载: ${fullApiInfo.name} v${fullApiInfo.version} (所属: ${fullApiInfo.owner}${persist ? '' : '，临时实例不驻留'})`)
         console.log(`[自定义源]   支持平台: ${Object.keys(registeredSources).join(', ')}`)
-        return { success: true, apiInstance, error: null }
+        return { success: true, apiInstance, error: null, sourcesDeclared }
     } catch (error: any) {
         console.error(`[自定义源] ✗ 加载失败 ${fullApiInfo.name}:`, error.message)
         if (error.stack && error.message !== 'REQUIRE_UNSAFE_VM') {
@@ -1077,17 +1109,31 @@ async function loadSourcesFromDir(dirPath: string, owner: string, stats: { loade
                     })
 
                     // [Self-Healing] 检查并修复 supportedSources
-                    const runtimeSources = Object.keys(result.apiInstance.info.sources).sort();
-                    const storedSources = (source.supportedSources || []).sort();
+                    //
+                    // 【绝不能用「没拿到声明」去覆写已存列表（D-003，高危）】
+                    // 脚本漏带 sources、或把 lx.send 写成三参时，runtimeSources 会是
+                    // 空数组。旧逻辑把它当权威结果，把 sources.json 里已存的
+                    // supportedSources 覆写成 `[]` —— 用户什么都没做错，源却"坏掉"了，
+                    // 重新上传也一样，而且**没有任何提示**。
+                    // 只有脚本**明确声明过** sources 时才允许比对与更新。
+                    if (!result.sourcesDeclared) {
+                        console.warn(
+                            `[自定义源] [${owner}] ${source.name} 本次未声明 sources，` +
+                            `保留已保存的支持平台列表（${JSON.stringify(source.supportedSources || [])}）不做修改`
+                        )
+                    } else {
+                        const runtimeSources = Object.keys(result.apiInstance.info.sources).sort();
+                        const storedSources = (source.supportedSources || []).sort();
 
-                    if (JSON.stringify(runtimeSources) !== JSON.stringify(storedSources)) {
-                        console.log(`[自定义源] [自动修复] [${owner}] 更新源 ${source.name} 的支持列表: ${JSON.stringify(storedSources)} -> ${JSON.stringify(runtimeSources)}`);
-                        source.supportedSources = runtimeSources;
-                        if (metadata.version && source.version !== metadata.version) source.version = metadata.version;
-                        if (metadata.author && source.author !== metadata.author) source.author = metadata.author;
-                        if (metadata.description && source.description !== metadata.description) source.description = metadata.description;
-                        if (metadata.homepage && source.homepage !== metadata.homepage) source.homepage = metadata.homepage;
-                        needsSave = true;
+                        if (JSON.stringify(runtimeSources) !== JSON.stringify(storedSources)) {
+                            console.log(`[自定义源] [自动修复] [${owner}] 更新源 ${source.name} 的支持列表: ${JSON.stringify(storedSources)} -> ${JSON.stringify(runtimeSources)}`);
+                            source.supportedSources = runtimeSources;
+                            if (metadata.version && source.version !== metadata.version) source.version = metadata.version;
+                            if (metadata.author && source.author !== metadata.author) source.author = metadata.author;
+                            if (metadata.description && source.description !== metadata.description) source.description = metadata.description;
+                            if (metadata.homepage && source.homepage !== metadata.homepage) source.homepage = metadata.homepage;
+                            needsSave = true;
+                        }
                     }
                 } else {
                     console.error(`[自定义源] [${owner}] 加载 ${metadata.name || source.name} 失败: ${result.error}`)
@@ -1117,6 +1163,16 @@ async function loadSourcesFromDir(dirPath: string, owner: string, stats: { loade
 // 文件监控相关
 let fsWatcher: fs.FSWatcher | null = null
 const lastReloadMap = new Map<string, number>() // 记录每个用户的最后加载时间
+
+/** 关闭源文件监控。生产环境不需要调用（进程退出时自动关闭），
+ *  但**测试必须能关** —— 否则 fs.watch 会让 node:test 进程永不退出
+ *  （表现为测试挂起，不是失败，很容易被误当成"跑得慢"）。 */
+export function stopSourceWatcher() {
+    if (fsWatcher) {
+        try { fsWatcher.close() } catch { /* 已关闭 */ }
+        fsWatcher = null
+    }
+}
 
 // 启动文件监控
 function startWatcher(sourceRoot: string) {

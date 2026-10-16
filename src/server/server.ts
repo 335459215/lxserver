@@ -7316,9 +7316,15 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
               res.writeHead(200)
               res.end(JSON.stringify({ success: true, warning }))
-            } catch (e) {
-              res.writeHead(500)
-              res.end('Server Error')
+            } catch (e: any) {
+              // 【D-006】原样回 'Server Error' 让后台无法排障：用户只看到
+              // 一句无信息量的文案，不知道是哪个键、哪种非法（类型错？路径冲突？权限？）。
+              // 现在回 JSON + 真实 message。**不回堆栈**（避免把内部路径透给前端），
+              // 堆栈只进服务端日志。
+              const message = e?.message || String(e)
+              console.error('[配置] 保存失败:', e)
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ success: false, error: message }))
             }
           })
           return

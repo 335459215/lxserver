@@ -100,15 +100,32 @@ export default {
     return result
   },
   search(str, page = 1, limit, retryNum = 0) {
-    if (retryNum > 2) return Promise.reject(new Error('try max num'))
     if (limit == null) limit = this.limit
     // http://newlyric.kuwo.cn/newlyric.lrc?62355680
     return this.musicSearch(str, page, limit).then(({ body: result }) => {
       // console.log(result)
-      if (!result || (result.TOTAL !== '0' && result.SHOW === '0')) return this.search(str, page, limit, ++retryNum)
+      // 【D-004】越界页不是错误，是「没有更多了」。
+      //
+      // 旧逻辑把「有总数但本页 0 条」当成需要重试的失败，重试 3 次后
+      // `throw new Error('try max num')`，服务端 catch 直接回 500 ——
+      // 用户翻到最后一页之后再翻，看到的是「搜索坏了」。
+      // 前端预取（末页后自动再拉 3 页）必然撞上，所以这不是边角情况。
+      //
+      // 正确语义：TOTAL === '0'（本来就没有）或 SHOW === '0'（本页为空）
+      // 都返回空列表，让翻页自然结束。
+      if (!result || result.TOTAL === '0' || result.SHOW === '0') {
+        this.total = parseInt(result?.TOTAL ?? '0') || 0
+        this.page = page
+        return { list: [], total: this.total, page, limit, source: 'kw' }
+      }
       let list = this.handleResult(result.abslist)
 
-      if (list == null) return this.search(str, page, limit, ++retryNum)
+      // 解析不出结果仍可重试，但要有上限：超过上限返回空列表而不是抛错，
+      // 否则同样的 500 会从这条路径复现。
+      if (list == null) {
+        if (retryNum > 2) return { list: [], total: 0, page, limit, source: 'kw' }
+        return this.search(str, page, limit, ++retryNum)
+      }
 
       this.total = parseInt(result.TOTAL)
       this.page = page

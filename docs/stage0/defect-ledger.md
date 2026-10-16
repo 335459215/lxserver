@@ -12,10 +12,10 @@
 |---|---|---|---|---|
 | D-001 | `public/music/js/batch_pagination.js:523` | `goToPage is not defined`，加载即抛错并中断后续 export，分页控件全废 | 高 | 随实现消失（旧前端已删） |
 | D-002 | `public/music/js/dislike_manager.js:77` | 首屏 dislike 偶发 401，控制台报错（用户态未就绪就发请求） | 中 | 随实现消失（旧前端已删） |
-| D-003 | `src/server/customSourceHandlers.ts` + 用户 sources.json | 自定义源 `lx.send` 写成三参会**静默丢 sources**，自愈逻辑再把 `sources.json` 覆写成 `[]` | 高 | 待排期（**仍需处理**，文件仍在） |
-| D-004 | `src/modules/utils/musicSdk/kw/musicSearch.js:100-108` + `server.ts:5758` | kw 空页/越界页 → 重试 3 次后抛 `try max num` → 搜索接口整体 500 | 中 | 待排期（**仍需处理**，文件仍在） |
+| D-003 | `src/server/customSourceHandlers.ts` + 用户 sources.json | 自定义源 `lx.send` 写成三参会**静默丢 sources**，自愈逻辑再把 `sources.json` 覆写成 `[]` | 高 | **已修复**（v2.27.7，见下） |
+| D-004 | `src/modules/utils/musicSdk/kw/musicSearch.js:100-108` + `server.ts:5758` | kw 空页/越界页 → 重试 3 次后抛 `try max num` → 搜索接口整体 500 | 中 | **已修复**（v2.27.7，见下） |
 | D-005 | `/api/music/url` 成功响应 | 成功路径不返回 `attempts`，换源过程不可观测 | 中 | 已修复（musicResolver 现返回 `attempts`） |
-| D-006 | `/api/config` POST 错误分支 | 出错只回 `Server Error`，无任何细节 | 低 | 待排期 |
+| D-006 | `/api/config` POST 错误分支 | 出错只回 `Server Error`，无任何细节 | 低 | **已修复**（v2.27.7，见下） |
 | D-007 | `serveStatic` 静态资源 | 每次请求重读文件 + 重压 gzip，无缓存 | 中 | 阶段 A 一并处理 |
 | D-008 | `src/server/subsonic.ts:539,718-722` | Subsonic 单例可变字段跨请求共享（原文档记作 D-05） | 中 | 随实现消失（`subsonic.ts` 已删） |
 | D-009 | 后台「需重启」提示 | 改了只在 `startServer()` 消费的键（`port`/`bindIP`/`cache.namingPattern`/`serverCacheLocation`）却没有任何提示 | 低 | **待排期**（新前端无「重启」提示，问题完整存在） |
@@ -27,6 +27,50 @@
 > `subsonic.*` 随功能删除后，那两条提示也一并消失；新前端（`web/`）里**没有任何
 > 重启提示**（已全量搜索确认）。也就是说这个缺陷从「提示不全」变成了「完全没有提示」，
 > 仍需实现：设置页对这几个键标注「需重启生效」。
+
+---
+
+## 2026-10-16 修复批次（v2.27.7）
+
+三项都配了回归测试与**变异测试**（把修复退回旧实现，断言测试确实失败）。
+
+### D-003 已修复：自愈不再清空 supportedSources
+
+**根因确认**：`loadUserApi` 里 `lx.send('inited', …)` 只要收到事件就 resolve，
+`sources` 缺失时 `registeredSources` 保持空对象，但加载仍被判 `success`、
+`info.sources` 为空。上层自愈拿这个「空」当权威结果，把已存的
+`supportedSources` 覆写成 `[]`。
+
+**修法**：
+- `loadUserApi` 新增 `sourcesDeclared` 标记（脚本是否**真的**声明过 sources），
+  并随返回值与 `apiInstance` 一起暴露。
+- 自愈逻辑只在 `sourcesDeclared === true` 时才比对/更新，否则保留原列表并打日志。
+- `lx.send` 收到多余参数（三参写法）时给出**可见警告**；`inited` 缺 sources 也告警。
+
+**测试**：`test/d003SelfHeal.test.ts`（前提与标记）+ `test/d003SelfHeal2.test.ts`
+（端到端：真实跑 `initUserApis`，断言磁盘上的 `sources.json` 未被清空）。
+**顺带**：`initUserApis` 会启动 `fs.watch`，导致测试进程**永不退出**（表现为挂起而非失败）——
+新增 `stopSourceWatcher()` 供测试关闭。
+
+### D-004 已修复：kw 越界页返回空列表而非 500
+
+**根因确认**：`musicSearch.js:103` 把「有总数但本页 0 条」当成需重试的失败，
+重试 3 次后 `throw new Error('try max num')`，`server.ts` catch 直接 500。
+
+**修法**：越界页不是错误，是「没有更多了」——`TOTAL === '0'` 或 `SHOW === '0'`
+都返回空列表（保留 `total` 供前端判断到底）；`handleResult` 解析失败仍可重试，
+但超过上限返回空列表而不是抛错。
+
+**测试**：`test/d004KwEmptyPage.test.ts`（5 项：越界页、TOTAL=0、空响应、
+正常页未被改坏、重试有上限）。
+
+### D-006 已修复：配置保存失败回真实原因
+
+**修法**：catch 改回 `{success:false, error: message}` JSON（**不回堆栈**，
+堆栈只进服务端日志）。前端 `useConfig.ts` 同步解析该字段 ——
+否则用户会看到一串裸露的 JSON。
+
+**未修**：D-009（新前端完全没有「需重启生效」提示）。
 
 ---
 

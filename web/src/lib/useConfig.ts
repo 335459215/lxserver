@@ -25,8 +25,16 @@ export function useConfig() {
         body: JSON.stringify(patch),
       })
       if (!res.ok) {
+        // 服务端自 v2.27.7 起回 JSON `{success:false, error}`（原先是纯文本 'Server Error'，
+        // 用户看不到任何原因）。这里优先取 error 字段；解析失败再回落原文，
+        // 否则用户会看到一串裸露的 JSON。
         const text = await res.text().catch(() => '')
-        throw new Error(`保存失败 (${res.status})${text ? ': ' + text : ''}`)
+        let detail = text
+        try {
+          const parsed = JSON.parse(text)
+          if (parsed && typeof parsed.error === 'string' && parsed.error) detail = parsed.error
+        } catch { /* 非 JSON，保持原文 */ }
+        throw new Error(`保存失败 (${res.status})${detail ? ': ' + detail : ''}`)
       }
       await reload()
     },
