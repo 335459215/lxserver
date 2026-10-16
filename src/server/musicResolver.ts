@@ -12,13 +12,14 @@
  *  3. 更稳：返回的链接会被真正探测一次，403/404 视为该源失败并继续竞速，而不是把坏链接交给客户端；
  *     死源会被熔断，成功结果会被粘滞缓存。
  */
-import needle from 'needle'
 import { getProxyAgent } from '@/modules/utils/proxy.js'
+import { probeUrlBounded } from '@/server/probeBounded'
 import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult, recordSourceSpeed } from '@/server/userApi'
 import { findServerSourceMatches, normalizeSongInfo, AUTO_SOURCE_ORDER } from '@/server/musicMatch'
 import { debugLog } from '@/server/utils/debugLog'
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+// UA 与探测头都搬到了 probeBounded.ts —— 探测现在是「只读响应头」的实现，
+// 不再需要在这里持有 needle 与 UA。
 
 /** 一次解析最多同时铺开的候选平台数，防止极端配置把上游接口打爆 */
 const MAX_PLATFORM_CANDIDATES = 6
@@ -224,26 +225,15 @@ const getPlaybackTrippedSources = (): string[] => {
  * 原因二：Cloudflare 站点源站挂掉时，522 要等 CF 等完源站(10~30s)才返回，
  * 探测超时内拿不到——所以「探测被拒」的结论必须交给播放器的失败报告去补，
  * 这里不做更久的等待。
+ *
+ * 【探测必须有界，不能读完 body】实现见 probeBounded.ts。旧写法
+ * `await needle('get', …)` 要等 body 读完：大量网关忽略 Range 直接回 200 +
+ * 完整音频，实测一次探测下载 6 MiB 后**超时失败** —— 既白吃带宽，又把一个
+ * 完全可播的源误判成「探针拿不到真相」而降级为次选。
  */
 const probeUrl = async (url: string): Promise<{ status?: number, location?: string } | null> => {
     try {
-        const resp = await needle('get', url, null, {
-            follow_max: 0,
-            // 校验是优化手段不是闸门：探不通就放行，所以超时必须给得起。
-            // 另外必须显式给 open_timeout——needle 默认 10s，TCP 连接挂住时
-            // 一次解析会被拖到 10s 以上。
-            open_timeout: 1200,
-            response_timeout: 1200,
-            read_timeout: 1200,
-            // 探测的是音乐平台链接，归 music 分类（NAS 上该分类不走代理）
-            agent: await getProxyAgent(url, 'music'),
-            headers: {
-                'User-Agent': UA,
-                Referer: new URL(url).origin,
-                Range: 'bytes=0-1',
-            },
-        })
-        return { status: resp.statusCode, location: resp.headers.location }
+        return await probeUrlBounded(url, { timeoutMs: 1200, agent: await getProxyAgent(url, 'music') })
     } catch {
         return null
     }
@@ -262,19 +252,7 @@ const probeUrl = async (url: string): Promise<{ status?: number, location?: stri
  */
 const probeUrlDeep = async (url: string): Promise<{ status?: number, location?: string } | null> => {
     try {
-        const resp = await needle('get', url, null, {
-            follow_max: 0,
-            open_timeout: 2500,
-            response_timeout: 2500,
-            read_timeout: 2500,
-            agent: await getProxyAgent(url, 'music'),
-            headers: {
-                'User-Agent': UA,
-                Referer: new URL(url).origin,
-                Range: 'bytes=0-1',
-            },
-        })
-        return { status: resp.statusCode, location: resp.headers.location }
+        return await probeUrlBounded(url, { timeoutMs: 2500, agent: await getProxyAgent(url, 'music') })
     } catch {
         return null
     }
