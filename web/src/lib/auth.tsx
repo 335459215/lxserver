@@ -157,6 +157,53 @@ export const api = {
     return { ok: true, isAdmin: !!data.isAdmin }
   },
   config: () => adminFetchJson<Record<string, unknown>>('/api/config'),
+  /**
+   * 重启服务端。
+   *
+   * 【为什么前端需要这个】
+   * 有几个配置项**只在启动时读取一次**，改完必须重启才生效：
+   *   - `port`（`index.ts` 启动时读一次，用于 listen）
+   *   - `serverCacheLocation`（在 `startServer()` 内消费）
+   * 这些键**不在 `/api/config` POST 的白名单里**（无法通过界面保存），
+   * 用户只能手改 `config.js`；改完没有任何东西提示他「需要重启」。
+   * 后端 `/api/restart` 一直存在但新前端从未调用过 —— 这里补上。
+   *
+   * 服务端实现：容器里 `node index.js` + compose `restart: unless-stopped`，
+   * 走 `process.exit(0)` 分支由 Docker 拉起（开发态则触发 nodemon）。
+   */
+  restart: async (): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await adminFetch('/api/restart', { method: 'POST' })
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+      return { ok: true }
+    } catch {
+      // 重启瞬间连接会被切断，fetch 抛异常是**预期现象**，不代表指令没发出去。
+      // 调用方应按「已发出重启指令」处理，然后轮询等待服务回来。
+      return { ok: true }
+    }
+  },
+  /**
+   * 轮询等待服务恢复（配 `restart()` 使用）。
+   *
+   * 用 `/config.json` 而不是 `/api/status`：前者**不需要鉴权**，
+   * 重启期间会话可能还没就绪，用需要鉴权的接口判活会把「已恢复但未登录」
+   * 误判成「还没起来」，导致一直转圈。
+   */
+  waitForServerBack: async (options: { timeoutMs?: number, intervalMs?: number } = {}) => {
+    const timeoutMs = options.timeoutMs ?? 90_000
+    const intervalMs = options.intervalMs ?? 1_500
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        // cache: 'no-store' —— 否则浏览器可能直接返回缓存的 config.json，
+        // 服务还没起来就被判定为"已恢复"。
+        const res = await fetch('/config.json', { cache: 'no-store' })
+        if (res.ok) return true
+      } catch { /* 还没起来，继续等 */ }
+      await new Promise((r) => setTimeout(r, intervalMs))
+    }
+    return false
+  },
   status: () => adminFetchJson<Record<string, unknown>>('/api/status'),
   stats: () => adminFetchJson<Record<string, unknown>>('/api/stats'),
   users: () =>
