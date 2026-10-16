@@ -228,12 +228,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
    *    - 还没拿到可播数据（ready === false）
    *    - audio.readyState < 3（HAVE_FUTURE_DATA；>=3 说明数据够了，只是播得慢）
    *
-   *  【为什么必须把 'loading' 也算进来】
-   *  第一版只认 'playing'，结果看门狗**永远不会触发**：
-   *  loadAndPlay 期间状态是 'loading'（patch({status:'loading'}) 在前），
-   *  而慢源根本不会走到 onPlay 把状态翻成 'playing' ——
-   *  于是「点了歌一直转圈」这个最该被救的场景恰好被漏掉。
-   *  （实测见 .playwright/_verify-stall.py：注入黑洞地址后 40s 内毫无反应。）
+   *  【覆盖的两种场景】
+   *    1. 起播慢：loadAndPlay 置 status='loading'，慢源走不到 onPlay，
+   *       一直停在 loading —— 状态集合里的 'loading' 就是救它的。
+   *    2. 播放中卡死：正在播的源突然断流（CDN 挂/上游掐断），
+   *       waiting 触发、ready 翻回 false、status 仍是 'playing' ——
+   *       集合里的 'playing' 救它。第二版只认 'playing' 结果起播场景漏了，
+   *       第三版只处理起播（`!ready` 才 arm）结果把播放中卡死又漏了 ——
+   *       这两类必须都覆盖，缺一个就是「永远转圈」。
    *
    *  【为什么不认 paused/idle/error】
    *  paused 有两种来源：用户主动暂停、以及自动播放被浏览器拦截
@@ -287,10 +289,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const onPause = () =>
       setState((s) => (s.status === 'idle' || s.status === 'error' ? s : { ...s, status: 'paused' }))
     const onWaiting = () => {
+      // 播放中途也会卡死：正在播的源突然不吐数据（CDN 断流/上游挂了），
+      // waiting 触发、ready 翻回 false —— 这和「起播时慢」是同一类问题，
+      // 都必须起表。第二版只处理了起播（`!ready` 才 arm），播放中途卡住
+      // 会永远转圈不换源，这正是看门狗要救的另一半场景。
+      clearStallWatchdog()
+      armStallWatchdog()
       setState((s) => (s.status === 'playing' ? { ...s, ready: false } : s))
-      // 缓冲中且尚无可用数据 → 起表。已在播时拖进度条也会触发 waiting，
-      // 但那种情况 ready 已为 true，armStallWatchdog 内部会自我否决。
-      if (!stateRef.current.ready) armStallWatchdog()
     }
     const onCanPlay = () => {
       clearStallWatchdog()

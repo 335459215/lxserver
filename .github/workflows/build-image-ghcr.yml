@@ -139,6 +139,11 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run test:unit
 
+      # 变异测试：把已修复的缺陷逐个退回旧实现，确认回归测试确实会失败。
+      # 一个在旧代码上也能全绿的测试没有验证力 —— 这层检查就是防这个的。
+      - name: 变异测试（确认回归测试有验证力）
+        run: npm run test:mutation
+
       - name: 新前端 lint + 类型检查 + 构建
         run: |
           cd web

@@ -496,7 +496,7 @@ export async function handleList(req: IncomingMessage, res: ServerResponse, user
         // 实测响应耗时（毫秒）。与 status 同一性质 —— 都是「这个源现在怎么样」的运行时信息，
         // 放在这里前端无需额外请求即可展示「哪个源快」。无样本时不写该字段（而非写 0），
         // 因为 0ms 会被误读成「极快」，而真相是「还没测过」。
-        const ms = getSourceSpeed(source.id)
+        const ms = getSourceSpeed(source.id, source.owner)
         if (ms !== null) source.speedMs = Math.round(ms)
 
         // 读取对应音源的禁用平台列表

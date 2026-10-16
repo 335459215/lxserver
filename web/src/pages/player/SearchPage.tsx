@@ -11,7 +11,7 @@ import {
   SOURCE_LABEL,
   dedupeSongs,
   searchMusic,
-  searchMusicAggregate,
+  searchMusicAggregatePage,
   sourceLabel,
   type Song,
 } from '@/lib/music'
@@ -21,6 +21,7 @@ import {
   supportsArtistPages,
   type SingerHit,
 } from '@/lib/discover'
+import { createSearchPager } from '@/lib/searchPaging'
 import { usePlayer } from '@/lib/player'
 import { useSentinel } from '@/lib/useSentinel'
 import SongList from '@/components/player/SongList'
@@ -49,27 +50,54 @@ export default function SearchPage() {
   const [searchedFor, setSearchedFor] = React.useState('')
 
   // ===== 分页追加 =====
-  /** 已加载到第几页（服务端页码，从 1 开始） */
-  const [page, setPage] = React.useState(1)
+  // 注意：页码本身不再放 React state —— 它由 pager 持有（唯一真相），
+  // 这里只保留渲染需要的两个标志位。多存一份页码就会出现两份状态不同步。
   const [hasMore, setHasMore] = React.useState(false)
   const [loadingMore, setLoadingMore] = React.useState(false)
 
   const abortRef = React.useRef<AbortController | null>(null)
-  React.useEffect(() => () => abortRef.current?.abort(), [])
+  /** 翻页控制器：**已通过 test/searchPaging.test.ts 验证的实现**。
+   *
+   *  【为什么分页状态不直接用 React state 管理】
+   *  分页有三个互相纠缠的约束（代次隔离、上游原始分页状态、失败重试），
+   *  写在组件里既难测、又容易在后续改动中被悄悄破坏。
+   *  交给纯逻辑控制器后，回归测试覆盖的就是**线上真正跑的那份代码**，
+   *  而不是一份「和它长得很像」的副本。React state 只负责渲染镜像。 */
+  const pagerRef = React.useRef<ReturnType<typeof createSearchPager<Song>> | null>(null)
+  // 用 `== null` 而不是 `!`：lint 规则认可这种「只初始化一次」的写法
+  // （直接读 ref.current 做真值判断会被判为 render 期访问 ref）。
+  if (pagerRef.current == null) {
+    pagerRef.current = createSearchPager<Song>({ pageSize: PAGE_SIZE, dedupe: dedupeSongs })
+  }
+  /** 当前查询的取消控制器（初搜与翻页各一个，互不干扰） */
+  const moreAbortRef = React.useRef<AbortController | null>(null)
+  React.useEffect(() => () => {
+    abortRef.current?.abort()
+    moreAbortRef.current?.abort()
+  }, [])
+
+  /** 把控制器的状态同步到渲染用的 React state */
+  const syncFromPager = React.useCallback(() => {
+    const p = pagerRef.current!
+    const s = p.state()
+    setResults(p.items())
+    setHasMore(s.hasMore)
+    setLoadingMore(s.loadingMore)
+  }, [])
 
   const runSearch = React.useCallback(async (name: string, src: string, k: Kind) => {
     const q = name.trim()
     if (!q) return
 
     abortRef.current?.abort()
+    // 新查询作废一切在途翻页：控制器内部代次 +1，旧翻页的回写会被丢弃
+    moreAbortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
 
     setPhase('loading')
     setError(null)
     setSearchedFor(q)
-    // 新搜索从第一页重来
-    setPage(1)
     setHasMore(false)
     setLoadingMore(false)
 
@@ -80,29 +108,44 @@ export default function SearchPage() {
           ? await searchSingers({ name: q, source: targetSrc, signal: ac.signal })
           : []
         if (ac.signal.aborted) return
+        // 歌手模式没有分页，控制器重置掉即可
+        pagerRef.current!.reset()
         setSingers(hits)
         setResults([])
       } else {
-        const list =
-          src === 'all'
-            ? await searchMusicAggregate({ name: q, page: 1, signal: ac.signal })
-            : await searchMusic({ name: q, source: src, page: 1, pages: 1, signal: ac.signal })
+        await pagerRef.current!.loadFirst(async (page, _epoch) => {
+          if (src === 'all') {
+            const agg = await searchMusicAggregatePage({ name: q, page, signal: ac.signal })
+            // 聚合必须用**原始**分页状态判断是否还有下一页：
+            // 去重后条数必然少于原始条数，用展示条数判断会让第一页就误判到底。
+            return { ...agg, rawHasMore: agg.rawHasMore }
+          }
+          const list = await searchMusic({ name: q, source: src, page, pages: 1, signal: ac.signal })
+          return {
+            items: list,
+            rawCounts: [list.length],
+            // 单平台：返回条数 < 页大小才是真的到底
+            rawHasMore: list.length >= PAGE_SIZE,
+            anyFulfilled: true,
+          }
+        })
         if (ac.signal.aborted) return
-        setResults(list)
+        syncFromPager()
         setSingers([])
-        // 满一页就假定还有下一页；不足一页即到底
-        setHasMore(list.length >= PAGE_SIZE)
       }
       setPhase('done')
     } catch (e) {
-      if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
+      if (ac.signal.aborted) return
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      pagerRef.current!.reset()
       setResults([])
       setSingers([])
       setHasMore(false)
       setError(e instanceof Error ? e.message : '搜索失败')
       setPhase('error')
     }
-  }, [])
+    // syncFromPager 是稳定引用（useCallback([])），列进依赖不会导致重建
+  }, [syncFromPager])
 
   /** 支持 /search?q=xxx&source=yy&type=singer —— 首页搜索框、热搜标签、列表里的歌手/专辑链接
    *  都会带参数跳过来，不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。 */
@@ -128,35 +171,47 @@ export default function SearchPage() {
     toast({ title: `开始播放全部 ${results.length} 首`, description: searchedFor })
   }, [player, results, searchedFor, toast])
 
-  /** 追加下一页。触底自动触发，也可点「加载更多」手动触发。 */
+  /** 追加下一页。触底自动触发，也可点「加载更多」手动触发。
+   *
+   *  代次隔离、上游分页状态判断、失败重试、single-flight 全部由
+   *  createSearchPager 负责（见 lib/searchPaging.ts 与 test/searchPaging.test.ts）。
+   *  这里只做两件事：把参数翻译成取数函数、把结果同步给 React。 */
   const loadMore = React.useCallback(async () => {
-    if (loadingMore || !hasMore || kind !== 'song' || !searchedFor) return
+    if (kind !== 'song' || !searchedFor) return
+    const p = pagerRef.current!
+    if (p.state().loadingMore || !p.state().hasMore) return
+
+    const ac = new AbortController()
+    moreAbortRef.current?.abort()
+    moreAbortRef.current = ac
     setLoadingMore(true)
-    const next = page + 1
+
     try {
-      const list =
-        source === 'all'
-          ? await searchMusicAggregate({ name: searchedFor, page: next })
-          : await searchMusic({ name: searchedFor, source, page: next, pages: 1 })
-      // 跨平台去重必须用 dedupeSongs（歌手集合有交集）而不是 Set(键)：
-      // 同一首歌在不同平台的 singer 写法差很多（`李玟` / `CoCo李玟` /
-      // `CoCo李玟、马毓芬、谢文德…`），键相等判不出去重。
-      // 做法：把「已有结果 + 新页」整体重跑一次去重，只追加真正新增的部分。
-      const mergedAll = dedupeSongs([...results, ...list])
-      const fresh = mergedAll.slice(results.length)
-      if (fresh.length === 0) {
-        setHasMore(false)
-      } else {
-        setResults(mergedAll)
-        setPage(next)
-        if (list.length < PAGE_SIZE) setHasMore(false)
-      }
-    } catch {
-      setHasMore(false)
+      await p.loadMore(async (page) => {
+        if (source === 'all') {
+          const agg = await searchMusicAggregatePage({ name: searchedFor, page, signal: ac.signal })
+          return agg
+        }
+        const list = await searchMusic({ name: searchedFor, source, page, pages: 1, signal: ac.signal })
+        return {
+          items: list,
+          rawCounts: [list.length],
+          rawHasMore: list.length >= PAGE_SIZE,
+          anyFulfilled: true,
+        }
+      })
+      if (ac.signal.aborted) return
+      syncFromPager()
+    } catch (e) {
+      // 网络错误**不能**当成「到底了」—— 那会让一次抖动永久终止翻页。
+      // 控制器内部已保证不推进页码、不关 hasMore，这里只需解锁并提示。
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      console.warn('[搜索] 加载下一页失败，保持可重试:', e)
+      syncFromPager()
     } finally {
-      setLoadingMore(false)
+      if (!ac.signal.aborted) setLoadingMore(false)
     }
-  }, [loadingMore, hasMore, kind, searchedFor, page, source, results])
+  }, [kind, searchedFor, source, syncFromPager])
 
   const sentinelRef = useSentinel(() => void loadMore(), phase === 'done' && hasMore && !loadingMore)
 

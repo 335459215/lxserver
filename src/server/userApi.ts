@@ -7,9 +7,12 @@ import * as crypto from 'crypto'
 import * as zlib from 'zlib'
 import { promisify } from 'util'
 
-import * as tunnel from 'tunnel'
+import { AsyncLocalStorage } from 'async_hooks'
 import { getProxyAgent } from '../modules/utils/proxy.js'
 import { debugLog } from '@/server/utils/debugLog'
+import { createSourceHealth } from './sourceHealth'
+import { isSourceAbort, observeSourceAbort, runSourceRequest, sourceAbortError, waitForSourceDelay } from './sourceRequest'
+import type { SourceSignal } from './sourceRequest'
 const inflate = promisify(zlib.inflate)
 const deflate = promisify(zlib.deflate)
 
@@ -137,6 +140,9 @@ export function extractMetadata(script: string): Partial<UserApiInfo> {
     return meta
 }
 
+// Async-local ownership also follows lx.request calls made after awaits inside a VM handler.
+const sourceRequestContext = new AsyncLocalStorage<AbortSignal>()
+
 // 创建 lx.request 包装器（使用 needle）
 async function createLxRequest(isUnsafe: boolean = false, onSniffUpdate?: (alert: { name?: string, log?: string, updateUrl?: string }) => void) {
     // 自定义音源脚本调用 lx.request 是同步的，无法在调用时 await，
@@ -148,82 +154,79 @@ async function createLxRequest(isUnsafe: boolean = false, onSniffUpdate?: (alert
     return (url: string, options: any, callback: Function) => {
         const safeOptions = decontextify(options || {})
         const { method = 'get', timeout, headers, body, form, formData } = safeOptions
-
-        let requestOptions: any = {
+        const timeoutMs = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+            ? Math.min(timeout, 60_000) : 10_000
+        const controller = new AbortController()
+        const detach = observeSourceAbort(sourceRequestContext.getStore(), () => controller.abort())
+        const requestOptions: any = {
             headers,
             follow_max: 5,
-            response_timeout: typeof timeout === 'number' && timeout > 0 ? Math.min(timeout, 60000) : 60000
+            open_timeout: timeoutMs,
+            response_timeout: timeoutMs,
+            read_timeout: timeoutMs
         }
-
         if (agentHttps && /^https:/i.test(String(url))) requestOptions.agent = agentHttps
         else if (agentHttp) requestOptions.agent = agentHttp
 
         let data = body
-        if (form) {
-            data = form
-            requestOptions.json = false
-        } else if (formData) {
-            data = formData
+        if (form || formData) {
+            data = form || formData
             requestOptions.json = false
         }
 
-        const request = needle.request(method, url, data, requestOptions, (err: any, resp: any, body: any) => {
+        // Needle's response timeout ends at headers. This independent deadline ends only
+        // when its callback has consumed the entire body (including redirect bodies).
+        const pending = runSourceRequest<{ resp: any, body: any }>(() => {
+            let request: any
+            const promise = new Promise((resolve, reject) => {
+                request = needle.request(method, url, data, requestOptions, (err: any, resp: any, body: any) => {
+                    if (err) reject(err)
+                    else resolve({ resp, body })
+                })
+            })
+            return { promise, cancel: () => request?.abort() }
+        }, { timeoutMs, signal: controller.signal })
+
+        const deliver = (error: any, response: any, body: any) => {
+            try { callback.call(null, error, response, body) }
+            catch (error: any) { console.error('[自定义源] lx.request 回调异常:', error?.message) }
+        }
+        void pending.then(({ resp, body }) => {
+            let safeResp: any
             try {
-                if (err) {
-                    callback.call(null, decontextify(err), null, null)
-                } else {
-                    let parsedBody = body
-                    if (typeof body === 'string') {
-                        try {
-                            parsedBody = JSON.parse(body)
-                        } catch { }
-                    }
-
-                    // 自动嗅探第三方脚本通过 HTTP 响应返回的更新提醒 (例如独家音源、各大更新接口)
-                    if (onSniffUpdate && parsedBody && typeof parsedBody === 'object') {
-                        const targetData = parsedBody.data || parsedBody
-                        const updateMsg = targetData.updateMsg || targetData.log || targetData.updateLog || targetData.msg
-                        const updateUrl = targetData.updateUrl || targetData.url || targetData.downloadUrl
-                        if (updateMsg && (updateUrl || typeof updateMsg === 'string' && updateMsg.includes('更新'))) {
-                            onSniffUpdate({
-                                log: String(updateMsg),
-                                updateUrl: updateUrl ? String(updateUrl) : ''
-                            })
-                        }
-                    }
-
-                    let safeResp: any = {
-                        statusCode: resp.statusCode,
-                        statusMessage: resp.statusMessage,
-                        headers: resp.headers,
-                        body: decontextify(parsedBody)
-                    }
-
-                    // 核心修复：原生 VM 模式下，将响应对象通过 JSON 转换以修复原型链，但保留原始 Body 引用（如果不是对象）
-                    if (isUnsafe) {
-                        const jsonBody = (typeof parsedBody === 'object' && !Buffer.isBuffer(parsedBody))
-                            ? JSON.parse(JSON.stringify(parsedBody))
-                            : parsedBody;
-
-                        safeResp = JSON.parse(JSON.stringify({
-                            statusCode: resp.statusCode,
-                            statusMessage: resp.statusMessage,
-                            headers: resp.headers
-                        }));
-                        safeResp.body = jsonBody;
-                    }
-
-                    callback.call(null, null, safeResp, safeResp.body)
+                let parsedBody = body
+                if (typeof body === 'string') {
+                    try { parsedBody = JSON.parse(body) } catch {}
                 }
-            } catch (error: any) {
-                callback.call(null, decontextify(error), null, null)
+                if (onSniffUpdate && parsedBody && typeof parsedBody === 'object') {
+                    const targetData = parsedBody.data || parsedBody
+                    const updateMsg = targetData.updateMsg || targetData.log || targetData.updateLog || targetData.msg
+                    const updateUrl = targetData.updateUrl || targetData.url || targetData.downloadUrl
+                    if (updateMsg && (updateUrl || typeof updateMsg === 'string' && updateMsg.includes('更新'))) {
+                        onSniffUpdate({ log: String(updateMsg), updateUrl: updateUrl ? String(updateUrl) : '' })
+                    }
+                }
+                safeResp = {
+                    statusCode: resp.statusCode,
+                    statusMessage: resp.statusMessage,
+                    headers: resp.headers,
+                    body: decontextify(parsedBody)
+                }
+                if (isUnsafe) {
+                    safeResp = JSON.parse(JSON.stringify({
+                        statusCode: resp.statusCode, statusMessage: resp.statusMessage, headers: resp.headers
+                    }))
+                    safeResp.body = typeof parsedBody === 'object' && !Buffer.isBuffer(parsedBody)
+                        ? JSON.parse(JSON.stringify(parsedBody)) : parsedBody
+                }
+            } catch (error) {
+                deliver(decontextify(error), null, null)
+                return
             }
-        })
+            deliver(null, safeResp, safeResp.body)
+        }, error => deliver(decontextify(error), null, null)).finally(detach)
 
-        return () => {
-            const reqObj = (request as any).request
-            if (reqObj && !reqObj.aborted) reqObj.abort()
-        }
+        return () => controller.abort()
     }
 }
 
@@ -233,6 +236,7 @@ async function createLxRequest(isUnsafe: boolean = false, onSniffUpdate?: (alert
 // 而校验用的是 owner:'temp'，永远匹配不上，VM 与上下文会随每次上传/导入无限累积。
 export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boolean }): Promise<any> {
     const persist = opts?.persist !== false
+    if (persist) sourceHealth.reset(apiInfo.id, apiInfo.owner)
     // 从脚本中提取元数据
     const metadata = extractMetadata(apiInfo.script)
     const fullApiInfo = { ...apiInfo, ...metadata }
@@ -421,33 +425,33 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
             }
         }
 
-        // 等待脚本调用 lx.send('inited')（最多等待 3 秒）
-        await Promise.race([
-            initPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('初始化超时，请确保脚本调用了 lx.send("inited", ...)')), 3000))
-        ])
+        // Clear the initialization deadline on success as well (no detached 3s timers).
+        let initTimer: ReturnType<typeof setTimeout> | undefined
+        try {
+            await Promise.race([
+                initPromise,
+                new Promise((_, reject) => { initTimer = setTimeout(() => reject(new Error('初始化超时，请确保脚本调用了 lx.send("inited", ...)')), 3000) })
+            ])
+        } finally {
+            clearTimeout(initTimer)
+        }
 
         // 保存加载 of the API
         const apiInstance = {
             info: { ...fullApiInfo, sources: registeredSources },
             handlers: eventHandlers,
-            callRequest: async (action: string, source: string, info: any) => {
-                try {
+            callRequest: (action: string, source: string, info: any, requestOpts?: { signal?: SourceSignal, requestTimeoutMs?: number }) => {
+                const pending = runSourceRequest<any>(signal => sourceRequestContext.run(signal, () => {
                     const handler = eventHandlers.get('request')
                     if (!handler) throw new Error(`源 ${fullApiInfo.name} 未注册 request 处理器`)
-
-                    // 核心修复：如果是原生 VM 模式，将传入数据 JSON 化以纯净化原型链（确保它是 VM 内的对象）
                     let inputData = { action, source, info }
                     if (apiInfo.allowUnsafeVM && global.lx.config['system.allowUnsafeVM']) {
                         inputData = JSON.parse(JSON.stringify(inputData))
                     }
-
-                    const result = await handler(inputData)
-                    return decontextify(result)
-                } catch (e: any) {
-                    console.error(`[自定义源-${fullApiInfo.name}] 调用请求异常:`, e.message)
-                    throw e
-                }
+                    // Preserve Promise/cancel handles until runSourceRequest owns them.
+                    return handler(inputData)
+                }), { timeoutMs: requestOpts?.requestTimeoutMs, signal: requestOpts?.signal })
+                return pending.then(result => decontextify(result))
             }
         }
 
@@ -482,130 +486,33 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
     }
 }
 
-// 连续失败的自定义源会被临时熔断，跳过直到冷却结束。
-// 没有它的话，每次播放都要把已知死掉的源重新拉一遍——它们往往要等满
-// 音源脚本自身的超时才返回，是整条链路上最贵的一段等待。
-interface BreakerState {
-    fails: number
-    openUntil: number
-    /** 冷却结束后已发放出去的探针数，保证同一时刻最多一个探针在飞 */
-    probeInFlight: boolean
-}
-const sourceBreakers = new Map<string, BreakerState>()
+// Owner+id scoped health; collection only checks eligibility, execution atomically acquires it.
+const sourceHealth = createSourceHealth({
+    policy: () => ({
+        enabled: global.lx.config['music.url.breakerEnabled'] !== false,
+        threshold: Math.max(1, Number(global.lx.config['music.url.breakerThreshold'] ?? 3) || 3),
+        cooldownMs: Math.max(5_000, (Number(global.lx.config['music.url.breakerCooldown'] ?? 300) || 300) * 1000)
+    })
+})
 
-const breakerEnabled = () => global.lx.config['music.url.breakerEnabled'] !== false
-const breakerThreshold = () => Math.max(1, Number(global.lx.config['music.url.breakerThreshold'] ?? 3))
-const breakerCooldownMs = () => Math.max(5_000, Number(global.lx.config['music.url.breakerCooldown'] ?? 300) * 1000)
+/** Link-validation accounting; omit owner only for public ('open') sources. */
+export const reportSourceResult = (apiId: string, ok: boolean, owner = 'open') => sourceHealth.recordResult(apiId, ok, owner)
 
-/**
- * 该源当前是否应当被跳过。冷却结束后发放一个探针——用显式的 probeInFlight 标记，
- * 而不是在这里扣减计数：候选收集循环每次请求都会遍历所有源，若把「每次扫描」
- * 当成一次探针，一次解析（最多 6 个候选平台）就能把探针额度一次性耗光，
- * 恢复中的源会被整个并发集群一起冲垮，正是熔断本该防的事。
- */
-const isSourceTripped = (apiId: string) => {
-    if (!breakerEnabled()) return false
-    const st = sourceBreakers.get(apiId)
-    if (!st) return false
-    // 冷却中：若探针名额还没发出去，放一个候选过去试探（名额在真正调用前发放，
-    // 见 grantCooldownProbe——若在这里就发放，而该候选随后被权限/排除条件过滤掉，
-    // 没人回来核销，这个源会被永久跳过）。
-    if (st.openUntil > Date.now()) return st.probeInFlight
-    return false
-}
+/** Only genuine positive measured latency is accepted; EMA alpha=.35, TTL=30min. */
+export const recordSourceSpeed = (apiId: string, ms: number, owner = 'open') => sourceHealth.recordSpeed(apiId, ms, owner)
+export const getSourceSpeed = (apiId: string, owner = 'open'): number | null => sourceHealth.getSpeed(apiId, owner)
 
-/** 候选真正要被调用前发放冷却探针名额 */
-const grantCooldownProbe = (apiId: string) => {
-    if (!breakerEnabled()) return
-    const st = sourceBreakers.get(apiId)
-    if (!st) return
-    if (st.openUntil > Date.now() && !st.probeInFlight) {
-        sourceBreakers.set(apiId, { ...st, probeInFlight: true })
-    }
-}
-
-const recordSourceResult = (apiId: string, ok: boolean) => {
-    if (!breakerEnabled() || !apiId) return
-    const now = Date.now()
-    if (ok) { sourceBreakers.delete(apiId); return }
-    const st = sourceBreakers.get(apiId) ?? { fails: 0, openUntil: 0, probeInFlight: false }
-    if (st.openUntil > now) return
-    const fails = st.fails + 1
-    sourceBreakers.set(apiId, { fails, probeInFlight: false, openUntil: fails >= breakerThreshold() ? now + breakerCooldownMs() : 0 })
-}
-
-/** 供解析器在「音源返回了不可用的链接」时上报——这类源不会抛异常，只能由外部记账 */
-export const reportSourceResult = (apiId: string, ok: boolean) => recordSourceResult(apiId, ok)
-
-// === 音源测速 ===
-//
-// 【为什么需要】熔断只回答「这个源能不能用」，不回答「用起来快不快」。
-// 一个稳定返回 200、但 TTFB 三秒起步的源永远不会被熔断（它没失败），
-// 却是「点歌后一直转圈」的典型元凶。播放链路此前完全没有速度概念，
-// 因此无法把这类源降级到更快的备用源后面。
-//
-// 【为什么不增加任何延迟】测量搭在**已有的链接可用性探测**上顺带完成：
-// 那段探测本来就要等一个响应回来，这里只是给等待计时，不额外发请求、
-// 不额外等待。关掉校验（music.url.validate=false）时不探测，也就没有速度数据，
-// 此时排序回落到原有的优先级语义。
-//
-// 【为什么用 EMA 而不是平均】音源速度波动很大（同一条 CDN 在高峰期能差十倍）。
-// 简单平均会被历史极值长期拖住，EMA 让近期样本占更大权重，
-// 源变快/变慢能在几次播放内反映出来。
-const sourceSpeed = new Map<string, number>()
-const SPEED_ALPHA = 0.35
-
-/** 记一次实测耗时（毫秒）。apiId 为空或耗时不合理时忽略。
- *
- *  【为什么必须拒绝 0】
- *  0 有两种来源：真实的极快响应（罕见），以及**调用方压根没量到**
- *  （探测缓存命中、没发生网络等待）。后者最常见，而如果放它进来，
- *  这个源会以「0ms」永久占据排序首位 —— 那比没有数据更糟。
- *  所以约定：**只有真实发生过的网络等待才允许上报**，调用方负责区分
- *  （见 musicResolver 里用 innerProbeCache.costMs 取首次真实耗时的写法）。
- *  宁可没有样本（排序时按「未知」处理），也不要一个假的 0。 */
-export const recordSourceSpeed = (apiId: string, ms: number) => {
-  if (!apiId) return
-  if (!Number.isFinite(ms) || ms <= 0 || ms > 60_000) return
-  const prev = sourceSpeed.get(apiId)
-  sourceSpeed.set(apiId, prev === undefined ? ms : prev * (1 - SPEED_ALPHA) + ms * SPEED_ALPHA)
-  // 上限保护：源被大量增删时不让这张表无限增长
-  if (sourceSpeed.size > 500) {
-    const it = sourceSpeed.keys()
-    for (let i = 0; i < 100; i++) {
-      const k = it.next()
-      if (k.done) break
-      sourceSpeed.delete(k.value)
-    }
-  }
-}
-
-/** 取该源的平滑耗时（毫秒）；无样本返回 null（调用方据此判定「未知」）。 */
-export const getSourceSpeed = (apiId: string): number | null => sourceSpeed.get(apiId) ?? null
-
-/** 快照，供诊断接口展示 */
-export const snapshotSourceSpeeds = (): Array<{ sourceId: string, ms: number }> =>
-  [...sourceSpeed.entries()]
-    .map(([sourceId, ms]) => ({ sourceId, ms: Math.round(ms) }))
-    .sort((a, b) => a.ms - b.ms)
-
-/** 音源被增删改或重载时作废速度样本（换了脚本，旧速度不再代表新行为） */
-export const resetAllSourceSpeeds = () => { sourceSpeed.clear() }
-
-/** 是否启用「同优先级内按实测速度微调顺序」 */
 const orderSpeedTuneEnabled = () => global.lx.config['music.url.speedTune'] !== false
 
-/** 供后台「测试音源」成功后解除该源的熔断状态 */
-export const resetSourceBreaker = (apiId: string) => { sourceBreakers.delete(apiId) }
-
-/** 自定义源被增删改或重新加载时整体作废熔断状态。
- *  同时清掉速度样本：换了脚本之后，旧速度不再代表这个源的新行为。 */
-export const resetAllSourceBreakers = () => { sourceBreakers.clear(); sourceSpeed.clear() }
+/** Source mutation invalidates both breaker state and measured latency. */
+export const resetAllSourceBreakers = () => sourceHealth.resetAll()
 
 export interface MusicUrlRaceOptions {
     /** 外层置 true 后，内部竞速立刻停止发起新的候选并尽快返回——
      *  否则输掉的外层候选会把整条内部竞速跑完，一次播放多打十几次上游请求 */
-    signal?: { aborted: boolean }
+    signal?: SourceSignal
+    /** Strict total deadline per attempt (handler + link validation), default 10s. */
+    requestTimeoutMs?: number
     /**
      * 脚本成功返回链接时要不要记一次熔断「成功」。解析器会随后对链接做可用性
      * 探测并自行记账；若这里也记成功，就会把熔断计数清零，紧接着解析器记的
@@ -645,7 +552,8 @@ export async function callUserApiGetMusicUrl(
     enableAutoSwitchApiSource?: boolean,
     excludeApiSources?: string[],
     opts?: MusicUrlRaceOptions
-): Promise<{ url: string, type: string, sourceName?: string, sourceId?: string, attempts?: any[], hasMoreSources?: boolean }> {
+): Promise<{ url: string, type: string, sourceName?: string, sourceId?: string, sourceOwner?: string, attempts?: any[], hasMoreSources?: boolean }> {
+    if (opts?.signal?.aborted) throw sourceAbortError()
     // 标准化 songInfo 格式：将 meta 中的字段提升到顶层
     const normalizedSongInfo = { ...songInfo }
     if (songInfo.meta) {
@@ -777,7 +685,7 @@ export async function callUserApiGetMusicUrl(
     for (const [apiId, api] of loadedApis) {
         if (!api.info.sources || !api.info.sources[source]) continue
         // 连续失败被熔断的源本轮直接不参与竞速
-        if (isSourceTripped(api.info.id)) {
+        if (sourceHealth.isBlocked(api.info.id, api.info.owner)) {
             trippedSourceNames.push(api.info.name)
             if (global.lx.config['debug.enabled']) console.log(`[自定义源] ${api.info.name} 处于熔断冷却，本轮跳过`)
             continue
@@ -868,11 +776,11 @@ export async function callUserApiGetMusicUrl(
                 const ra = rankOf(a.info.id)
                 const rb = rankOf(b.info.id)
                 if (ra !== rb) return ra - rb          // order.json 说了算
-                const sa = sourceSpeed.get(a.info.id)
-                const sb = sourceSpeed.get(b.info.id)
-                if (sa === undefined && sb === undefined) return 0
-                if (sa === undefined) return -1        // 无样本优先，给它一次机会
-                if (sb === undefined) return 1
+                const sa = getSourceSpeed(a.info.id, a.info.owner)
+                const sb = getSourceSpeed(b.info.id, b.info.owner)
+                if (sa === null && sb === null) return 0
+                if (sa === null) return -1        // 无样本优先，给它一次机会
+                if (sb === null) return 1
                 return sa - sb
             })
         }
@@ -927,148 +835,157 @@ export async function callUserApiGetMusicUrl(
     const maxRetries = candidates.length === 1 ? Math.max(2, configuredRetries) : configuredRetries
     const retryDelayMs = Math.max(0, Number(cfg['music.url.retryDelay'] ?? 900))
 
-    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+    const requestTimeoutMs = Number.isFinite(opts?.requestTimeoutMs) && opts!.requestTimeoutMs! > 0
+        ? opts!.requestTimeoutMs! : 10_000
+    const controller = new AbortController()
+    const detachAbort = observeSourceAbort(opts?.signal, () => controller.abort())
+    const stopped = () => controller.signal.aborted || !!opts?.signal?.aborted
     const succeeded = new Map<number, any>()
     const inflight = new Set<number>()
+    const running = new Set<Promise<void>>()
     let accepted: { index: number, result: any } | null = null
-    let finished = 0
-    let done = false
+    let schedulingDone = false
     let graceDeadline = 0
     let dirty = false
-    let notify: (() => void) | null = null
-    const changed = () => { dirty = true; const n = notify; notify = null; n?.() }
-    // dirty 标志保证「状态变化早于等待注册」时不会漏唤醒（否则可能空等到全部候选结束）
-    const nextChange = async (): Promise<void> => {
-        if (dirty) { dirty = false; return }
-        await new Promise<void>(r => { notify = r })
+    const listeners = new Set<() => void>()
+    const changed = () => { dirty = true; for (const listener of [...listeners]) listener() }
+    controller.signal.addEventListener('abort', changed)
+    // Unlike Promise.race(nextChange, sleep), this removes timed-out listeners/timers.
+    const nextChange = async (ms = 1000): Promise<void> => {
+        if (dirty || stopped()) { dirty = false; return }
+        await new Promise<void>(resolve => {
+            const finish = () => { clearTimeout(timer); listeners.delete(finish); resolve() }
+            const timer = setTimeout(finish, Math.max(0, ms))
+            listeners.add(finish)
+        })
         dirty = false
     }
 
     const emit = (slot: any[], att: any) => {
         slot.push(att)
-        // 推进度不等待：onProgress 里可能带着 SSE 未就绪的重试（最多 10×300ms），
-        // 在竞速里 await 它会把候选完成时间拖慢最多 3 秒。进度是尽力而为的旁路信息。
-        if (!accepted && onProgress) {
-            try { void Promise.resolve(onProgress(att)).catch(() => { /* 忽略推送异常 */ }) } catch (e) { /* 忽略 */ }
+        if (!accepted && !stopped() && onProgress) {
+            try { void Promise.resolve(onProgress(att)).catch(() => {}) } catch {}
         }
     }
 
     const runCandidate = async (index: number) => {
         const api = candidates[index]
         const slot = attemptSlots[index]
+        const identity = { name: api.info.name, sourceId: api.info.id, sourceOwner: api.info.owner }
         try {
-            // 若该源正处于熔断冷却且探针名额未发放，这次调用就是那次探针
-            grantCooldownProbe(api.info.id)
             for (let i = 0; i < maxRetries; i++) {
-                if (accepted) return
-                if (opts?.signal?.aborted) return
+                if (accepted || stopped()) return
+                // Atomic admission belongs here, not to candidate collection: other platform
+                // resolvers may already have collected this same recovering source.
+                const permit = sourceHealth.acquire(api.info.id, api.info.owner)
+                if (!permit) return
                 try {
-                    debugLog(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner}, 优先级: ${index + 1}/${candidates.length})`)
-                    const url = await api.callRequest('musicUrl', source, {
-                        musicInfo: normalizedSongInfo,
-                        quality: quality,
-                        type: quality
-                    })
-                    if (accepted) return
-                    // 链接可播性由调用方裁决（见 MusicUrlRaceOptions.validateLink）。
-                    // 校验不通过不算赢：这个源不算成功，竞速继续让后面的源上，
-                    // 死链就不会因为「脚本调用没抛异常」而挤掉真正能播的源。
-                    if (opts?.validateLink) {
-                        const linkOk = await opts.validateLink(url)
-                        if (accepted) return
-                        if (!linkOk) {
-                            console.warn(`[自定义源] ✗ ${api.info.name} 返回的链接不可用, 该源落选`)
-                            recordSourceResult(api.info.id, false)
-                            emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: '音源返回的链接不可用' })
-                            changed()
-                            continue
+                    debugLog(`[自定义源] 尝试 ${api.info.name} 获取 ${source} 音乐链接 (第 ${i + 1}/${maxRetries} 次, 所属: ${api.info.owner})`)
+                    const url = await runSourceRequest<string>(async signal => {
+                        const result = await api.callRequest('musicUrl', source, {
+                            musicInfo: normalizedSongInfo, quality, type: quality
+                        }, { signal, requestTimeoutMs })
+                        if (stopped() || signal.aborted) throw sourceAbortError()
+                        // Undefined/non-URL results must never win a race.
+                        if (typeof result !== 'string' || !result.trim()) throw new Error('音源未返回有效的 HTTP(S) URL')
+                        const url = result.trim()
+                        const parsed = new URL(url)
+                        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('音源未返回有效的 HTTP(S) URL')
+                        if (opts?.validateLink) {
+                            const linkOk = await opts.validateLink(url)
+                            if (stopped() || signal.aborted) throw sourceAbortError()
+                            if (!linkOk) throw new Error('音源返回的链接不可用')
                         }
-                    }
-                    debugLog(`[自定义源] ✓ ${api.info.name} 成功返回链接 (所属: ${api.info.owner})`)
-                    // 成功记账可由调用方关闭：解析器会对链接做可用性探测并自行记账，
-                    // 两边都记会让「成功清零」抵消掉随后的「校验失败」。
-                    if (opts?.recordBreakerSuccess !== false) recordSourceResult(api.info.id, true)
-                    emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'success', message: maxRetries > 1 ? `第 ${i + 1} 次尝试成功` : '' })
-                    succeeded.set(index, { url, type: quality, sourceName: api.info.name, sourceId: api.info.id })
+                        return url
+                    }, { timeoutMs: requestTimeoutMs, signal: controller.signal })
+                    // Recheck AFTER every await, including errors/cancellation from an outer race.
+                    if (accepted || stopped()) return
+                    permit.finish(opts?.recordBreakerSuccess === false ? undefined : true)
+                    emit(slot, { ...identity, status: 'success', message: maxRetries > 1 ? `第 ${i + 1} 次尝试成功` : '' })
+                    succeeded.set(index, { url, type: quality, sourceName: api.info.name, sourceId: api.info.id, sourceOwner: api.info.owner })
                     changed()
                     return
                 } catch (error: any) {
+                    if (accepted || stopped() || isSourceAbort(error)) return
                     lastError = error
+                    permit.finish(false)
                     console.error(`[自定义源] ${api.info.name} 失败 (第 ${i + 1}/${maxRetries} 次):`, `音源日志：${error.message}`)
-                    recordSourceResult(api.info.id, false)
-                    emit(slot, { name: api.info.name, sourceId: api.info.id, status: 'fail', message: `音源日志：${error.message}` })
+                    emit(slot, { ...identity, status: 'fail', message: `音源日志：${error.message}` })
                     changed()
-                    if (i < maxRetries - 1 && !accepted) await sleep(retryDelayMs)
+                } finally {
+                    permit.finish() // cancellation/deferred accounting releases a half-open slot
+                }
+                if (i < maxRetries - 1 && !accepted && !stopped()) {
+                    try { await waitForSourceDelay(retryDelayMs, controller.signal) } catch { return }
                 }
             }
         } finally {
             inflight.delete(index)
-            finished++
-            if (finished >= candidates.length) done = true
             changed()
         }
     }
 
-    // 并发关闭时按 order.json 顺序逐个试（排障/与旧行为对比用）。
-    // 这个分支必须真的存在：music.url.race 是在后台 UI 上暴露的开关，
-    // 之前只算了 raceEnabled 却从没读过，关掉它毫无任何行为变化。
-    if (!raceEnabled) {
-        for (let i = 0; i < candidates.length && !accepted && !opts?.signal?.aborted; i++) {
-            inflight.add(i)
-            void runCandidate(i)
-            while (inflight.has(i)) await nextChange()
-        }
-    } else {
-        // 按优先级依次错峰启动：既保住了 order.json 的优先级语义，
-        // 又不会像纯串行那样把每个源的失败延迟累加起来。
-        const aborted = () => accepted || !!opts?.signal?.aborted
-        const schedule = async () => {
+    // One owned scheduler for serial and race modes; the arbiter deadline is live in both.
+    const schedule = async () => {
+        try {
             for (let i = 0; i < candidates.length; i++) {
-                if (aborted()) return
-                if (i > 0) await sleep(staggerMs)
-                while (inflight.size >= maxParallel && !aborted()) await sleep(20)
-                if (aborted()) return
+                if (accepted || stopped()) return
+                if (raceEnabled && i > 0) await waitForSourceDelay(staggerMs, controller.signal)
+                while (inflight.size >= (raceEnabled ? maxParallel : 1) && !accepted && !stopped()) await nextChange()
+                if (accepted || stopped() || (!raceEnabled && succeeded.size > 0)) return
                 inflight.add(i)
-                void runCandidate(i)
+                const task = runCandidate(i)
+                running.add(task)
+                void task.finally(() => running.delete(task))
+                if (!raceEnabled) await task
             }
+        } catch (error) {
+            if (!isSourceAbort(error)) lastError = error
+        } finally {
+            schedulingDone = true
+            changed()
         }
-        void schedule()
     }
-
-    // 裁决：取已成功候选里序号最小的；只要还有序号更小的候选在途，就给它
-    // priorityGrace 的时间反超——这样「排第一的源」通常还是赢，但不用等它先跑完。
-    // 音源脚本自带 10s VM 超时 + maxRetries 次重试，正常远到不了这个上限
+    const scheduleTask = schedule()
+    // Finite overall budget too; when it expires the scheduler and pending starts are stopped.
     const arbiterDeadline = Date.now() + 120_000
     let winner: { index: number, result: any } | null = null
-    for (;;) {
-        if (succeeded.size > 0) {
-            const indexes = [...succeeded.keys()].sort((a, b) => a - b)
-            const best = indexes[0]
-            // 宽限必须是「从第一个成功出现算起的总预算」而不是每轮各等一次，
-            // 否则 while 里会一轮一轮地重新等，慢源照样把延迟拖满，宽限形同虚设。
-            if (graceDeadline === 0) graceDeadline = Date.now() + priorityGraceMs
-            const hasLowerInFlight = [...inflight].some(i => i < best)
-            if (hasLowerInFlight && priorityGraceMs > 0 && Date.now() < graceDeadline) {
-                await Promise.race([nextChange(), sleep(graceDeadline - Date.now())])
-                continue
+    try {
+        for (;;) {
+            if (stopped()) break
+            if (Date.now() >= arbiterDeadline) {
+                lastError = new Error('自定义源竞速总时限已到')
+                break
             }
-            winner = { index: best, result: succeeded.get(best) }
-            accepted = winner
-            break
+            if (succeeded.size > 0) {
+                const best = Math.min(...succeeded.keys())
+                if (graceDeadline === 0) graceDeadline = Date.now() + priorityGraceMs
+                const hasHigherPriorityInFlight = [...inflight].some(i => i < best)
+                if (hasHigherPriorityInFlight && Date.now() < graceDeadline) {
+                    await nextChange(Math.min(graceDeadline, arbiterDeadline) - Date.now())
+                    continue
+                }
+                winner = { index: best, result: succeeded.get(best) }
+                accepted = winner
+                break
+            }
+            if (schedulingDone && inflight.size === 0) break
+            await nextChange(Math.min(1000, arbiterDeadline - Date.now()))
         }
-        if (done) break
-        // 外层已选定别的候选：立刻收手，不再等内部竞速跑完
-        if (opts?.signal?.aborted) break
-        // 兜底：nextChange 最多等 1 秒。音源脚本自带超时，但若将来有路径忘了
-        // changed()，这里会让请求永久挂起而不是报错。
-        if (Date.now() > arbiterDeadline) {
-            console.warn(`[自定义源] 裁决超时, 已完成 ${finished}/${candidates.length} 个候选`)
-            break
-        }
-        await Promise.race([nextChange(), sleep(1000)])
+    } finally {
+        controller.abort()
+        detachAbort()
+        await scheduleTask
+        await Promise.allSettled([...running])
+        controller.signal.removeEventListener('abort', changed)
     }
 
     const attempts = attemptSlots.flat()
+    if (opts?.signal?.aborted) {
+        const error: any = sourceAbortError()
+        error.attempts = attempts
+        throw error
+    }
 
     if (winner) {
         const r = winner.result
@@ -1077,6 +994,7 @@ export async function callUserApiGetMusicUrl(
             type: r.type || quality,
             sourceName: r.sourceName,
             sourceId: r.sourceId,
+            sourceOwner: r.sourceOwner,
             attempts,
             hasMoreSources: winner.index < candidates.length - 1
         }
@@ -1260,6 +1178,7 @@ function startWatcher(sourceRoot: string) {
 // 从文件系统加载所有已启用的自定义源
 // 路径变更：DATA_PATH/users/source/{username} 和 DATA_PATH/users/source/_open
 export async function initUserApis(targetUser?: string) {
+    resetAllSourceBreakers()
     const dataPath = process.env.DATA_PATH || path.join(process.cwd(), 'data')
     const sourceRoot = path.join(dataPath, 'users', 'source')
     const stats = { loadedCount: 0 }

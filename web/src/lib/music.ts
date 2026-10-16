@@ -7,6 +7,11 @@
  *                              跨平台竞速 + 源级熔断
  */
 import { userAuthHeaders } from '@/lib/auth'
+// 去重实现放在零依赖的 songIdentity.ts（便于单测直接 import）。
+// 这里必须**同时** import 进来用 + 转发出去：只写 `export {} from` 不会
+// 在本文件里建立局部绑定，而 searchMusicAggregate 自己就要调用它。
+import { dedupeSongs } from '@/lib/songIdentity'
+export { dedupeSongs }
 
 /** 各平台搜索结果字段名不统一，这里只声明公共字段，其余透传。
  *  歌单里的曲目（LX.Music.MusicInfo）也能被这个类型覆盖：它把封面/专辑放在
@@ -122,6 +127,96 @@ export async function searchMusic(params: {
   return data as Song[]
 }
 
+/** 分页聚合结果：除合并后的条目外，还带回**原始**分页状态。
+ *
+ *  【为什么必须带上 rawHasMore，不能让调用方数 items】
+ *  聚合搜索会跨平台去重，去重后条数**必然**小于原始条数：
+ *  5 个平台各回 20 条、其中 10 对是同一首歌 → 去重后只剩 10 条。
+ *  调用方若用「items.length < 20 就是最后一页」判断，第一页就会误判到底，
+ *  后面几页永远拉不到（实测已复现）。判断依据必须是**上游是否还有数据**，
+ *  而不是我们展示给用户的条数。 */
+export interface AggregatePage {
+  items: Song[]
+  /** 各平台原始返回的条数（未去重） */
+  rawCounts: number[]
+  /** 是否至少有一个平台返回了满页 —— 满页说明该平台后面可能还有 */
+  rawHasMore: boolean
+  /** 至少一个平台成功返回（用于区分「真没数据」与「全部请求失败」） */
+  anyFulfilled: boolean
+}
+
+/** 多平台并发聚合搜索（分页版）：返回条目 + 原始分页状态。 */
+export async function searchMusicAggregatePage(params: {
+  name: string
+  singer?: string
+  sources?: string[]
+  page?: number
+  signal?: AbortSignal
+  /** 服务端每页固定条数，用于判断上游是否还有下一页 */
+  pageSize?: number
+}): Promise<AggregatePage> {
+  const targetSources =
+    params.sources && params.sources.length > 0
+      ? params.sources
+      : ['kw', 'wy', 'tx', 'mg', 'kg']
+  const pageSize = params.pageSize ?? 20
+
+  const results = await Promise.allSettled(
+    targetSources.map((src) =>
+      searchMusic({
+        name: params.name,
+        singer: params.singer,
+        source: src,
+        page: params.page ?? 1,
+        signal: params.signal,
+      }),
+    ),
+  )
+
+  const lists: Song[][] = []
+  const rawCounts: number[] = []
+  let anyFulfilled = false
+  for (const r of results) {
+    if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+      anyFulfilled = true
+      rawCounts.push(r.value.length)
+      if (r.value.length > 0) lists.push(r.value)
+    } else {
+      rawCounts.push(0)
+    }
+  }
+
+  if (lists.length === 0) {
+    const firstErr = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+    // 全部请求失败时抛出，让调用方区分「网络错误」与「确实没有更多结果」。
+    // 早期把这两种都当成到底，网络抖动一次就永久停止翻页。
+    if (firstErr && !anyFulfilled) throw firstErr.reason
+    return { items: [], rawCounts, rawHasMore: false, anyFulfilled }
+  }
+
+  return {
+    items: dedupeSongs(interleave(lists)),
+    rawCounts,
+    // 只要有**任意**平台返回满页，就认为上游可能还有下一页。
+    // 不能用去重后的总数判断（见上面 AggregatePage 的说明）。
+    rawHasMore: rawCounts.some((n) => n >= pageSize),
+    anyFulfilled,
+  }
+}
+
+/** 交织合并（Round-Robin）：每个平台各出第 0 首，再出第 1 首，
+ *  保证不同平台的热门曲目都能展现。 */
+function interleave(lists: Song[][]): Song[] {
+  const out: Song[] = []
+  const maxLen = Math.max(...lists.map((l) => l.length))
+  for (let i = 0; i < maxLen; i++) {
+    for (const list of lists) {
+      if (i < list.length) out.push(list[i])
+    }
+  }
+  return out
+}
+
 /** 多平台并发聚合搜索：同时从酷我、网易云、QQ音乐、咪咕等拉取并交织合并 */
 export async function searchMusicAggregate(params: {
   name: string
@@ -166,15 +261,7 @@ export async function searchMusicAggregate(params: {
   // 去重见 dedupeSongs —— 按「歌名 + 歌手集合有交集」跨平台判定。
   // 此前用 `${source}_${id}` 做键，等于**只去掉同平台内的重复**，
   // 同一个作品在五个平台各留一条，用户看到的就是「结果里全是同一首歌」。
-  const interleaved: Song[] = []
-  const maxLen = Math.max(...lists.map((l) => l.length))
-  for (let i = 0; i < maxLen; i++) {
-    for (const list of lists) {
-      if (i < list.length) interleaved.push(list[i])
-    }
-  }
-
-  return dedupeSongs(interleaved)
+  return dedupeSongs(interleave(lists))
 }
 
 /** 解析播放地址；失败抛 MusicApiError（带 attempts 明细）。
@@ -257,139 +344,9 @@ export function songKey(song: Song | null): string {
   return id != null ? `${song.source}:${id}` : `${song.source}:${song.name}|${song.singer}`
 }
 
-/** 归一化到「可比较」形式：全角标点转半角、去大小写、去所有空白。
- *  平台之间的写法差异大多在这三处：`（feat. 杨瑞代）` 与 `(feat. 杨瑞代)`、
- *  `圣诞星（feat. 杨瑞代）` 与 `圣诞星 (feat. 杨瑞代)`、以及多余空格。 */
-function normalizeForMatch(s: string): string {
-  return s
-    .toLowerCase()
-    // 全角 ASCII（！-～）整体平移到半角，顺手覆盖 （） ： 、 等常见标点
-    .replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-    .replace(/\u3000/g, ' ')
-    .replace(/\s+/g, '')
-}
+/** 跨平台身份判定与去重：实现见 lib/songIdentity.ts（零依赖，便于单测直接 import）。
+ *  本文件顶部已转发 `dedupeSongs`，既有调用方不受影响。 */
 
-/** 抹掉「合作演唱」信息：`(feat. X)` / `[ft. X]` / 结尾的 `feat. X`。
- *  各平台对同一首歌的合作者写法极不统一（有的写进歌名、有的只写进歌手字段），
- *  不抹掉就会出现「圣诞星（feat. 杨瑞代）」与「圣诞星 (feat. 杨瑞代)」两条。
- *
- *  【顺序很关键】必须先 normalizeForMatch 再调用本函数：平台会写全角括号
- *  `（feat. …）`，而这里只认半角 `(`。顺序反了就会漏掉全角那一条 ——
- *  这正是第一版实现里「圣诞星」仍然重复的原因。 */
-function stripFeatClauses(s: string): string {
-  return s
-    .replace(/\((?:feat|ft)\.?[^)]*\)/g, '')
-    .replace(/\[(?:feat|ft)\.?[^\]]*\]/g, '')
-    .replace(/(?:feat|ft)\.?.*$/g, '')
-    .replace(/\(\)/g, '')
-}
-
-/** 歌名归一化：先抹平全角/空白，再抹 feat 子句，最后再去一次空白（抹完会留空括号）。 */
-function titleKey(raw: string): string {
-  return normalizeForMatch(stripFeatClauses(normalizeForMatch(raw)))
-}
-
-/** 剥掉中文名前的纯拉丁前缀：`CoCo李玟` → `李玟`、`G.E.M.邓紫棋` → `邓紫棋`。
- *
- *  【为什么需要】同一歌手在不同平台写法不一致 —— 腾讯/酷我/酷狗写 `CoCo李玟`，
- *  网易/咪咕写 `李玟`。不剥前缀的话，同一首合唱曲在 tx 与 wy 上会算出不同的
- *  歌手键，去重直接失效（实测《刀马旦》就是这样漏掉了两组）。
- *
- *  【为什么整名都是 ASCII 时不动】
- *  `A-Lin`、`G.E.M.` 这类名字本身就是纯英文，剥完会变成空串，
- *  于是所有英文歌手会塌缩成同一个键 —— 那会把不相干的歌误合并成一条。 */
-function stripLatinPrefix(name: string): string {
-  const m = /^[A-Za-z0-9.\-'\s]+([\u4e00-\u9fff].*)$/.exec(name)
-  return m ? m[1] : name
-}
-
-/** 歌手集合：把 singer 字段拆成归一化后的歌手名集合。
- *
- *  【为什么要剥拉丁前缀】同一歌手在各平台写法不一致 —— 腾讯/酷我/酷狗写
- *  `CoCo李玟`，网易/咪咕写 `李玟`。不剥就会算出两个不同的歌手，去重失效。 */
-function singerSet(raw: string): Set<string> {
-  const parts = String(raw || '')
-    .split(/[、,，/&]|\sfeat\.?\s*/i)
-    .map((x) => normalizeForMatch(stripLatinPrefix(x.trim())))
-    .filter(Boolean)
-  return new Set(parts)
-}
-
-/** 跨平台去重：把同一首歌的多个平台条目收敛成一条。
- *
- *  【为什么不能用「键相等」而必须用「歌手集合有交集」】
- *  实测数据（搜索「李玟」时的《月光爱人》），同一个录音在各平台的 singer 是：
- *      wy  `李玟`
- *      wy  `李玟、张志`
- *      kw  `CoCo李玟、马毓芬、谢文德、Dan Warner、…、马友友`
- *  酷我把一长串**伴奏/和声人员**也塞进了 singer。任何「整串相等」的键都会把
- *  这三条判成三首歌。只有「集合有交集」才能识别出它们唱的是同一首。
- *
- *  【为什么歌手顺序不影响】
- *  比较的是集合交集，`李玟、周杰伦` 与 `周杰伦、李玟` 天然命中。
- *
- *  【为什么不误合并翻唱】
- *  萨顶顶版与李玟版没有共同歌手，交集为空 → 各占一条。
- *
- *  【为什么不同录音版本仍然分开】
- *  `刀马旦` 与 `刀马旦 (Live)` 的 titleKey 不同（后缀没被 feat 规则抹掉），
- *  分属不同标题桶，永远不会被合到一起。
- *
- *  【保留哪一条】
- *  同组里选**署名歌手最少**的那条 —— 用户想看的是「李玟」，
- *  而不是「CoCo李玟、马毓芬、谢文德、Dan Warner、Julio Hernández、Archie Pena、马友友」。
- *  平手时保留先出现的（各平台按轮转合并，先出现的通常更热门）。 */
-export function dedupeSongs<T extends Song>(songs: T[]): T[] {
-  const out: T[] = []
-  const groups = new Map<string, number[]>()   // titleKey -> out 下标数组
-  const singerSets: Set<string>[] = []
-
-  for (const song of songs) {
-    const tk = titleKey(song?.name || '')
-    const ss = singerSet(song?.singer || '')
-    const candidates = groups.get(tk) || []
-    let hit = -1
-    for (const idx of candidates) {
-      const other = singerSets[idx]
-      // 任一方歌手为空时无法判断，按同标题合并（宁可少给一条，不要重复）
-      if (ss.size === 0 || other.size === 0 || intersects(ss, other)) { hit = idx; break }
-    }
-    if (hit === -1) {
-      groups.set(tk, [...candidates, out.length])
-      singerSets.push(ss)
-      out.push(song)
-    } else if (ss.size > 0 && singerSets[hit].size > 0 && ss.size < singerSets[hit].size) {
-      // 用署名更干净的替换掉冗长的那条，但保持原有位置（不改变列表顺序）
-      out[hit] = song
-      singerSets[hit] = ss
-    }
-  }
-  return out
-}
-
-function intersects(a: Set<string>, b: Set<string>): boolean {
-  // 遍历较小的一侧，通常只有 1~2 个元素
-  const [small, large] = a.size <= b.size ? [a, b] : [b, a]
-  for (const x of small) if (large.has(x)) return true
-  return false
-}
-
-/** 跨平台「同一首歌」判定键：**歌名 + 全部歌手（排序）**，刻意不含平台。
- *
- *  【为什么不能用 songKey 来做跨平台去重】
- *  songKey 里带平台前缀，而同一个作品在酷我/网易/QQ/咪咕各有各的 id，
- *  于是 `wy:123` 与 `tx:456` 被判为两首歌 —— 这正是「搜一首歌出来好几条
- *  一模一样的」的根因。要跨平台去重就必须把平台从键里拿掉。
- *
- *  【仅用于需要单值键的场合（Set / Map）】
- *  批量过滤请用 dedupeSongs —— 本函数是「键相等」语义，无法处理
- *  「歌手集合有交集但整串不等」的情况（`李玟` vs `CoCo李玟、马毓芬…`）。 */
-export function songIdentityKey(song: Song | null): string {
-  if (!song) return ''
-  const name = titleKey(song.name || '')
-  const singers = Array.from(singerSet(song.singer || '')).sort().join(',')
-  return `${name}|${singers}`
-}
 
 /** 封面地址：各平台字段名不统一，统一兜底（歌单曲目把封面放在 meta.picUrl） */
 export function coverUrl(song?: Song | null): string | undefined {

@@ -426,10 +426,19 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
     const outerAbort = { aborted: false }
     // 本次解析中已失败的源。跨音质档累积下来，下一档直接排除：
     // 一个同时支持 4 个平台的源，在 3 档音质下最多会被无谓地调用 12 次。
+    //
+    // 【必须并入 clientExcludes，不能只用本次请求带来的 excludeApiSources】
+    // clientExcludes 里还有「按歌黑名单」——那是播放器上一次报告「这首歌用这个源
+    // 播不出来」后我们记下来的。早期这里只取了本次的 exclude + 播放熔断，
+    // 于是下次重新点开同一首歌（播放器不再带 exclude）时，解析会**原样回到**
+    // 那个已经被证明播不出来的源：客户端换源→服务端又给回同一个死源→再换，
+    // 表现为反复卡在同一处。实测：第一次解析带 exclude 正确换了备用源，
+    // 紧接着同一首歌不带 exclude 再解析，返回的还是最初那个坏源。
     const failedSourceIds = new Set<string>([
+        ...clientExcludes,
         ...(Array.isArray(opts.excludeApiSources) ? opts.excludeApiSources : []).map(x => String(x)),
         ...playbackTripped,
-    ])
+    ].map(x => String(x).trim().toLowerCase()).filter(Boolean))
     const successes = new Map<number, any>()
     const inflight = new Set<number>()
     let attemptSlots: any[][] = [[]]
@@ -518,14 +527,24 @@ const runCandidate = async (index: number, quality: string) => {
             const probeStart = Date.now()
             const v = cachedProbe ?? await resolveAndValidateUrl(r.url)
             const probeCost = cachedProbe?.costMs ?? (Date.now() - probeStart)
+            // 「探测明确通过」才算确认可用 —— 这个布尔值后面同时门控三件事：
+            // 写粘滞缓存、记测速样本、清熔断失败记录。
+            //
+            // 【为什么不能只看 !probeError】
+            // validate=false 时用户明确关掉了链接校验，我们仍会探测（为了跟随重定向），
+            // 但探到 404 的链接**不是**确认可用的。早期版本在这里只看 probeError，
+            // 于是关校验时一条明确 404 的链接照样被标 confirmed：它被写进粘滞缓存
+            // （10 分钟），耗时被计入测速 EMA（表现为「这个源很快」），还顺手清掉了
+            // 熔断失败计数 —— 下次播放直接命中缓存里的死链，且排序把它当快源优先。
+            const confirmed = v.ok && !v.probeError
             if (!v.ok && validate) {
                 const reason = `${c.platform}/${r.sourceName || '未知源'}: ${v.reason}`
                 console.warn(`[音源解析] 链接校验未通过 ${reason}`)
                 // 链接不可用同样算失败，必须记进熔断：「稳定返回 403 的源」永远
                 // 不会抛异常，不靠这里计入就会被反复优先尝试。
-                reportSourceResult(String(r.sourceId ?? ''), false)
+                reportSourceResult(String(r.sourceId ?? ''), false, r.sourceOwner)
                 if (!accepted) {
-                    const att = { name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'fail' as const, message: v.reason ?? '链接不可用' }
+                    const att = { name: r.sourceName || '未知源', sourceId: r.sourceId, sourceOwner: r.sourceOwner, source: c.platform, cross: c.cross, status: 'fail' as const, message: v.reason ?? '链接不可用' }
                     slot.push(att)
                     // callUserApiGetMusicUrl 已经报过一次 success，这里必须补一条 fail，
                     // 否则前端进度里会留着一条和最终结果矛盾的「成功」。
@@ -549,16 +568,19 @@ const runCandidate = async (index: number, quality: string) => {
                 return
             }
             if (accepted) return
-            reportSourceResult(String(r.sourceId ?? ''), true)
+            // 熔断成功记录与测速样本都只认 confirmed：
+            // validate=false 下明确 404 的链接仍会交给播放器（尊重用户的开关），
+            // 但不该因此清掉这个源的失败记录、也不该让它拿到一个「很快」的样本。
+            if (confirmed) reportSourceResult(String(r.sourceId ?? ''), true, r.sourceOwner)
             // 只有「确认可用」的链接才计入速度样本：probeError（探针被网关 RST）
             // 的耗时反映的是探针被拒的速度，与这个源给播放器的真实速度无关。
             //
             // 另外必须防住「假耗时」：缓存命中时 probeCost 是 0（没发生网络等待），
             // 而测速模块明确拒绝 0（0 会被读成「极快」，从而永久霸占排序首位）。
             // 这种情况宁可不记账 —— 排序时按「未知」处理，比塞一个假的 0 诚实。
-            if (!v.probeError && probeCost > 0) recordSourceSpeed(String(r.sourceId ?? ''), probeCost)
-            slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
-            successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality, confirmed: true })
+            if (confirmed && probeCost > 0) recordSourceSpeed(String(r.sourceId ?? ''), probeCost, r.sourceOwner)
+            slot.push({ name: r.sourceName || '未知源', sourceId: r.sourceId, sourceOwner: r.sourceOwner, source: c.platform, cross: c.cross, status: 'success', message: `链接可用${c.cross ? '（跨平台替身）' : ''}` })
+            successes.set(index, { result: r, url: v.url, platform: c.platform, song: c.song, quality, confirmed })
             changed()
         } catch (err: any) {
             errors.push(`${c.platform}: ${err?.message || err}`)
@@ -766,7 +788,7 @@ const runCandidate = async (index: number, quality: string) => {
                         if (v.dead) {
                             console.warn(`[音源解析] 深度探测确认链接不可用: ${label}`)
                             // 深探测确认死链——判死，避免把死链交给播放器
-                            reportSourceResult(String(uc.result.sourceId ?? ''), false)
+                            reportSourceResult(String(uc.result.sourceId ?? ''), false, uc.result.sourceOwner)
                             unconfirmed.delete(v.idx)
                             failedSourceIds.add(String(uc.result.sourceId ?? ''))
                             // 把这个源记入「本次解析失败」，避免后续音质档再试
@@ -833,6 +855,20 @@ const runCandidate = async (index: number, quality: string) => {
         if (winner) break
         console.warn(`[音源解析] 音质 ${quality} 下所有候选均失败: ${errors.join(' | ')}`)
     }
+
+    // 裁决结束：通知所有还在跑的内部竞速立刻收手。
+    //
+    // 【为什么必须在这里显式置位】
+    // outerAbort 一直作为 signal 传进 callUserApiGetMusicUrl，但全文件从没把它
+    // 置成 true —— 信号是个死开关。实测（合成平台 + stub 探测）：原平台 127ms
+    // 出赢家后，输掉的平台仍在 333ms、661ms 继续**新启动**其它源。maxParallel=1
+    // 也拦不住，因为它们是在各自 pump 里被逐个拉起的。一次播放平白多打 4~15 次
+    // 上游请求，既拖慢又容易把上游打到限流。
+    //
+    // 放在这里而不是 break 之前：音质循环会跑多档，只有彻底定局（拿到赢家或
+    // 全部失败）才该收手；否则第一档失败就把第二档的信号也掐了。
+    outerAbort.aborted = true
+    if (lazyTimer) { clearTimeout(lazyTimer); lazyTimer = null }
 
     const attempts = attemptSlots.flat()
 
