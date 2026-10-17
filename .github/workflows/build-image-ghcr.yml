@@ -31,6 +31,12 @@ on:
       - 'tsconfig.json'
       - 'version' # 只改版本文件（cut 一个里程碑）也要触发发布
       - '.github/workflows/build-image-ghcr.yml'
+      # 测试与构建脚本：它们决定 test job 跑什么、怎么跑。
+      # 漏掉这一条会有一个危险的盲区 —— 只改 scripts/ 时 CI 不触发，
+      # 于是"把变异测试改坏""把断言删掉"这类改动可以在无人验证的情况下进 main。
+      # （实测踩到：修 mutation-check-bindip.cjs 后 push 完全没有 run。）
+      - 'scripts/**'
+      - 'test/**'
 
 # 串行化同一仓库的所有构建（排队,不取消）。版本号的 bump 判据是"GHCR 上是否
 # 已存在该 tag",而 merge-manifest 要到构建末尾才把版本 tag 推上去——两个构建
