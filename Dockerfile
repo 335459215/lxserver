@@ -33,7 +33,13 @@ ENV LOG_PATH='/server/data/logs'
 EXPOSE 9527
 ENV NODE_ENV='production'
 ENV PORT=9527
-ENV BIND_IP='0.0.0.0'
+# 【不要在这里硬编码 BIND_IP】环境变量的优先级**高于** config.js
+# （index.ts 里 envParams.BIND_IP 会覆盖配置文件）。此前这里写着
+# `ENV BIND_IP='0.0.0.0'`，导致用户在 config.js 里设 bindIP 永远无效 ——
+# 实测把 config.js 改成 127.0.0.1 后，容器仍监听 0.0.0.0，且日志/接口
+# 都显示 0.0.0.0，极难定位。需要固定监听地址时由使用者在 compose.yaml
+# 的 environment 里显式给 BIND_IP（那是用户的明确意图），镜像不替他决定。
+# ENV BIND_IP='0.0.0.0'
 # ENV PROXY_HEADER 'x-real-ip'
 # ENV SERVER_NAME 'My Sync Server'
 # ENV MAX_SNAPSHOT_NUM '10'

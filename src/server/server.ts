@@ -6954,6 +6954,13 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         if (req.method === 'GET') {
           const config = {
             serverName: global.lx.config.serverName,
+            // bindIP / port 必须回传，否则前端拿不到当前值：
+            // 设置页要显示它们、判断「是否与默认不同」，而这两项
+            // 改完需要重启才生效（见设置页「重启服务」区块）。
+            // 此前 GET 的白名单漏了 bindIP，导致它永远显示为空 ——
+            // 一度让我误以为"写入成功但值丢了"，实际是读取侧没返回。
+            bindIP: global.lx.config.bindIP,
+            port: global.lx.config.port,
             'debug.enabled': global.lx.config['debug.enabled'] || false,
             maxSnapshotNum: global.lx.config.maxSnapshotNum,
             'list.addMusicLocationType': global.lx.config['list.addMusicLocationType'],
