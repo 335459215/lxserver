@@ -14,16 +14,13 @@
 | 键名 | 默认值 | 作用 | UI 分组 | 需重启 |
 |---|---|---|---|---|
 | `serverName` | `'lxserver'` | 同步服务名，注入前端 | 基础服务 | 否 |
-| `bindIP` | `'0.0.0.0'` | 声明绑定 IP（实际主监听硬编码 0.0.0.0，本键仅参与序列化） | 基础服务 | 是 |
-| `port` | `9527` | 主 HTTP/WS 端口 | 基础服务 | 是 |
+| `bindIP` | `'0.0.0.0'` | 监听地址（v2.27.10 前是死配置，现已生效）。**Docker 部署下只影响容器内部监听**，外部访问由 compose 的 `ports` 映射决定 —— 详见下方说明 | 基础服务 | 是 |
+| `port` | `9527` | 主 HTTP/WS 端口（同样只在启动时消费） | 基础服务 | 是 |
 | `debug.enabled` | `false` | 调试日志总开关 | 基础服务 | 否 |
 | `disableTelemetry` | `false` | 关闭匿名数据上报 | 基础服务 | 否 |
 | `system.allowUnsafeVM` | `false` | 允许自定义源以原生 VM 运行 | 安全 | 否 |
 | `proxy.enabled` | `false` | 是否走反向代理转发（判 `x-real-ip`） | 访问与鉴权 | 否 |
 | `proxy.header` | `'x-real-ip'` | 取原始 IP 的请求头 | 访问与鉴权 | 否 |
-| `frontend.password` | `'123456'` | 管理后台登录密码（**78 处引用**） | 访问与鉴权 | 否 |
-| `player.enableAuth` | `false` | Web 播放器访问密码开关 | 访问与鉴权 | 否 |
-| `player.password` | `'123456'` | Web 播放器访问密码 | 访问与鉴权 | 否 |
 | `admin.path` | `'/admin'` | 后台路由前缀（每请求解析） | 访问与鉴权 | 否 |
 | `player.path` | `'/'` | 播放器路由前缀 | 访问与鉴权 | 否 |
 | `users` | `[]`（config.js 为 `[{admin,password}]`） | 用户列表 | 用户管理 | 否 |
@@ -90,7 +87,28 @@
 > 残留的旧键不会进入内存，且启动时 `saveConfigToFile()` 会把它们从磁盘覆盖掉。
 > 本文档原第 67–101 行的 34 个 `subsonic.*` 行即为此历史记录。
 
-**热加载行为**：`config.js` 有文件监听并合并进内存（index.ts:897-927）；`POST /api/config` 原地重写大部分键。例外：`port`、`bindIP`、`cache.namingPattern`、`serverCacheLocation` 只在 `startServer()` 消费 → 改这些必须重启（原 `subsonic.port` 随该功能一并删除，台账 D-09 涉及的后台提示已相应收敛）。
+**热加载行为**：`config.js` 有文件监听并合并进内存（index.ts:897-927）；`POST /api/config` 原地重写大部分键。例外：`port`、`bindIP` 只在启动时消费 → 改这些**必须重启**（设置页「日志 → 重启服务」区块就是为它们准备的）。`cache.namingPattern` 与 `serverCacheLocation` 有运行时 setter，即时生效。
+
+### ⚠️ `bindIP` 在 Docker 部署下的真实语义（v2.27.11 实测）
+
+**它只控制容器内部的监听地址，管不到宿主机。** 实测数据：
+
+| 配置 | 容器内 `netstat` | 宿主机 | 局域网访问 |
+|---|---|---|---|
+| `bindIP: '0.0.0.0'` | `0.0.0.0:9527` | `docker-proxy` 监听 `0.0.0.0:9528` | 可达 |
+| `bindIP: '127.0.0.1'` | `127.0.0.1:9527` | `docker-proxy` 仍监听 `0.0.0.0:9528` | **仍可达** |
+
+原因：compose 的 `ports: "9528:9527"` 由 `docker-proxy` 在宿主机上监听，再转发进容器。
+所以想让 NAS **不对外暴露**，正确做法是改 compose 的端口映射，例如
+`"127.0.0.1:9528:9527"`（只绑宿主机回环），而不是改 `bindIP`。
+
+`bindIP` 真正有用的场景：**裸机/非容器部署**（直接 `node index.js`），
+或容器内需要限制只让同网络的 sidecar 访问。
+
+> 另注：`Dockerfile` 曾在 v2.27.11 前硬编码 `ENV BIND_IP='0.0.0.0'`。
+> 环境变量优先级高于配置文件，导致用户改 `config.js` 的 `bindIP` **永远无效**，
+> 且界面与日志都显示 `0.0.0.0`，极难定位。现已移除；
+> `test/dockerfileEnv.test.ts` 守住这条，防止它被加回来。
 
 ## 2. 用户播放设置键（B 表，60 键）
 
