@@ -7039,6 +7039,15 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
               if (newConfig['list.addMusicLocationType'] !== undefined) global.lx.config['list.addMusicLocationType'] = newConfig['list.addMusicLocationType']
               if (newConfig['proxy.enabled'] !== undefined) global.lx.config['proxy.enabled'] = newConfig['proxy.enabled']
               if (newConfig['proxy.header'] !== undefined) global.lx.config['proxy.header'] = newConfig['proxy.header']
+              // bindIP / port：只在 startServer() 时消费，改完必须重启才生效
+              // （设置页「重启服务」区块已写明这一点）。
+              // 注意 bindIP 直到 v2.27.10 都是死配置（启动时硬编码 '0.0.0.0'），
+              // 所以老版本即便写进 config.js 也毫无效果；现在真正生效了。
+              if (newConfig.bindIP !== undefined) global.lx.config.bindIP = String(newConfig.bindIP).trim() || '0.0.0.0'
+              if (newConfig.port !== undefined) {
+                const p = parseInt(newConfig.port)
+                if (!isNaN(p) && p > 0 && p < 65536) global.lx.config.port = p
+              }
               if (newConfig['user.enablePath'] !== undefined) global.lx.config['user.enablePath'] = newConfig['user.enablePath']
               // 新增：处理 user.enableRoot
               if (newConfig['user.enableRoot'] !== undefined) global.lx.config['user.enableRoot'] = newConfig['user.enableRoot']

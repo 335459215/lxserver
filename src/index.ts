@@ -391,6 +391,12 @@ if (envParams.PORT) {
   const port = parseInt(envParams.PORT, 10)
   if (!isNaN(port) && port > 0) global.lx.config.port = port
 }
+// BIND_IP：监听地址。此前只在被注释掉的旧代码里出现过（`// const bindIP = ...`），
+// 等于这个环境变量从未生效过。与 PORT 一样支持环境变量覆盖配置文件。
+if (envParams.BIND_IP) {
+  const bindIP = String(envParams.BIND_IP).trim()
+  if (bindIP) global.lx.config.bindIP = bindIP
+}
 // 【v2.25.0】ENABLE_WEBPLAYER_AUTH / WEBPLAYER_PASSWORD 已废弃
 // （player.enableAuth / player.password 整条链路删除，无任何调用方）。
 // 与 FRONTEND_PASSWORD 同样处理：静默忽略 + 警告，避免老 compose.yaml 起不来。
@@ -823,7 +829,16 @@ cleanOldConfigBackups()
 const configBackupTimer = setInterval(cleanOldConfigBackups, 24 * 60 * 60 * 1000)
 if (typeof configBackupTimer.unref === 'function') configBackupTimer.unref()
 
-startServer(global.lx.config.port, '0.0.0.0')
+// 【bindIP 曾经是死配置】`startServer(port, ip)` 一直支持绑定地址，但这里硬编码传
+// `'0.0.0.0'`，于是 `config.js` 里的 `bindIP` 只在 `/config.json` 里被回显、从未生效 ——
+// 用户把它改成 127.0.0.1（只允许本机访问，前面挂反代时是常见做法）会发现毫无变化。
+// 现在真正读取它；空值/非法值回落 0.0.0.0，避免把服务绑死在一个不存在的地址上起不来。
+const configuredBindIP = String(global.lx.config.bindIP ?? '').trim()
+const listenIP = configuredBindIP || '0.0.0.0'
+if (configuredBindIP && configuredBindIP !== '0.0.0.0') {
+  console.log(`[服务] bindIP 已配置为 ${configuredBindIP}，仅在该地址上监听`)
+}
+startServer(global.lx.config.port, listenIP)
 
 // 监控配置文件变动以实现热重载 (由于 nodemon 已忽略该文件)
 const activeWatcherConfigPath = global.lx.configPath
