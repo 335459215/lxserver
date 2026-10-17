@@ -39,6 +39,7 @@ import { getUpdatedListIds, removeUpdatedListId } from './task/networkListTask'
 import { setSongResolver, getSyncDownloadData, saveSyncDownloadData, getUserSyncProgress, triggerUserSync, cancelUserSync, getUserSyncStorageLocation, isUserSyncRunning, migrateSyncStorage } from './task/syncDownloadTask'
 import { getDownloadQualityCandidates } from './downloadQuality'
 import { isAdminRequest, isAdminUser, hasExplicitAdmin, adminExistsAfterChange, registerUserTokenVerifier, extractTokens } from './adminAuth'
+import { staticCache } from './staticCache'
 import crypto from 'node:crypto'
 import needle from 'needle'
 import { getProxyAgent, resolveProxyAddress } from '../modules/utils/proxy.js'
@@ -977,6 +978,12 @@ const serveStatic = async (
     // 构建期预压缩（.br/.gz 兄弟文件，由 web/scripts/compress.mjs 生成）：命中直接发文件。
     // 老前端产物没有这些兄弟文件 → 行为完全不变；省掉的是新前端 bundle
     // "每次请求现压 gzip"在 NAS 弱 CPU 上的 30~80ms 与无谓的 CPU 占用。
+    //
+    // 【D-007】读取走 staticCache：内容在两次发版之间不变，重复读盘没有意义。
+    // 缓存键必须带编码变体（`::br` / `::gzip`）—— `.gz` 与原文是两份不同字节，
+    // 混用会把压缩字节当原文发出去，表现为白屏/乱码，且只在特定 Accept-Encoding
+    // 下复现。失效靠 mtime+size 指纹：镜像更新后同名文件内容变了，只按路径命中
+    // 会永远发旧内容（这正是这类缓存最常见的翻车方式）。
     const acceptEncoding = String(req.headers['accept-encoding'] || '')
     const preferredEncodings: Array<{ ext: string; name: string }> = []
     if (/\bbr\b/.test(acceptEncoding)) preferredEncodings.push({ ext: '.br', name: 'br' })
@@ -993,7 +1000,13 @@ const serveStatic = async (
           res.end()
           return
         }
-        const preContent = await fs.promises.readFile(precompressedPath)
+        const cachedPre = await staticCache.load(
+          precompressedPath + '::' + enc.name,
+          { mtimeMs: preStats.mtimeMs, size: preStats.size },
+          () => fs.promises.readFile(precompressedPath),
+        )
+        if (!cachedPre) continue
+        const preContent = cachedPre.body
         res.writeHead(200, {
           'Content-Type': contentType,
           'ETag': preEtag,
@@ -1008,59 +1021,68 @@ const serveStatic = async (
       } catch { /* 预压缩文件读不到就回落到原文件，静默降级 */ }
     }
 
-    fs.readFile(filePath, (err, content) => {
-      if (err) {
-        if (err.code === 'ENOENT') {
-          res.writeHead(404)
-          res.end('Not Found')
-        } else {
-          res.writeHead(500)
-          res.end('Server Error')
-        }
-      } else {
-        // Gzip text-based responses > 1KB when client accepts gzip
-        const acceptEncoding = req.headers['accept-encoding'] || ''
-        // 注意这是前缀匹配，漏掉的类型会静默不压缩（前端包会白涨传输量）。
-        // wasm/字体/manifest 都必须在内：它们都是文本友好的资源。
-        const isText = /^(text\/|application\/(javascript|json|manifest\+json|xml|wasm)|image\/svg|font\/)|\.(css|svg|html|xml)$/.test(contentType)
-        const shouldGzip = acceptEncoding.includes('gzip') && isText && content.length > 1024
+    // 【D-007】原文路径同样走缓存。预压缩未命中（老产物 / 客户端不支持 br/gzip /
+    // 文本以外的资源）时这里是唯一的热路径。
+    const rawCached = await staticCache.load(
+      filePath,
+      { mtimeMs: stats.mtimeMs, size: stats.size },
+      () => fs.promises.readFile(filePath),
+    )
+    if (!rawCached) {
+      res.writeHead(404)
+      res.end('Not Found')
+      return
+    }
+    const content = rawCached.body
 
-        if (shouldGzip) {
-          zlib.gzip(content, { level: 6 }, (gzipErr, gzipped) => {
-            if (gzipErr) {
-              res.writeHead(200, {
-                'Content-Type': contentType,
-                'ETag': etag,
-                'Last-Modified': lastModified,
-                'Cache-Control': cacheControl,
-                'Vary': 'Accept-Encoding',
-              })
-              res.end(content, 'utf-8')
-            } else {
-              res.writeHead(200, {
-                'Content-Type': contentType,
-                'ETag': etag,
-                'Last-Modified': lastModified,
-                'Cache-Control': cacheControl,
-                'Content-Encoding': 'gzip',
-                'Content-Length': gzipped.length,
-                'Vary': 'Accept-Encoding',
-              })
-              res.end(gzipped)
-            }
-          })
-        } else {
-          res.writeHead(200, {
-            'Content-Type': contentType,
-            'ETag': etag,
-            'Last-Modified': lastModified,
-            'Cache-Control': cacheControl,
-            'Vary': 'Accept-Encoding',
-          })
-          res.end(content, 'utf-8')
-        }
+    // Gzip text-based responses > 1KB when client accepts gzip
+    // 注意这是前缀匹配，漏掉的类型会静默不压缩（前端包会白涨传输量）。
+    // wasm/字体/manifest 都必须在内：它们都是文本友好的资源。
+    const isText = /^(text\/|application\/(javascript|json|manifest\+json|xml|wasm)|image\/svg|font\/)|\.(css|svg|html|xml)$/.test(contentType)
+    const shouldGzip = acceptEncoding.includes('gzip') && isText && content.length > 1024
+
+    if (shouldGzip) {
+      // 现压结果也缓存（键带 ::gzip 区分表示）。没有 .gz 兄弟文件时，
+      // 每次请求都重压是纯浪费 —— 这正是 D-007 记录的那 30~80ms。
+      const gzCached = await staticCache.load(
+        filePath + '::dyn-gzip',
+        { mtimeMs: stats.mtimeMs, size: stats.size },
+        () => new Promise<Buffer>((resolve, reject) => {
+          zlib.gzip(content, { level: 6 }, (err, out) => (err ? reject(err) : resolve(out)))
+        }),
+      )
+      if (gzCached) {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'ETag': etag,
+          'Last-Modified': lastModified,
+          'Cache-Control': cacheControl,
+          'Content-Encoding': 'gzip',
+          'Content-Length': gzCached.body.length,
+          'Vary': 'Accept-Encoding',
+        })
+        res.end(gzCached.body)
+        return
       }
-    })
+      // 压缩失败（或结果过大未缓存）时回落明文，不能因为省事把响应弄挂
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'ETag': etag,
+        'Last-Modified': lastModified,
+        'Cache-Control': cacheControl,
+        'Vary': 'Accept-Encoding',
+      })
+      res.end(content)
+    } else {
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'ETag': etag,
+        'Last-Modified': lastModified,
+        'Cache-Control': cacheControl,
+        'Vary': 'Accept-Encoding',
+      })
+      res.end(content)
+    }
   } catch (err: any) {
     if (err.code === 'ENOENT') {
       res.writeHead(404)

@@ -16,7 +16,7 @@
 | D-004 | `src/modules/utils/musicSdk/kw/musicSearch.js:100-108` + `server.ts:5758` | kw 空页/越界页 → 重试 3 次后抛 `try max num` → 搜索接口整体 500 | 中 | **已修复**（v2.27.7，见下） |
 | D-005 | `/api/music/url` 成功响应 | 成功路径不返回 `attempts`，换源过程不可观测 | 中 | 已修复（musicResolver 现返回 `attempts`） |
 | D-006 | `/api/config` POST 错误分支 | 出错只回 `Server Error`，无任何细节 | 低 | **已修复**（v2.27.7，见下） |
-| D-007 | `serveStatic` 静态资源 | 每次请求重读文件 + 重压 gzip，无缓存 | 中 | 阶段 A 一并处理 |
+| D-007 | `serveStatic` 静态资源 | 每次请求重读文件 + 重压 gzip，无缓存 | 中 | **已修复**（v2.27.9，见下） |
 | D-008 | `src/server/subsonic.ts:539,718-722` | Subsonic 单例可变字段跨请求共享（原文档记作 D-05） | 中 | 随实现消失（`subsonic.ts` 已删） |
 | D-009 | 后台「需重启」提示与入口 | 改了只在启动时读取的键却没有提示，也没有重启入口 | 低 | **已修复**（v2.27.8，见下） |
 
@@ -108,6 +108,48 @@
 
 **测试**：`.playwright/_verify-restart-ui.py`（10 项，含"确认框打开/取消可关"，
 且**刻意不点确认**以免重启线上服务）。
+
+---
+
+## 2026-10-17 修复批次三（v2.27.9）
+
+### D-007 已修复：静态资源内容缓存
+
+**背景**：构建期预压缩（`.br`/`.gz` 兄弟文件）已经做了，但 `serveStatic` 仍每请求
+`stat` + `readFile`，且在没有预压缩兄弟文件时**每次现压 gzip**（NAS 弱 CPU 上 30~80ms）。
+
+**修法**：新增 `src/server/staticCache.ts`（LRU + 字节上限），接进 `serveStatic` 的
+三条路径：预压缩变体、原文、现压 gzip 结果。
+
+**这类缓存翻车几乎都在三处，所以按三点设计并各配测试**：
+1. **必须有界** —— 缓存键是绝对路径而路径来自 HTTP 请求，攻击者可构造大量不存在的
+   路径撑爆内存。用 LRU + 总字节上限 + **单条目上限**（`fpcalc.exe` 4MB 不缓存，
+   否则会把真正热点的 bundle 挤掉），且只缓存 `stat` 成功的文件。
+2. **必须能被发版失效** —— 指纹用 `{mtimeMs, size}` 而非仅 key。镜像更新后同名文件
+   （如不带哈希的 `app.js`）内容变了而路径没变，只按 key 命中会**永远发旧内容**。
+3. **必须区分压缩表示** —— 缓存键带 `::br` / `::gzip` / `::dyn-gzip` 变体。
+   混用会把压缩字节当原文发出去，表现为白屏/乱码，且只在特定 `Accept-Encoding` 下复现。
+
+另外做了 **in-flight 去重**：并发冷读同一文件只读一次盘。
+
+**实测收益**（本机，`/app/assets/index-*.js` 673KB）：
+| 场景 | 耗时 |
+|---|---|
+| 首次（冷，含读盘） | 18.81 ms |
+| 稳定后（热，走缓存） | 7.89 ms（**2.4x**） |
+| br 预压缩命中 | 1.24 ms |
+| `fpcalc.exe` 4MB（超上限，不缓存） | 20.06 ms（符合预期） |
+
+**测试**：
+- `test/staticCache.test.ts` 12 项（失效 / LRU / 字节上限 / 并发去重 / 失败不缓存…）
+- `.playwright/_verify-static-cache.py` 20 项端到端（真实 `serveStatic` 接线、
+  压缩协商、304、**改文件后立刻失效**、404、路径穿透）
+- `.playwright/_verify-static-cache-perf.py` 性能 A/B（防"加了复杂度却没收益"）
+
+**踩坑记录（写给后来的人）**：第一版端到端测试用浏览器 `fetch` 设置
+`Accept-Encoding`，10 条断言全红却**全是假阳性** —— 浏览器把该头列为
+forbidden header name 会静默忽略，且 `arrayBuffer()` 自动解压。测压缩协商
+必须用 `http.client` 之类的原始客户端。
 
 ---
 
