@@ -5,25 +5,25 @@
  */
 import { coverUrl, resolveMusicUrl, type Song } from '@/lib/music'
 import { savedQuality, qualityLabel, type QualityTier } from '@/lib/quality'
+import { resolveExtensionTier } from '@/lib/qualityOptions'
 
 /** 清理文件名中的非法字符（Windows/POSIX 文件名安全） */
 export function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'music'
 }
 
-/** 根据实得音质或 URL 推导音频扩展名 */
+/** 根据实得音质或 URL 推导音频扩展名。
+ *
+ *  ⚠️ **两个信号可能互相矛盾**：实测有源把 320k 的 mp3 放在 `.flac` 路径下，
+ *  也有 `.mp3` 路径实际是 flac 流的。单看任一信号都会错命名，播放器按扩展名
+ *  解码就出问题。判定规则收在 `resolveExtensionTier` 里（有单测），
+ *  这里只负责把结果翻成扩展名 —— 别再在本地写一份近似逻辑。 */
 export function inferAudioExtension(quality?: string, url?: string): string {
-  const q = (quality ?? '').toLowerCase()
-  if (q.includes('flac') || q.includes('hires') || q.includes('lossless') || q.includes('24bit')) {
-    return '.flac'
-  }
-  if (url) {
-    const cleanUrl = url.split('?')[0].toLowerCase()
-    if (cleanUrl.endsWith('.flac')) return '.flac'
-    if (cleanUrl.endsWith('.m4a')) return '.m4a'
-    if (cleanUrl.endsWith('.ogg')) return '.ogg'
-    if (cleanUrl.endsWith('.wav')) return '.wav'
-  }
+  const kind = resolveExtensionTier(quality, url)
+  if (kind === 'flac') return '.flac'
+  if (kind === 'm4a') return '.m4a'
+  if (kind === 'ogg') return '.ogg'
+  if (kind === 'wav') return '.wav'
   return '.mp3'
 }
 

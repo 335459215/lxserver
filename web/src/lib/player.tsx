@@ -8,7 +8,8 @@ import {
   type ResolveAttempt,
   type Song,
 } from '@/lib/music'
-import { DEFAULT_QUALITY, qualityFallback, saveQuality, savedQuality } from '@/lib/quality'
+import { DEFAULT_QUALITY, qualityFallback, saveAutoBest, saveQuality, savedAutoBest, savedQuality } from '@/lib/quality'
+import { pickStartTier, songTiers } from '@/lib/qualityOptions'
 import { reportHistory } from '@/lib/history'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
@@ -55,6 +56,8 @@ export interface PlayerState {
   resolvedQuality: string | null
   /** 用户偏好的音质档位（持久化）。解析时作为首选，失败逐级向下回退。 */
   preferredQuality: string
+  /** 是否按曲目申报的「最高可用档位」自动解析（持久化，默认关）。见 lib/quality.ts 的说明。 */
+  autoBestQuality: boolean
   /** 实际命中的自定义源名 */
   sourceName: string | null
 }
@@ -76,6 +79,8 @@ export interface PlayerApi extends PlayerState {
   cycleRepeat: () => void
   /** 切换音质档位；若正在播放，会立刻用新档位重新解析当前曲目 */
   setQuality: (tier: string) => void
+  /** 开关「按曲目自动选最高可用档位」；开启时对正在播放的曲目立即重新解析 */
+  setAutoBestQuality: (on: boolean) => void
   clear: () => void
   /** 失败后换源重试（把这次失败的源加入排除清单） */
   retry: () => void
@@ -104,6 +109,7 @@ const initialState: PlayerState = {
   attempts: [],
   resolvedQuality: null,
   preferredQuality: DEFAULT_QUALITY,
+  autoBestQuality: false,
   sourceName: null,
 }
 
@@ -162,6 +168,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     shuffle: restoreShuffle(),
     repeat: restoreRepeat(),
     preferredQuality: savedQuality(),
+    autoBestQuality: savedAutoBest(),
   }))
 
   /** state 的镜像：事件回调与动作里读它，避免闭包捕获陈旧值 */
@@ -377,13 +384,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     saveQuality(state.preferredQuality as never)
   }, [state.preferredQuality])
 
+  React.useEffect(() => {
+    saveAutoBest(state.autoBestQuality)
+  }, [state.autoBestQuality])
+
   /** 解析并播放：从用户偏好档位起，沿回退链逐档降级，任一档成功即播。
    *
    *  `tierOverride` 用于「刚切换档位、state 还没提交」的场景 —— 此时 stateRef
    *  里的 preferredQuality 仍是旧值（ref 由 useEffect 同步，晚于本次调用），
    *  直接读 ref 会拿着旧档位去解析，表现为「切了档位但音质没变」。 */
   const loadAndPlay = React.useCallback(
-    async (song: Song, tierOverride?: string) => {
+    async (song: Song, tierOverride?: string, autoBestOverride?: boolean) => {
       const el = audioRef.current
       if (!el) return
 
@@ -400,7 +411,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
       // 音质档位从 stateRef 读（不放进依赖数组）：否则每次切档都会重建 loadAndPlay，
       // 连锁让下游依赖它的 useCallback/useEffect 全部失效。ref 读最新值语义等价。
-      const tiers = qualityFallback(tierOverride ?? stateRef.current.preferredQuality)
+      //
+      // 起手档位三条优先级（高 → 低）：
+      //   1. 用户**显式点选**的档位（tierOverride）—— 点了什么就是什么，任何自动策略都不得改写
+      //   2. 开了「按曲目自动选最高档」时，本曲申报的更高档位
+      //   3. 用户偏好档位
+      // 自动抬升只改**起点**，回退链仍是原生的「由高到低」，故解析成功率不变。
+      const startTier =
+        tierOverride ??
+        pickStartTier(
+          songTiers(song),
+          stateRef.current.preferredQuality,
+          autoBestOverride ?? stateRef.current.autoBestQuality,
+        )
+      const tiers = qualityFallback(startTier)
 
       patch({
         status: 'loading',
@@ -709,6 +733,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [loadAndPlay],
   )
 
+  /** 开关「按曲目自动选最高可用档位」。
+   *
+   *  这是**播放策略**而不是纯显示偏好，所以开启/关闭都要对正在播的曲目立刻生效：
+   *  否则用户打开了开关却发现当前这首没变，会以为没生效（与 setQuality 同理）。
+   *  两个方向都重新解析：开启→可能抬到更高档；关闭→退回用户首选。
+   *  显式传 autoBestOverride：setState 是异步的，此刻 stateRef 还是旧值。 */
+  const setAutoBestQuality = React.useCallback(
+    (on: boolean) => {
+      if (stateRef.current.autoBestQuality === on) return
+      setState((s) => ({ ...s, autoBestQuality: on }))
+      const cur = stateRef.current.current
+      if (cur && !cur.url) void loadAndPlay(cur, undefined, on)
+    },
+    [loadAndPlay],
+  )
+
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
     abortRef.current?.abort()
@@ -816,6 +856,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setQuality,
+      setAutoBestQuality,
       clear,
       retry,
       removeAt,
@@ -834,6 +875,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setQuality,
+      setAutoBestQuality,
       clear,
       retry,
       removeAt,

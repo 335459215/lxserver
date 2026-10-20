@@ -2,6 +2,7 @@ import { Check } from 'lucide-react'
 import { useConfigForm } from '@/lib/useConfig'
 import { Button, InputField, Stack, SwitchField, useToast } from '@/components/ui'
 import { QUALITY_TIERS, qualityLabel } from '@/lib/quality'
+import { sizeLabel, songTiers } from '@/lib/qualityOptions'
 import { usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
@@ -48,8 +49,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  *  「设置里播放下不能选音质，反而在外观下」）。偏好存哪儿是内部实现，
  *  不该决定它出现在哪个菜单。 */
 function QualitySection() {
-  const { preferredQuality, setQuality } = usePlayer()
+  const { preferredQuality, setQuality, autoBestQuality, setAutoBestQuality, current } = usePlayer()
   const { toast } = useToast()
+  const tiers = songTiers(current)
 
   return (
     <section className="rounded-2xl border border-line bg-panel p-5 shadow-card">
@@ -61,6 +63,10 @@ function QualitySection() {
       <div className="mt-4 grid gap-2 sm:grid-cols-2">
         {QUALITY_TIERS.map((t) => {
           const active = t.value === preferredQuality
+          // 有曲目在播时，逐档标出「本曲是否申报了这一档」——把可预知的信息前置，
+          // 而不是让用户点了之后靠红点发现自己猜错（见 lib/qualityOptions.ts）。
+          const info = tiers.find((x) => x.type === t.value)
+          const size = sizeLabel(info?.size)
           return (
             <button
               key={t.value}
@@ -88,6 +94,11 @@ function QualitySection() {
                 <span className="flex items-baseline gap-1.5">
                   <span className="text-sm font-medium text-ink">{t.label}</span>
                   <span className="font-mono text-[10px] text-faint">{t.short}</span>
+                  {info && (
+                    <span className="rounded border border-line px-1 text-[10px] leading-4 text-dim">
+                      {size || '本曲提供'}
+                    </span>
+                  )}
                 </span>
                 <span className="mt-0.5 block text-[11px] leading-snug text-dim">
                   {t.desc} · {t.approx}
@@ -96,6 +107,21 @@ function QualitySection() {
             </button>
           )
         })}
+      </div>
+
+      <div className="mt-4">
+        <SwitchField
+          label="按曲目自动选最高档"
+          description="本曲申报了比首选更高的档位时自动用它；申报的最高档低于首选时仍按首选（不会被反向降级）"
+          checked={autoBestQuality}
+          onChange={(v) => {
+            setAutoBestQuality(v)
+            toast({
+              title: v ? '已开启「按曲目自动选最高档」' : '已关闭「按曲目自动选最高档」',
+              description: v ? '当前曲目会立即按最高可用档重新解析' : '当前曲目会退回你的首选档位',
+            })
+          }}
+        />
       </div>
     </section>
   )

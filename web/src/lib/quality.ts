@@ -61,6 +61,34 @@ export function saveQuality(tier: QualityTier) {
   }
 }
 
+/** 「按曲目自动选最高可用档位」开关（默认关闭）。
+ *
+ *  【为什么默认关闭】
+ *  默认开启等于替用户改了首选档位：他明明选了「标准省流量」，一放无损曲就悄悄吃掉
+ *  多倍流量（手机上尤其敏感）。默认行为必须可预期 —— 用户点「无损」就该按无损解析，
+ *  降级是解析器能力所限、如实告知；「能到多高就去多高」是一个**显式**的选择。
+ *
+ *  开启后仍会保留 preferredQuality 作为「下限」：本曲最高可用低于首选时不强行用更低的，
+ *  仍按首选请求（走原有回退链），否则用户的偏好会被反向覆盖。 */
+export const AUTO_BEST_KEY = 'lx.playback.autoBest'
+
+export function savedAutoBest(): boolean {
+  if (typeof localStorage === 'undefined') return false
+  try {
+    return localStorage.getItem(AUTO_BEST_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveAutoBest(on: boolean) {
+  try {
+    localStorage.setItem(AUTO_BEST_KEY, on ? '1' : '0')
+  } catch {
+    // 同上
+  }
+}
+
 /** 档位 → 展示标签。未知值原样返回（后端将来新增档位时不至于显示空白）。 */
 export function qualityLabel(value: string | null | undefined): string {
   if (!value) return ''
