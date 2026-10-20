@@ -132,6 +132,50 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // ---- 【播放历史】分桶与统计 ----
+  //
+  // 刻意造出**四个分组都有数据**的时间分布，且带 playCount 与多歌手串，
+  // 这样「今天/昨天/最近一周/更早」四段与统计卡才会被真正渲染到。
+  // 时间用「相对现在」算，不写死时间戳 —— 否则过几天这份 fixture 就过期了。
+  if (urlPath === '/api/music/history/list') {
+    const now = Date.now()
+    const H = 3600_000
+    const D = 24 * H
+    const mk = (i, name, singer, agoMs, playCount) => ({
+      key: `kw|stub-${i}`,
+      source: 'kw',
+      songmid: `stub-${i}`,
+      name,
+      singer,
+      interval: '03:30',
+      albumName: '桩专辑',
+      img: null,
+      playedAt: now - agoMs,
+      playCount,
+    })
+    const list = [
+      // 今天：2 首
+      mk(1, '今天听的歌', '周杰伦、费玉清', 2 * H, 3),
+      mk(2, '今天第二首', '林俊杰', 5 * H, 1),
+      // 昨天：1 首（用「昨天此刻」而不是固定 24h，跨零点也仍然算昨天）
+      mk(3, '昨天听的歌', '周杰伦', D + H, 2),
+      // 最近一周：2 首
+      mk(4, '三天前的歌', '五月天', 3 * D, 1),
+      mk(5, '五天前的歌', '五月天', 5 * D, 4),
+      // 更早：1 首
+      mk(6, '很久以前的歌', '陈奕迅', 30 * D, 1),
+    ]
+    json(res, 200, {
+      success: true,
+      list,
+      total: list.length,
+      page: 1,
+      pageSize: 50,
+      hasMore: false,
+    })
+    return
+  }
+
   // ---- 【降级 / 升级场景】播放地址解析 ----
   //
   // 真实环境里「降级」极难在端到端复现：线上音源基本都能给出 flac，

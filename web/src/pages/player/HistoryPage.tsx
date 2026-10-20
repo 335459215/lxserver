@@ -2,9 +2,11 @@ import * as React from 'react'
 import { History, Loader2, Play, TriangleAlert, Trash2 } from 'lucide-react'
 import { Button, Stack, useToast } from '@/components/ui'
 import { clearHistory, fetchHistory, historyToSong, type HistoryItem } from '@/lib/history'
+import { bucketHistory, historyStats, type HistoryStats } from '@/lib/historyStats'
 import { useAsyncResource } from '@/lib/asyncResource'
 import { usePlayer } from '@/lib/player'
 import { useAuth } from '@/lib/auth'
+import type { Song } from '@/lib/music'
 import SongList from '@/components/player/SongList'
 
 /** 播放历史（`/history`）：服务端按用户存最近听过的歌。
@@ -55,6 +57,30 @@ export default function HistoryPage() {
   )
 
   const songs = React.useMemo(() => items.map(historyToSong), [items])
+
+  /** key → { item, song } 索引。
+   *
+   *  分桶后每组只持有「条目」，而 SongList 需要「song」。若在渲染里现算
+   *  `historyToSong(item)`，每次渲染都会生成新对象 → SongList 的 memo 失效、
+   *  行组件全部重渲染。这里一次建表复用。 */
+  const byKey = React.useMemo(() => {
+    const m = new Map<string, { item: HistoryItem; song: Song }>()
+    items.forEach((it, i) => m.set(it.key, { item: it, song: songs[i] }))
+    return m
+  }, [items, songs])
+
+  /** 分桶基准时刻：**挂载时取一次**，之后不变。
+   *
+   *  【为什么用 state 而不是直接 Date.now()】
+   *  1. eslint 的 react-hooks 规则把 Date.now() 视为渲染期不纯调用（error 级），
+   *     直接写在渲染体里会被拦下；
+   *  2. 语义上也该如此：这是「打开页面那一刻的快照」。
+   *     若每次渲染都取，任意无关的重渲染都会让 buckets 变成新数组、
+   *     下游 memo 全部失效，且「N 分钟前」的文案会莫名跳动。
+   *  想刷新就重进页面（或点「重试」），不需要秒级同步。 */
+  const [now] = React.useState(() => Date.now())
+  const buckets = React.useMemo(() => bucketHistory(items, now), [items, now])
+  const stats = React.useMemo(() => historyStats(items), [items])
 
   const loadMore = React.useCallback(async () => {
     if (loadingMore || !effectiveHasMore) return
@@ -175,7 +201,33 @@ export default function HistoryPage() {
         />
       ) : (
         <>
-          <SongList songs={songs} onPlay={(_, i) => player.playQueue(songs, i)} />
+          <StatsBar stats={stats} />
+
+          {/* 按「今天 / 昨天 / 最近一周 / 更早」分桶。
+              分桶键用**本地自然日**而不是「距今 N 小时」—— 后者在凌晨看会把
+              昨晚听的歌算成今天（见 lib/historyStats.ts 的注释与单测）。 */}
+          {buckets.map((b) => (
+            <section key={b.key} className="space-y-2" aria-labelledby={`hist-${b.key}`}>
+              <h2
+                id={`hist-${b.key}`}
+                className="flex items-baseline gap-2 px-1 text-xs font-medium tracking-wide text-dim"
+              >
+                {b.label}
+                <span className="font-mono text-[11px] text-faint">{b.items.length}</span>
+              </h2>
+              <SongList
+                songs={b.items.map((it) => byKey.get(it.key)!.song)}
+                onPlay={(_, i) => {
+                  // ⚠️ 必须换算回**全局下标**：SongList 的 i 是分组内的相对下标，
+                  // 直接拿去 playQueue(songs, i) 会播错歌（第二组的第一首会播成全局第一首）。
+                  const globalIndex = items.findIndex((x) => x.key === b.items[i].key)
+                  player.playQueue(songs, globalIndex >= 0 ? globalIndex : i)
+                }}
+                allowDownload={false}
+              />
+            </section>
+          ))}
+
           {effectiveHasMore && (
             <div className="flex justify-center pt-1">
               <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore}>
@@ -190,6 +242,41 @@ export default function HistoryPage() {
         </>
       )}
     </Shell>
+  )
+}
+
+/** 概览：不同歌曲 / 累计播放 / 覆盖天数 / 最常听歌手。
+ *
+ *  【为什么放这四个】
+ *  历史列表回答「我最近听了什么」，统计回答「我这段时间听得怎么样」——
+ *  后者是主流产品（Spotify Wrapped / Apple Music Replay）都在做的方向，
+ *  而我们的数据（playedAt + playCount）已经够支撑，不需要额外埋点。
+ *  「累计播放」用的是 playCount 之和（换曲/点播次数），**不含单曲循环**，
+ *  所以文案写「累计播放」而不是「听了多久」—— 后者算不出来（没有单曲时长消耗）。 */
+function StatsBar({ stats }: { stats: HistoryStats }) {
+  const cells: Array<{ label: string; value: string }> = [
+    { label: '不同歌曲', value: String(stats.songs) },
+    { label: '累计播放', value: String(stats.plays) },
+    { label: '覆盖天数', value: String(stats.days) },
+    {
+      label: '最常听',
+      value: stats.topSinger ? `${stats.topSinger.name}` : '—',
+    },
+  ]
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {cells.map((c) => (
+        <div
+          key={c.label}
+          className="rounded-xl border border-line bg-panel px-3 py-2.5 shadow-2xs"
+        >
+          <p className="text-[11px] text-faint">{c.label}</p>
+          <p className="mt-0.5 truncate text-sm font-semibold text-ink" title={c.value}>
+            {c.value}
+          </p>
+        </div>
+      ))}
+    </div>
   )
 }
 

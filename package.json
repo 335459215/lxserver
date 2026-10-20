@@ -1,6 +1,6 @@
 {
   "name": "lx-music-sync-server",
-  "version": "2.28.0",
+  "version": "2.29.0",
   "private": true,
   "scripts": {
     "prebuild": "node scripts/download-binary.js && node scripts/update-build-hash.js",
@@ -8,7 +8,7 @@
     "build:web": "cd web && npm run build",
     "test": "node --test test/*.test.cjs",
     "test:unit": "tsx --test test/*.test.ts",
-    "test:mutation": "node scripts/mutation-check-songidentity.cjs && node scripts/mutation-check-paging.cjs && node scripts/mutation-check-d003.cjs && node scripts/mutation-check-d004.cjs && node scripts/mutation-check-staticcache.cjs && node scripts/mutation-check-bindip.cjs && node scripts/mutation-check-dockerfile.cjs && node scripts/mutation-check-qualityoptions.cjs",
+    "test:mutation": "node scripts/mutation-check-songidentity.cjs && node scripts/mutation-check-paging.cjs && node scripts/mutation-check-d003.cjs && node scripts/mutation-check-d004.cjs && node scripts/mutation-check-staticcache.cjs && node scripts/mutation-check-bindip.cjs && node scripts/mutation-check-dockerfile.cjs && node scripts/mutation-check-qualityoptions.cjs && node scripts/mutation-check-historystats.cjs",
     "prestart": "node scripts/download-binary.js && node scripts/update-build-hash.js",
     "start": "node ./index.js",
     "predev": "node scripts/update-build-hash.js",

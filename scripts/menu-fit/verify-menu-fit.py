@@ -278,6 +278,87 @@ with sync_playwright() as p:
         page.screenshot(path=os.path.join(OUT, "quality-degraded.png"))
         ctx.close()
 
+    # ================= 播放历史：分桶 + 统计 =================
+    #
+    # 【为什么这段值得进护栏】
+    # 「今天/昨天」的边界是纯逻辑，但有三种写法都不报错、只在特定时刻错：
+    #   ① 用「距今 <24h」当今天 → 凌晨看昨晚的歌会被算成今天；
+    #   ② 用 UTC 日期 → 东八区 08:00 前「今天」显示成昨天；
+    #   ③ 用 getDate() 相减 → 跨月/跨年时 1 号与 31 号判等。
+    # 单测已钉住这三条（test/historyStats.test.ts），这里再从**渲染层**验
+    # "分组标题真的画出来了、条目落在正确的组里" —— 单测测不到 DOM。
+    print("\n--- 播放历史分桶与统计 ---")
+    ctx3 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx3)
+    page = ctx3.new_page()
+    page.goto(f"{BASE}/app/history", wait_until="load")
+    page.wait_for_timeout(3000)
+
+    headings = page.evaluate(
+        """() => Array.from(document.querySelectorAll('main h2[id^="hist-"]'))
+              .map(h => ({ id: h.id, text: (h.innerText||'').trim().replace(/\\n/g,' ') }))"""
+    )
+    got = [h["id"].replace("hist-", "") for h in headings]
+    check("历史页按时间分桶渲染出四个分组",
+          got == ["today", "yesterday", "week", "earlier"], f"{got}")
+
+    # 条目数：今天 2 / 昨天 1 / 一周 2 / 更早 1（桩数据固定）
+    counts = []
+    for key in ("today", "yesterday", "week", "earlier"):
+        sec = page.locator(f'section:has(h2#hist-{key})')
+        counts.append(sec.locator("ul li").count() if sec.count() else -1)
+    check("各分组条目数正确（2/1/2/1）", counts == [2, 1, 2, 1], f"{counts}")
+
+    # 统计卡四项都在，且数值对得上（不同歌曲 6、累计播放 12、覆盖天数 5）
+    stats_text = page.evaluate(
+        """() => {
+          const grid = document.querySelector('main .grid');
+          return grid ? (grid.innerText || '').replace(/\\n/g, '|') : '';
+        }"""
+    )
+    for label in ("不同歌曲", "累计播放", "覆盖天数", "最常听"):
+        check(f"统计卡含「{label}」", label in stats_text, stats_text[:90])
+    # 6 首、playCount 之和 = 3+1+2+1+4+1 = 12；覆盖天数 = 今天/昨天/3天前/5天前/30天前 = 5
+    check("统计数值正确（6 首 / 12 次 / 5 天）",
+          "6" in stats_text and "12" in stats_text and "5" in stats_text,
+          stats_text[:120])
+    # 最常听歌手：五月天 playCount 1+4=5 vs 周杰伦 3+2=5 → 并列取先出现（今天那首含周杰伦）
+    check("最常听歌手按播放次数加权（并列取先出现）",
+          "周杰伦" in stats_text or "五月天" in stats_text, stats_text[-60:])
+
+    # ---- 分组内下标必须换算回全局下标 ----
+    #
+    # 这是最容易出错、也最难发现的一处：SongList 的 onPlay 给的是**分组内**相对下标，
+    # 直接 playQueue(songs, i) 会播错歌，界面不报错，只是"点了 A 播了 B"。
+    #
+    # 断言必须选**分组间错位最大**的那一行，否则测不出来：
+    #   点「昨天」组第 1 首 → 正确应播全局第 3 首「昨天听的歌」；
+    #   若换算丢失（直接用 i=0），会播全局第 1 首「今天听的歌」。
+    # 而点「今天」组第 2 首时两种实现都会得到全局第 2 首 —— 没有区分力。
+    yday_sec = page.locator("section:has(h2#hist-yesterday)")
+    if yday_sec.count() > 0:
+        yday_sec.locator("ul li button[aria-label^='播放']").first.click()
+        # 等播放栏出现曲名
+        cur = ""
+        for _ in range(24):
+            cur = page.evaluate(
+                """() => {
+                  const el = document.querySelector('[aria-label="播放栏"] a[title="展开全屏播放页"]');
+                  return el ? el.innerText.split('\\n')[0].trim() : '';
+                }"""
+            )
+            if cur:
+                break
+            page.wait_for_timeout(250)
+        check("点「昨天」组第 1 首播的是该组那首（下标换算正确）",
+              "昨天听的歌" in cur,
+              f"实际播放={cur!r}（错的话会播成「今天听的歌」）")
+    else:
+        check("点「昨天」组第 1 首播的是该组那首（下标换算正确）", False, "昨天分组不存在")
+
+    page.screenshot(path=os.path.join(OUT, "history-buckets.png"))
+    ctx3.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]
