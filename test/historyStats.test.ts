@@ -6,6 +6,21 @@
  *
  * 运行：npx tsx --test test/historyStats.test.ts
  */
+
+// 【必须在任何 Date 使用之前钉住时区 —— 这条踩过坑，别删】
+//
+// 本模块的核心是「按**本地**自然日分桶」，而「本地」取决于机器时区。
+// 开发机是 UTC+8、GitHub Actions 是 UTC，于是同一个变异在两地表现不同：
+//   「用 UTC 日界代替本地日界」这个变异，在本地 fail=4（能抓到），
+//   在 CI（UTC）上 fail=0（抓不到）—— 因为 UTC 机器上两者**恰好等价**。
+// 结果就是本地全绿、CI 红，而且红得莫名其妙（我在 CI 上确实踩了这个）。
+//
+// 真正的问题不是变异写错，而是**测试依赖了宿主机环境**：
+// 它在能证明问题的时区里跑，才证明得了。所以这里显式固定成 UTC+8 ——
+// 目标用户所在时区，也是「UTC 日界」这个 bug 会真实暴露的时区。
+// 这样无论 CI 是 UTC 还是别的时区，断言的含义都不变。
+process.env.TZ = 'Asia/Shanghai'
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -21,7 +36,16 @@ import {
 const at = (y: number, mo: number, d: number, h = 12, mi = 0) =>
   new Date(y, mo - 1, d, h, mi, 0, 0).getTime()
 
+// 刻意**不**给 playCount 默认值：下面有专门的用例验证「缺失时按 1 计」，
+// 若这里塞了默认值，那条用例就永远测不到"缺失"这个分支了。
 const item = (playedAt: number, extra: Record<string, unknown> = {}) => ({ playedAt, ...extra })
+
+test('前置：时区确实被钉成 UTC+8（否则下面的断言没有意义）', () => {
+  // 这条是**元断言**：如果 TZ 没设上（比如被别的 loader 覆盖），
+  // 下面那堆「跨零点」「UTC 日界」用例会静默失去区分力，必须在这里拦住。
+  const offsetMin = new Date(2026, 9, 20, 12, 0).getTimezoneOffset()
+  assert.equal(offsetMin, -480, `期望 UTC+8（-480 分钟），实际 ${offsetMin}`)
+})
 
 test('startOfLocalDay：返回本地 0 点，且不跨日', () => {
   const t = at(2026, 10, 20, 23, 59)
