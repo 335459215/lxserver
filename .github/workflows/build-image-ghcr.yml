@@ -157,6 +157,31 @@ jobs:
           npm run lint
           npm run build
 
+      # 视口护栏：音质菜单在 5 种视口下必须完整落在视口内。
+      #
+      # 【为什么这条值得单独占一个 CI 步骤】
+      # v2.28.0 把菜单从「6 行单行」改成「7 项双行」后，手机上 Radix 翻转朝上
+      # 仍放不下，菜单顶部被裁掉 73px —— 标题与「自动最高档」开关整个在视口外、
+      # 点不到。**被裁掉的元素还在 DOM 里、is_visible() 仍为 true**，
+      # 所有基于 count/visible/text 的断言都抓不到，只有量 bounding_box() 才看得见。
+      #
+      # 完全离线：scripts/menu-fit/static-fixture-server.mjs 提供构建产物 + 桩接口，
+      # 不连 NAS、不连音乐平台，所以能在 CI 里稳定跑（已实测 35/35）。
+      # 该护栏自身做过变异验证：去掉 max-h 后恰好是 2 个手机视口变红。
+      #
+      # ⚠️ 脚本必须在**仓库内**（scripts/menu-fit/）：.playwright/ 是本地验证目录、
+      #    不进 git。上一版变异测试就因此调用了不存在的文件，test job 整挂而
+      #    build 仍成功（见 commit 98a1809）。
+      # ⚠️ python 绑定与浏览器**必须同版本**，否则 playwright 报
+      #    "Executable doesn't exist"（它按版本号找 chromium 目录）。
+      - name: 安装 Playwright（python 绑定 + chromium，版本必须一致）
+        run: |
+          python3 -m pip install --quiet playwright==1.63.0
+          python3 -m playwright install --with-deps chromium
+
+      - name: 音质菜单视口护栏（5 视口 × 7 断言，离线）
+        run: node scripts/menu-fit/run.mjs --port 9701 --python python3
+
   build:
     needs: [prepare]
     runs-on: ubuntu-latest

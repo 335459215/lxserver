@@ -102,3 +102,6 @@ node_modules/
 
 # 临时提交信息文件（不该进版本库）
 _commit-msg-*.txt
+
+# 视口护栏的截图产物（CI 里也会生成）
+scripts/menu-fit/shots/
