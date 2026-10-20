@@ -143,6 +143,141 @@ with sync_playwright() as p:
         page.screenshot(path=os.path.join(OUT, f"quality-menu-{label}.png"))
         ctx.close()
 
+    # ================= 降级标注（D-012 的端到端护栏）=================
+    #
+    # 【为什么单独一段，且必须在离线桩里做】
+    # 线上音源基本都能给出 flac，于是 resolvedQuality == preferredQuality，
+    # 「实得低于首选」这条分支永远走不到 —— verify-quality.py 里那条断言
+    # 长期落在 [INFO] "本次未发生降级" 的跳过分支上，等于没验。
+    # 桩接口刻意让 flac 请求返回 320k，才把这条路径真正跑起来。
+    #
+    # 这段验三件事（都是 D-012 的具体表现）：
+    #   ① 首选 flac、实得 320k → 音质按钮的 aria-label 必须显示实得的 320k（不谎报 flac）
+    #   ② 必须点亮红点（降级标记）
+    #   ③ 反过来：实得高于首选时**不得**标成降级（D-012 的核心回归）
+    print("\n--- 降级标注（D-012）---")
+    ctx = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx)
+    page = ctx.new_page()
+
+    # 首选「无损」——桩会让它实得 320k，构成一次真实降级。
+    #
+    # ⚠️ 档位用 add_init_script 设置（**每次导航都会执行**），不是 evaluate。
+    # 这样 reload/SPA 跳转后都不会被重置；同理，③ 里要改档位时**不能**再靠
+    # evaluate —— 那会被这条 init_script 在下次导航时覆盖回 flac。
+    # （第一版就是这么错的：看着改了 320k，实际页面加载后又是 flac，
+    #   于是"同档不误报"那条断言恒红。）
+    page.add_init_script("localStorage.setItem('lx.playback.quality', 'flac')")
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(2500)
+
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("降级场景：桩数据渲染出搜索结果", rows.count() > 0, f"{rows.count()} 行")
+    if rows.count() > 0:
+        # 明确点「晴天」（降级场景）。
+        # ⚠️ 必须限定在结果列表 `ul li` 里：'晴天' 也可能出现在首页/推荐区，
+        #    全页匹配会点到别的元素上（实测就点到了另一首，导致断言读错对象）。
+        #    并且点完要**校验当前曲目**，否则后面所有断言都在测另一首歌。
+        target = page.locator("ul li button[aria-label*='晴天']").first
+        if target.count() == 0:
+            target = rows.first
+        target.click()
+
+        # 等解析完成（桩立即返回，但要给状态机一点时间）
+        trig = page.locator('button[aria-label^="音质"]:visible').first
+        label_attr = ""
+        for _ in range(24):
+            if trig.count() > 0:
+                label_attr = trig.get_attribute("aria-label") or ""
+                if "320k" in label_attr:
+                    break
+            page.wait_for_timeout(250)
+
+        # 先确认点到的确实是降级场景那首（否则下面全是误报）
+        cur_name = page.evaluate(
+            """() => {
+              const el = document.querySelector('[aria-label="播放栏"] a[title="展开全屏播放页"]');
+              const t = el ? el.innerText.split('\\n')[0].trim() : '';
+              return t;
+            }"""
+        )
+        check("点中的是降级场景曲目（晴天）", "晴天" in (cur_name or ""),
+              f"当前曲目={cur_name!r}")
+        check("首选 flac 实得 320k 时，按钮显示**实得**档位（不谎报首选）",
+              "320k" in label_attr and "FLAC" not in label_attr,
+              f"aria-label={label_attr!r}")
+
+        dots = page.locator('button[aria-label^="音质"]:visible span.bg-danger').count()
+        check("降级时点亮红点（可见的降级标记）", dots >= 1, f"{dots} 个红点")
+
+        # 菜单底部应给出「已自动降级到 …」的解释文案
+        if trig.count() > 0:
+            trig.first.click()
+            page.wait_for_timeout(600)
+            menu_text = page.locator('[role="menu"]').first.inner_text()
+            check("菜单里有降级说明文案",
+                  ("降级" in menu_text) or ("不可得" in menu_text),
+                  menu_text.replace("\n", "|")[-110:])
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+
+        # ③ 反向：实得**高于**首选 → 不得标成降级（D-012 的核心回归）。
+        #
+        # 【为什么必须是"升级"而不是"同档"】
+        # 第一版这条写的是「同档不误报」（首选 320k、实得 320k），
+        # 变异测试证明它**没有验证力**：把 isDegraded 退回旧实现
+        # `resolved !== preferred` 后它依然全绿 —— 因为同档时
+        # `resolved === preferred` 会提前返回 false，新旧实现表现一致（假绿）。
+        #
+        # 真正能区分新旧的是**升级**：首选 flac、实得 flac24bit。
+        #   新实现：序号比较 → 24bit 高于 flac → 不算降级 ✓
+        #   旧实现：字面不等 → 判成降级 ✗（这就是 D-012 的 bug）
+        # 桩服务按曲目名区分场景（「只有高品位的歌」请求 flac 回 flac24bit）。
+        #
+        # 【坑记录】本段用 add_init_script 设档位（每次导航都执行），
+        # 所以不能在同一个 context 里用 evaluate 改档位 —— reload 一跑又被写回。
+        # 换新 context 才干净。
+        page.close()
+        ctx.close()
+
+        ctx2 = browser.new_context(viewport={"width": 1440, "height": 900})
+        inject_login(ctx2)
+        page = ctx2.new_page()
+        page.add_init_script("localStorage.setItem('lx.playback.quality', 'flac')")
+        page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+        page.wait_for_timeout(2500)
+
+        # 点第二首「只有高品位的歌」（升级场景）
+        rows2 = page.locator("ul li button[aria-label^='播放']")
+        upgrade_row = page.locator("ul li button[aria-label*='高品位']")
+        target_row = upgrade_row.first if upgrade_row.count() > 0 else rows2.last
+        if rows2.count() > 0:
+            target_row.click()
+            trig2 = page.locator('button[aria-label^="音质"]:visible').first
+            lab2 = ""
+            for _ in range(32):
+                if trig2.count() > 0:
+                    lab2 = trig2.get_attribute("aria-label") or ""
+                    if "24bit" in lab2 or "flac24bit" in lab2.lower():
+                        break
+                page.wait_for_timeout(250)
+            dots2 = page.locator('button[aria-label^="音质"]:visible span.bg-danger').count()
+            # 升级：显示实得 24bit，且**不得**标降级、不得有红点
+            check("实得高于首选时显示实得档位（24bit）",
+                  "24bit" in lab2 or "flac24bit" in lab2.lower(),
+                  f"aria-label={lab2!r}")
+            check("实得高于首选时**不**标成降级（D-012 核心）",
+                  dots2 == 0 and "降级" not in lab2,
+                  f"aria-label={lab2!r} 红点={dots2}")
+        else:
+            check("实得高于首选时**不**标成降级（D-012 核心）", False, "桩数据未渲染")
+
+        page.screenshot(path=os.path.join(OUT, "quality-upgrade.png"))
+        ctx2.close()
+    else:
+        page.screenshot(path=os.path.join(OUT, "quality-degraded.png"))
+        ctx.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]
