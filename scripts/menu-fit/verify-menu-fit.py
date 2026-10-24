@@ -470,6 +470,61 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "history-remove.png"))
     ctx4.close()
 
+    # ================= 歌词多平台回退 =================
+    #
+    # 【为什么必须在离线桩里验】「本源无歌词」在真实环境极难稳定复现
+    # （取决于平台版权，今天没有明天可能有）。桩里把非 kg 一律判无歌词
+    # （500 = 真实服务端的「无歌词」信号），回退链必然被触发，才可断言。
+    #
+    # 验四件事：
+    #   ① 回退后渲染出歌词内容（不是「暂无歌词」空态）
+    #   ② 显示「歌词来自酷狗」徽标 —— 不明说的话，用户会以为歌词是本源给的
+    #   ③ 请求顺序：先本源 kw、再回退 kg。跳过本源直取 kg 是回归
+    #      （那会让所有歌都走回退，本源的时间轴/翻译反而没人用了）
+    #   ④ 日志恰好两条 —— kg 命中后不再继续尝试别的源
+    #
+    # 桌面 1440 下右侧「正在播放」常驻面板就是 Lyrics 的消费者，无需跳转
+    # 全屏页；前面的段落点过歌（会打歌词接口），所以先 reset 清掉 lyricLog。
+    print("\n--- 歌词多平台回退 ---")
+    ctx5 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx5)
+    page = ctx5.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("回退场景：桩数据渲染出搜索结果", rows.count() > 0, f"{rows.count()} 行")
+    if rows.count() > 0:
+        rows.first.click()
+        page.wait_for_timeout(3000)
+
+        body = page.evaluate("() => document.body.innerText || ''")
+        check("回退后渲染出歌词内容", "回退歌词第一行" in body)
+        check("不是「暂无歌词」空态", "这首歌暂时没有歌词" not in body)
+        check("显示「歌词来自酷狗」徽标", "歌词来自酷狗" in body)
+
+        log = page.evaluate(
+            """async () => {
+              const r = await fetch('/api/__fixture__/lyric-log');
+              return (await r.json()).sources || [];
+            }"""
+        )
+        check("请求顺序：先本源 kw 再回退 kg（不跳过本源）",
+              log[:2] == ["kw", "kg"], f"lyricLog={log}")
+        check("kg 命中后不再继续尝试（恰好 2 次请求）", len(log) == 2, f"lyricLog={log}")
+    else:
+        for nm in ("回退后渲染出歌词内容", "不是「暂无歌词」空态",
+                   "显示「歌词来自酷狗」徽标",
+                   "请求顺序：先本源 kw 再回退 kg（不跳过本源）",
+                   "kg 命中后不再继续尝试（恰好 2 次请求）"):
+            check(nm, False, "前置：搜索结果为空")
+
+    page.screenshot(path=os.path.join(OUT, "lyric-fallback.png"))
+    ctx5.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

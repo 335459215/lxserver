@@ -5,7 +5,8 @@
  *                       &copyrightId=&albumId=&lrcUrl=&mrcUrl=&trcUrl=
  *   返回 SDK 原样结构 { lyric, tlyric?, rlyric?, lxlyric? }，均为 LRC 文本，字段可能缺失或为空串；
  *   命中本地 .lrc 缓存时额外带 _fromLocalCache: true。
- *   无歌词时服务端返回 500 + text/plain —— 故「拿不到」一律按「暂无歌词」处理，不弹错误。
+ *   无歌词时服务端返回 500 + text/plain —— fetchLyric 把它当作「该源无歌词」，
+ *   自动按 LYRIC_FALLBACK_SOURCES 换源再取（见下方注释），全部落空才按「暂无歌词」处理。
  *
  * 逐字标签 <起始, 数值> 的语义各平台不一致（见 §parseWords 注释），这里做了自动判型。
  */
@@ -214,22 +215,90 @@ function lyricParams(song: Song): Record<string, string> {
   }
 }
 
-export async function fetchLyric(song: Song, signal?: AbortSignal): Promise<LyricData> {
-  if (!LYRIC_SOURCES.has(song.source)) return EMPTY
+/** 无歌词时的回退源（按序尝试）。
+ *
+ *  【为什么只有 kg】酷狗的歌词接口按**歌名 + 时长**搜酷狗歌词库
+ *  （lyrics.kugou.com/search），不依赖平台 songmid —— 拿着 kw 的歌
+ *  一次请求就能直接查。而 wy/tx/mg 的歌词接口都要**本平台的 songmid**，
+ *  回退得先跨平台搜索换 ID：两次请求，且可能匹配到同名别的歌 ——
+ *  错歌词比没歌词更糟。故第一版只回退 kg（它也是覆盖面最大的歌词库），
+ *  链是数组，后续要加源往里放即可。
+ */
+const LYRIC_FALLBACK_SOURCES = ['kg']
 
-  const params = lyricParams(song)
-  if (!params.songmid) return EMPTY
-
-  const res = await fetch(`/api/music/lyric?${new URLSearchParams(params).toString()}`, {
+/** 从指定源拉歌词。返回 null = 该源没有这首歌的歌词（服务端对此回 5xx），
+ *  其它失败（4xx/格式异常/网络）照常抛错。 */
+async function fetchLyricPayload(
+  source: string,
+  params: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<LyricPayload | null> {
+  const res = await fetch(`/api/music/lyric?${new URLSearchParams({ ...params, source }).toString()}`, {
     signal,
     // 带上用户身份：服务端据此优先命中该用户已缓存的 .lrc（不带会退化成公开用户 open）
     headers: userAuthHeaders(),
   })
+  // 本路由「无歌词」的信号就是 5xx（见文件头注释）——那是正常状态不是故障
+  if (res.status >= 500) return null
   if (!res.ok) throw new MusicApiError(`HTTP ${res.status}`)
-
   const data = (await res.json().catch(() => null)) as LyricPayload | null
   if (!data) throw new MusicApiError('歌词返回格式异常')
-  return parseLyric(data)
+  return data
+}
+
+export interface LyricResult {
+  data: LyricData
+  /** 实际给出歌词的源；等于本源 = 没发生回退 */
+  fromSource: string
+}
+
+export async function fetchLyric(song: Song, signal?: AbortSignal): Promise<LyricResult> {
+  if (!LYRIC_SOURCES.has(song.source)) return { data: EMPTY, fromSource: song.source }
+
+  const params = lyricParams(song)
+  if (!params.songmid) return { data: EMPTY, fromSource: song.source }
+
+  const attempts: Array<{ source: string; params: Record<string, string> }> = [
+    { source: song.source, params },
+  ]
+  for (const fb of LYRIC_FALLBACK_SOURCES) {
+    if (fb === song.source) continue
+    attempts.push({
+      source: fb,
+      params: {
+        ...params,
+        // 异源的字段对回退目标是脏提示：kg 按名搜，kw 的 hash/咪咕的
+        // lrcUrl 等只会干扰匹配，全部清空让它纯按「名 + 时长」找
+        hash: '',
+        copyrightId: '',
+        albumId: '',
+        lrcUrl: '',
+        mrcUrl: '',
+        trcUrl: '',
+      },
+    })
+  }
+
+  for (let i = 0; i < attempts.length; i++) {
+    const at = attempts[i]
+    let payload: LyricPayload | null
+    if (i === 0) {
+      // 本源的错误照旧抛：网络断了/鉴权失败该显示「重试」，而不是悄悄回退
+      payload = await fetchLyricPayload(at.source, at.params, signal)
+    } else {
+      try {
+        payload = await fetchLyricPayload(at.source, at.params, signal)
+      } catch (e) {
+        // 换歌的 abort 必须穿透，否则旧请求的回退会覆盖新歌的状态
+        if (e instanceof DOMException && e.name === 'AbortError') throw e
+        // 本源已判「无歌词」，回退拿不到就按无歌词收场，不升级成错误态
+        continue
+      }
+    }
+    const data = payload ? parseLyric(payload) : EMPTY
+    if (data.lines.length > 0 || data.plain) return { data, fromSource: at.source }
+  }
+  return { data: EMPTY, fromSource: song.source }
 }
 
 // ===== Hook =====
@@ -240,6 +309,8 @@ export interface LyricState {
   status: LyricStatus
   data: LyricData | null
   error: string | null
+  /** 实际给出歌词的源（回退成功时 ≠ song.source）；无歌词/出错时为本源或 null */
+  fromSource: string | null
 }
 
 /** 曲目唯一键：只有换了歌才重新拉歌词（同一首歌的 position 更新不该触发） */
@@ -251,7 +322,12 @@ function lyricKey(song: Song | null): string {
 
 /** 当前曲目的歌词。失败与「暂无歌词」区分：后者是正常状态，不显示重试。 */
 export function useLyric(song: Song | null): LyricState & { reload: () => void } {
-  const [state, setState] = React.useState<LyricState>({ status: 'idle', data: null, error: null })
+  const [state, setState] = React.useState<LyricState>({
+    status: 'idle',
+    data: null,
+    error: null,
+    fromSource: null,
+  })
   const [nonce, setNonce] = React.useState(0)
 
   // song 只作为「最新值」读取；重拉与否由 key 决定，避免对象引用变化引发重复请求
@@ -264,30 +340,25 @@ export function useLyric(song: Song | null): LyricState & { reload: () => void }
   React.useEffect(() => {
     const target = songRef.current
     if (!target) {
-      setState({ status: 'idle', data: null, error: null })
+      setState({ status: 'idle', data: null, error: null, fromSource: null })
       return
     }
 
     const ac = new AbortController()
     let alive = true
-    setState({ status: 'loading', data: null, error: null })
+    setState({ status: 'loading', data: null, error: null, fromSource: null })
 
     fetchLyric(target, ac.signal)
-      .then((data) => {
+      .then(({ data, fromSource }) => {
         if (!alive) return
         const empty = data.lines.length === 0 && !data.plain
-        setState({ status: empty ? 'empty' : 'ready', data, error: null })
+        setState({ status: empty ? 'empty' : 'ready', data, error: null, fromSource })
       })
       .catch((e: unknown) => {
         if (!alive) return
         if (e instanceof DOMException && e.name === 'AbortError') return
         const msg = e instanceof Error ? e.message : '歌词获取失败'
-        // 服务端无歌词时返回 5xx：按「暂无歌词」处理，避免把正常情况渲染成故障
-        setState(
-          /HTTP 5\d\d/.test(msg)
-            ? { status: 'empty', data: null, error: null }
-            : { status: 'error', data: null, error: msg },
-        )
+        setState({ status: 'error', data: null, error: msg, fromSource: null })
       })
 
     return () => {

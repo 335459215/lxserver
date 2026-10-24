@@ -2,6 +2,7 @@ import * as React from 'react'
 import { MicVocal, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { activeLineIndex, useLyric, type LyricLine } from '@/lib/lyric'
+import { sourceLabel } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
@@ -52,7 +53,7 @@ export interface LyricsProps {
 export default function Lyrics({ className, compact = false }: LyricsProps) {
   const player = usePlayer()
   const { current, position } = player
-  const { status, data, error, reload } = useLyric(current)
+  const { status, data, error, reload, fromSource } = useLyric(current)
 
   const boxRef = React.useRef<HTMLDivElement | null>(null)
   const lineRefs = React.useRef<Array<HTMLButtonElement | null>>([])
@@ -66,6 +67,10 @@ export default function Lyrics({ className, compact = false }: LyricsProps) {
   const boxMin = compact ? 'min-h-40' : 'min-h-[16rem]'
   const songKey = current ? `${current.source}:${current.songmid ?? current.id ?? current.name}` : ''
   const following = pausedKey !== songKey
+  /** 歌词来自回退源（本源没有、换平台取到的）——要明说，否则用户会以为
+   *  时间轴/翻译的差异是本源给的，排查「歌词对不上」时找错平台。 */
+  const fallbackLabel =
+    data && current && fromSource && fromSource !== current.source ? sourceLabel(fromSource) : null
 
   // 手动滚动 → 暂停跟随，静置 4s 后恢复（否则会和用户抢滚动条）
   const pauseFollowing = React.useCallback(() => {
@@ -139,7 +144,7 @@ export default function Lyrics({ className, compact = false }: LyricsProps) {
       >
         <MicVocal className="size-6 text-faint" />
         <p className="text-sm text-dim">这首歌暂时没有歌词</p>
-        <p className="text-xs text-faint">不同平台的歌词覆盖不一样，可以换个音源再试。</p>
+        <p className="text-xs text-faint">已自动尝试本源与其它平台歌词库，仍没有找到。</p>
       </div>
     )
   }
@@ -165,7 +170,12 @@ export default function Lyrics({ className, compact = false }: LyricsProps) {
   // 纯文本歌词（无时间轴）：原样展示，不参与滚动高亮
   if (data?.plain) {
     return (
-      <div className={cn('h-full overflow-y-auto rounded-2xl border border-line bg-panel p-6', className)}>
+      <div className={cn('relative h-full overflow-y-auto rounded-2xl border border-line bg-panel p-6', className)}>
+        {fallbackLabel && (
+          <span className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-panel2/80 px-2.5 py-1 text-[11px] text-faint backdrop-blur">
+            歌词来自{fallbackLabel}
+          </span>
+        )}
         <p className="whitespace-pre-wrap text-center text-sm leading-8 text-dim">{data.plain}</p>
       </div>
     )
@@ -182,6 +192,11 @@ export default function Lyrics({ className, compact = false }: LyricsProps) {
       )}
       aria-label="歌词"
     >
+      {fallbackLabel && (
+        <span className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-panel2/80 px-2.5 py-1 text-[11px] text-faint backdrop-blur">
+          歌词来自{fallbackLabel}
+        </span>
+      )}
       <ul className={cn('space-y-0.5 px-2', compact ? 'py-12' : 'py-28 md:py-32')}>
         {lines.map((line, i) => {
           const isActive = i === active

@@ -6,10 +6,13 @@
  *   那样写出来的"护栏"在 CI 里只会超时，等于没有护栏。
  *   这里把前端依赖的少数接口**桩掉**，让 UI 能在完全离线的 CI 里跑起来。
  *
- * 桩的接口只有三个（都是登录门 + 音质菜单所必需的）：
+ * 桩的接口（登录门 + 音质菜单 + 播放历史 + 歌词回退所必需的）：
  *   POST /api/login            → 返回固定 token，让登录门放行
  *   GET  /api/user/auth/verify → 返回 admin，避免被踢回登录页
  *   GET  /api/music/search     → 返回带 types 的固定曲目（音质菜单靠它显示"本曲 xx MB"）
+ *   GET  /api/music/history/*  → 有状态的历史（分桶统计 + 删除/撤销）
+ *   GET  /api/music/lyric      → kg 有歌词、其它源一律 500（专测「无歌词自动换源」）
+ *   GET  /api/__fixture__/*    → 调试端点：removed-log / lyric-log / reset
  *
  * 只读、只监听回环。绝不修改任何远端状态。
  *
@@ -126,6 +129,16 @@ function buildHistory() {
 let historyStore = buildHistory()
 /** 记录被删过的 key（调试端点用），确认「删除真的发到了服务端」 */
 let removedLog = []
+/** 记录歌词接口被查询的 source 序列（调试端点用），确认「回退链的请求顺序」 */
+let lyricLog = []
+
+/** 歌词桩：只有 kg 有歌词，其它源一律 500（= 真实服务端「无歌词」的信号）。
+ *  这样「本源无歌词 → 自动回退 kg」的整条链在离线环境里就能真正跑起来。 */
+const FALLBACK_LRC = [
+  '[00:00.50]回退歌词第一行',
+  '[00:03.00]回退歌词第二行',
+  '[00:06.50]回退歌词第三行',
+].join('\n')
 
 const send = (res, code, type, body) => {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
@@ -181,6 +194,29 @@ const server = http.createServer((req, res) => {
   }
   if (urlPath === '/api/music/search') {
     json(res, 200, FIXTURE_SONGS)
+    return
+  }
+
+  // ---- 【歌词多平台回退】----
+  //
+  // 真实环境里「本源无歌词」的歌极难稳定复现（要看平台版权），但在桩里
+  // 把 kw 一律判无歌词（500）就立刻可测：前端必须回退 kg 才能拿到歌词。
+  // lyricLog 记录请求顺序 —— 断言「先打本源、再打 kg」，防止回退链被
+  // 改成「跳过本源直取 kg」（那会让所有歌都走回退，本源歌词反而没人用了）。
+  if (urlPath === '/api/music/lyric' && req.method === 'GET') {
+    const src = new URL(req.url || '/', 'http://localhost').searchParams.get('source') || ''
+    lyricLog.push(src)
+    if (src !== 'kg') {
+      // 与真实服务端一致：无歌词 = 500 + text/plain
+      send(res, 500, MIME['.txt'], 'no lyric')
+      return
+    }
+    json(res, 200, { lyric: FALLBACK_LRC, tlyric: '', rlyric: '', lxlyric: '' })
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/lyric-log') {
+    json(res, 200, { success: true, sources: lyricLog.slice() })
     return
   }
 
@@ -275,6 +311,7 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/api/__fixture__/reset') {
     historyStore = buildHistory()
     removedLog = []
+    lyricLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
   }
