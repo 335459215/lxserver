@@ -1,24 +1,23 @@
 /** 播放缓存（v2.39.0）：听过的歌缓存进 CacheStorage，重播零解析零下载、断网可放。
  *
- *  【定位】这是**透明缓存**，不是下载管理 —— 不产生文件、不上磁盘目录，
+ *  【定位】这是**透明缓存**（IndexedDB），不是下载管理 —— 不产生文件、不上磁盘目录，
  *  有容量上限（LRU 淘汰最久没听的），设置里一个开关 + 一键清空。
  *  「下载本曲」按钮保持原样（用户有自己的下载整理方案）。
  *
  *  【键设计】缓存键 = 歌曲 songKey + 音质档位（缓存的字节就是那个档位的）。
- *  真实音频 URL 带过期签名、不能当键 —— 用合成请求路径 `/__lxcache__/<key>`
- *  存取，CacheStorage 只当「按键存 Blob 的仓库」用。
+ *  真实音频 URL 带过期签名、不能当键；存储就是「按键存 Blob 的仓库」（IDB）。
  *
  *  【存储抽象】store 注入（真实实现包 caches.open；单测用内存 Map），
  *  LRU/容量策略是纯逻辑 —— 与 sleepTimer / playlistTransfer 同一架构套路。
  *  meta（size/lastUsed/曲目信息）作为一条 JSON Blob 存在同一个仓库里，
- *  淏汰与占用统计都靠它；CacheStorage 自身不提供这些。
+ *  淘汰与占用统计都靠它；底层存储自身不提供这些。
  */
 
 /** 注入的键值存储（put 覆盖同键） */
 export interface AudioCacheStore {
-  put(url: string, blob: Blob): Promise<void>
-  match(url: string): Promise<Blob | null>
-  delete(url: string): Promise<void>
+  put(key: string, blob: Blob): Promise<void>
+  match(key: string): Promise<Blob | null>
+  delete(key: string): Promise<void>
 }
 
 export interface CacheEntryInfo {
@@ -37,14 +36,10 @@ export interface CacheMeta {
 export const CACHE_STORE_NAME = 'lx-audio-v1'
 export const DEFAULT_CAP = 2 * 1024 * 1024 * 1024 // 2GB：无损单曲 30~60MB，够放几十张专辑
 
-const META_URL = '/__lxcache__/__meta__'
+const META_KEY = '__meta__'
 
 export function cacheKey(songKey: string, tier: string): string {
   return `audio|${songKey}|${tier}`
-}
-
-function reqUrlOf(key: string): string {
-  return `/__lxcache__/${encodeURIComponent(key)}`
 }
 
 export interface CacheHit {
@@ -65,7 +60,7 @@ export class AudioCache {
 
   private async loadMeta(): Promise<void> {
     if (this.loaded) return
-    const raw = await this.store.match(META_URL)
+    const raw = await this.store.match(META_KEY)
     if (raw) {
       try {
         const parsed = JSON.parse(await raw.text()) as CacheMeta
@@ -78,7 +73,7 @@ export class AudioCache {
   }
 
   private async saveMeta(): Promise<void> {
-    await this.store.put(META_URL, new Blob([JSON.stringify(this.meta)], { type: 'application/json' }))
+    await this.store.put(META_KEY, new Blob([JSON.stringify(this.meta)], { type: 'application/json' }))
   }
 
   /** 命中返回 blob 并刷新 lastUsed；未命中返回 null */
@@ -86,7 +81,7 @@ export class AudioCache {
     await this.loadMeta()
     const info = this.meta.entries[key]
     if (!info) return null
-    const blob = await this.store.match(reqUrlOf(key))
+    const blob = await this.store.match(key)
     if (!blob) {
       // 数据丢了 meta 还在（被浏览器清了部分）—— 清掉这条 meta
       delete this.meta.entries[key]
@@ -120,11 +115,11 @@ export class AudioCache {
         if (total <= this.cap) break
         // 正在写入的这条不能被自己挤掉
         total -= v.size
-        await this.store.delete(reqUrlOf(k))
+        await this.store.delete(k)
         delete this.meta.entries[k]
       }
     }
-    await this.store.put(reqUrlOf(key), blob)
+    await this.store.put(key, blob)
     this.meta.entries[key] = info
     await this.saveMeta()
   }
@@ -161,34 +156,64 @@ export class AudioCache {
   }
 }
 
-/** 浏览器实现：包一层 CacheStorage（清空用 cache.keys() 逐条删） */
+/** 浏览器实现：IndexedDB 当「按键存 Blob 的仓库」。
+ *
+ *  【为什么不是 CacheStorage —— 线上实测踩的坑（2026-10-24）】
+ *  NAS 以 http://192.168.1.x 直连，是**非安全上下文**，浏览器根本不提供
+ *  caches API（typeof caches === 'undefined'，与 navigator.serviceWorker
+ *  被跳过是同一族限制）。第一版用 CacheStorage，在真实部署上整层静默失效
+ *  —— 线上实测当场抓到。IndexedDB 在 HTTP 下同样可用、存 Blob 无压力，
+ *  还省掉了「合成请求路径」的 hack：键就是键，不再伪装成 URL。
+ *  （保留键里的 /__lxcache__/ 前缀改无所谓 —— 现在键直接用 cacheKey。）
+ */
 export function createBrowserAudioCache(): AudioCache | null {
-  if (typeof caches === 'undefined') return null
-  let handle: Cache | null = null
-  const open = async (): Promise<Cache> => {
-    if (!handle) handle = await caches.open(CACHE_STORE_NAME)
-    return handle
+  if (typeof indexedDB === 'undefined') return null
+  let dbPromise: Promise<IDBDatabase> | null = null
+  const open = (): Promise<IDBDatabase> => {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(CACHE_STORE_NAME, 1)
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains('kv')) req.result.createObjectStore('kv')
+        }
+        req.onsuccess = () => resolve(req.result)
+        req.onerror = () => reject(req.error ?? new Error('IndexedDB 打开失败'))
+      })
+    }
+    return dbPromise
   }
+  const tx = async (mode: IDBTransactionMode): Promise<IDBObjectStore> => {
+    const db = await open()
+    return db.transaction('kv', mode).objectStore('kv')
+  }
+  const wrap = <T>(req: IDBRequest<T>): Promise<T> =>
+    new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+
   const store: AudioCacheStore & { keys(): Promise<string[]> } = {
-    async put(url, blob) {
-      ;(await open()).put(url, new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } }))
+    async put(key, blob) {
+      ;(await tx('readwrite')).put(blob, key)
     },
-    async match(url) {
-      const res = await (await open()).match(url)
-      return res ? await res.blob() : null
+    async match(key) {
+      const v = await wrap((await tx('readonly')).get(key))
+      return v instanceof Blob ? v : null
     },
-    async delete(url) {
-      await (await open()).delete(url)
+    async delete(key) {
+      ;(await tx('readwrite')).delete(key)
     },
     async keys() {
-      return (await open()).keys().then((rs) => rs.map((r) => r.url))
+      const keys = (await wrap((await tx('readonly')).getAllKeys())) as string[]
+      return keys.filter((k) => typeof k === 'string')
     },
   }
   const cache = new AudioCache(store)
-  // 覆写 clear：先枚举删除存储里的音频条目，再重置 meta（基类只重置 meta）
+  // 覆写 clear：先枚举删除存储条目，再重置 meta（基类只重置 meta）
   cache.clear = async (): Promise<void> => {
-    for (const url of await store.keys()) {
-      if (url.includes('/__lxcache__/')) await store.delete(url)
+    for (const key of await store.keys()) {
+      if (key === '__meta__') continue
+      await store.delete(key)
     }
     await AudioCache.prototype.clear.call(cache)
   }
@@ -200,14 +225,14 @@ export function createMemoryStore(): AudioCacheStore & { map: Map<string, Blob> 
   const map = new Map<string, Blob>()
   return {
     map,
-    async put(url, blob) {
-      map.set(url, blob)
+    async put(key, blob) {
+      map.set(key, blob)
     },
-    async match(url) {
-      return map.get(url) ?? null
+    async match(key) {
+      return map.get(key) ?? null
     },
-    async delete(url) {
-      map.delete(url)
+    async delete(key) {
+      map.delete(key)
     },
   }
 }

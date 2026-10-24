@@ -1109,7 +1109,18 @@ with sync_playwright() as p:
         page.locator("ul li button[aria-label*='晴天']").first.click()
         page.wait_for_timeout(4500)  # 1.5s 延迟 + fetch WAV + 写入
         cache_keys = page.evaluate(
-            """async () => { const c = await caches.open('lx-audio-v1'); return (await c.keys()).length }"""
+            """async () => {
+              const db = await new Promise((res, rej) => {
+                const r = indexedDB.open('lx-audio-v1')
+                r.onsuccess = () => res(r.result)
+                r.onerror = () => rej(r.error)
+              })
+              return await new Promise((res) => {
+                const c = db.transaction('kv').objectStore('kv').count()
+                c.onsuccess = () => res(c.result)
+                c.onerror = () => res(-1)
+              })
+            }"""
         )
         check("首播后 CacheStorage 出现条目（音频 + meta ≥ 2）", cache_keys >= 2, f"{cache_keys} 条")
         check("首播触发了一次解析", len(url_resolves()) == 1, str(len(url_resolves())))
