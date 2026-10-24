@@ -22,6 +22,12 @@ import {
   type SingerHit,
 } from '@/lib/discover'
 import { createSearchPager } from '@/lib/searchPaging'
+import {
+  clearSearchHistory,
+  loadSearchHistory,
+  pushSearchHistory,
+  removeSearchHistory,
+} from '@/lib/searchHistory'
 import { usePlayer } from '@/lib/player'
 import { useSentinel } from '@/lib/useSentinel'
 import SongList from '@/components/player/SongList'
@@ -56,6 +62,8 @@ export default function SearchPage() {
   const [loadingMore, setLoadingMore] = React.useState(false)
 
   const abortRef = React.useRef<AbortController | null>(null)
+  /** 最近搜索：提交即记录（含 URL 参数带来的搜索 —— 点热搜也算「搜过」） */
+  const [history, setHistory] = React.useState<string[]>(() => loadSearchHistory())
   /** 翻页控制器：**已通过 test/searchPaging.test.ts 验证的实现**。
    *
    *  【为什么分页状态不直接用 React state 管理】
@@ -88,6 +96,8 @@ export default function SearchPage() {
   const runSearch = React.useCallback(async (name: string, src: string, k: Kind) => {
     const q = name.trim()
     if (!q) return
+    // 记录最近搜索：提交即记（失败也留痕 —— 用户想搜的词本身就有复用价值）
+    setHistory(pushSearchHistory(q))
 
     abortRef.current?.abort()
     // 新查询作废一切在途翻页：控制器内部代次 +1，旧翻页的回写会被丢弃
@@ -303,6 +313,51 @@ export default function SearchPage() {
             <span className="hidden md:inline">搜索</span>
           </Button>
         </form>
+
+        {/* 最近搜索（v2.34.0）：只在「还没搜过任何东西」的 idle 态展示 ——
+            搜出结果后这里的每个词都已体现在结果里，再占一屏就是噪声。
+            词是点得动的（等于替用户填好关键词再搜），词尾的 X 删单条。 */}
+        {phase === 'idle' && history.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 pt-3 mt-4 border-t border-line/40">
+            <span className="text-xs font-semibold text-faint mr-1">最近搜索：</span>
+            {history.map((word) => (
+              <span
+                key={word}
+                className="group inline-flex items-center gap-0.5 rounded-full border border-line/70 bg-panel-2/70 pl-3 pr-1.5 py-1 text-xs text-dim transition-all hover:border-accent/40 hover:text-ink"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyword(word)
+                    void runSearch(word, source, kind)
+                  }}
+                  className="max-w-40 truncate transition-colors group-hover:text-accent"
+                  title={word}
+                >
+                  {word}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHistory(removeSearchHistory(word))}
+                  className="rounded-full p-0.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger"
+                  aria-label={`删除搜索记录 ${word}`}
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                clearSearchHistory()
+                setHistory([])
+              }}
+              className="ml-auto text-xs text-faint transition-colors hover:text-danger"
+            >
+              清空
+            </button>
+          </div>
+        )}
 
         {/* 快捷平台切换药丸标签：仅在桌面端显示；移动端默认聚合搜索，无冗余按钮 */}
         <div className="hidden md:flex flex-wrap items-center gap-2 pt-3 mt-4 border-t border-line/40">

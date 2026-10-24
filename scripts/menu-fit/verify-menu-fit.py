@@ -708,6 +708,71 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "keyboard-shortcuts.png"))
     ctx6.close()
 
+    # ================= 最近搜索（v2.34.0）=================
+    #
+    # 【验什么】记录（提交即记）/ 跨 reload 持久化 / 新者在前 /
+    # 点词重搜 / 删单条 / 清空。去重与挪前在单测 + 变异脚本里盯
+    # （test/searchHistory.test.ts，CI 常驻），这里只验 UI 接线。
+    print("\n--- 最近搜索 ---")
+    ctx7 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx7)
+    page = ctx7.new_page()
+    page.goto(f"{BASE}/app/search", wait_until="load")
+    page.wait_for_timeout(2500)
+
+    check("空历史时不显示「最近搜索」区", "最近搜索" not in page.evaluate("() => document.body.innerText"))
+
+    page.fill("input[aria-label='搜索关键词']", "周杰伦")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(2500)
+    check("提交搜索后出结果", page.locator("ul li button[aria-label^='播放']").count() > 0)
+
+    page.fill("input[aria-label='搜索关键词']", "林俊杰")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(2500)
+
+    # 整页 reload：证明持久化（localStorage），而不是只活在内存里
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+    chips = page.locator("span.group > button[title]")
+    n = chips.count()
+    check("reload 后出现最近搜索 chips（持久化）", n >= 2, f"{n} 个")
+    if n >= 2:
+        first = chips.nth(0).get_attribute("title")
+        second = chips.nth(1).get_attribute("title")
+        check("新搜索的词排在最前", first == "林俊杰" and second == "周杰伦", f"{first} / {second}")
+
+        # 点旧词重搜 → 它应挪到最前（去重，不产生第二条）
+        page.locator("span.group > button[title='周杰伦']").click()
+        page.wait_for_timeout(2500)
+        check("点词重搜出了结果", page.locator("ul li button[aria-label^='播放']").count() > 0)
+        page.reload(wait_until="load")
+        page.wait_for_timeout(2500)
+        chips2 = page.locator("span.group > button[title]")
+        titles = [chips2.nth(i).get_attribute("title") for i in range(chips2.count())]
+        check("重搜后该词挪到最前且只有一条（去重+置顶）",
+              titles[0] == "周杰伦" and titles.count("周杰伦") == 1, f"{titles}")
+
+        # 删单条
+        page.locator("button[aria-label='删除搜索记录 林俊杰']").click()
+        page.wait_for_timeout(500)
+        titles2 = [page.locator("span.group > button[title]").nth(i).get_attribute("title")
+                   for i in range(page.locator("span.group > button[title]").count())]
+        check("删单条后只剩另一条", titles2 == ["周杰伦"], f"{titles2}")
+
+        # 清空
+        page.locator("button:has-text('清空')").first.click()
+        page.wait_for_timeout(500)
+        check("清空后「最近搜索」区消失", "最近搜索" not in page.evaluate("() => document.body.innerText"))
+    else:
+        for nm in ("新搜索的词排在最前", "点词重搜出了结果",
+                   "重搜后该词挪到最前且只有一条（去重+置顶）", "删单条后只剩另一条",
+                   "清空后「最近搜索」区消失"):
+            check(nm, False, "前置：chips 未出现")
+
+    page.screenshot(path=os.path.join(OUT, "search-history.png"))
+    ctx7.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]
