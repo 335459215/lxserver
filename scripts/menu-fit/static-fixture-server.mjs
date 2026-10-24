@@ -131,6 +131,10 @@ let historyStore = buildHistory()
 let removedLog = []
 /** 记录歌词接口被查询的 source 序列（调试端点用），确认「回退链的请求顺序」 */
 let lyricLog = []
+/** 收藏列表桩（有状态）：L 键的「收藏/取消收藏」会真的改动它 */
+let loveStore = []
+/** 记录收藏增删操作（调试端点用），确认「L 键真的发到了服务端」 */
+let loveLog = []
 
 /** 歌词桩：只有 kg 有歌词，其它源一律 500（= 真实服务端「无歌词」的信号）。
  *  这样「本源无歌词 → 自动回退 kg」的整条链在离线环境里就能真正跑起来。 */
@@ -217,6 +221,56 @@ const server = http.createServer((req, res) => {
 
   if (urlPath === '/api/__fixture__/lyric-log') {
     json(res, 200, { success: true, sources: lyricLog.slice() })
+    return
+  }
+
+  // ---- 【收藏（L 键）】----
+  //
+  // 【必须是有状态的】与历史删除同理：收藏是有副作用的操作，固定列表会让
+  // 「请求没发出去」看起来也对。add/remove 真的改动 loveStore，并记进 loveLog。
+  if (urlPath === '/api/user/list' && req.method === 'GET') {
+    json(res, 200, { defaultList: [], loveList: loveStore, userList: [] })
+    return
+  }
+
+  if (urlPath === '/api/music/user/list/add' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let infos = []
+      try {
+        infos = JSON.parse(body || '{}').musicInfos || []
+      } catch {
+        /* 空数组走正常路径 */
+      }
+      for (const it of infos) {
+        if (!loveStore.some((x) => x.id === it.id)) loveStore.push(it)
+      }
+      loveLog.push({ op: 'add', ids: infos.map((x) => x.id), songmid: infos.map((x) => x.songmid) })
+      send(res, 200, MIME['.txt'], '添加成功')
+    })
+    return
+  }
+
+  if (urlPath === '/api/music/user/list/remove' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let ids = []
+      try {
+        ids = JSON.parse(body || '{}').songIds || []
+      } catch {
+        /* 空数组走正常路径 */
+      }
+      loveStore = loveStore.filter((x) => !ids.includes(x.id))
+      loveLog.push({ op: 'remove', ids })
+      send(res, 200, MIME['.txt'], 'ok')
+    })
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/love-log') {
+    json(res, 200, { success: true, ops: loveLog.slice(), love: loveStore.slice() })
     return
   }
 
@@ -312,6 +366,8 @@ const server = http.createServer((req, res) => {
     historyStore = buildHistory()
     removedLog = []
     lyricLog = []
+    loveStore = []
+    loveLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
   }

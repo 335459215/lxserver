@@ -525,6 +525,157 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "lyric-fallback.png"))
     ctx5.close()
 
+    # ================= 全局快捷键（v2.32.0）=================
+    #
+    # 【验什么】7 个新键（/ ←→ ↑↓ M S R L）里，可离线稳定断言的 6 类：
+    #   ① L 收藏/取消收藏 —— 三层：toast 文案 + 桩服务端 loveLog + 状态可逆
+    #   ② S 随机 / R 循环 —— toast 文案 + TransportControls 的 aria-label/pressed 翻转
+    #   ③ ↑↓ 音量 —— 音量 range input 的 value 步进 0.05（先 ↓×2 再 ↑，避开默认 1.0 的天花板）
+    #   ④ M 静音 —— 静音按钮 aria-label 翻转
+    #   ⑤ / 聚焦搜索框
+    #   ⑥ 输入框/滑块守卫 —— 焦点在输入框里按 s 要打字不切随机；
+    #      焦点在原生 range 上按 ↑ 只走原生 step=0.01，不能「一步顶两步」(+0.06)
+    #
+    # 【seek 为什么不验】桩环境的 <audio> 能不能真出声取决于 headless 的自动播放
+    # 策略，position 时钟不可靠 —— seek 逻辑只有「clamp + audio.currentTime」三行，
+    # 验它得不偿失（verify-playback 在真实环境已覆盖播放时钟）。
+    print("\n--- 全局快捷键 ---")
+    ctx6 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx6)
+    page = ctx6.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("快捷键场景：桩数据渲染出搜索结果", rows.count() > 0, f"{rows.count()} 行")
+    if rows.count() > 0:
+        rows.first.click()
+        page.wait_for_timeout(1500)
+
+        # ① L 收藏 → 取消收藏（服务端三层验证）
+        page.keyboard.press("l")
+        page.wait_for_timeout(1000)
+        check("L：toast 显示「已收藏」", "已收藏" in page.evaluate("() => document.body.innerText"))
+        love = page.evaluate(
+            """async () => {
+              const r = await fetch('/api/__fixture__/love-log');
+              return await r.json();
+            }"""
+        )
+        check("L：服务端真的收到了收藏请求", love["ops"] and love["ops"][0]["op"] == "add"
+              and "228908" in (love["ops"][0]["songmid"] or []), f"ops={love['ops']}")
+
+        page.keyboard.press("l")
+        page.wait_for_timeout(1000)
+        check("L：再按一次 toast 显示「已取消收藏」",
+              "已取消收藏" in page.evaluate("() => document.body.innerText"))
+        love2 = page.evaluate(
+            """async () => (await (await fetch('/api/__fixture__/love-log')).json())"""
+        )
+        check("L：服务端也收到了移除请求且收藏清空",
+              len(love2["ops"]) == 2 and love2["ops"][1]["op"] == "remove" and love2["love"] == [],
+              f"ops={[(o['op']) for o in love2['ops']]} love={len(love2['love'])}")
+
+        # ② S 随机开关（aria-label + toast 双断言）
+        shuf = page.locator("button[aria-label='开启随机播放'], button[aria-label='关闭随机播放']")
+        check("S：随机按钮存在", shuf.count() > 0)
+        page.keyboard.press("s")
+        page.wait_for_timeout(400)
+        check("S：toast 显示「随机播放：开」", "随机播放：开" in page.evaluate("() => document.body.innerText"))
+        check("S：按钮 aria-label 翻转为「关闭随机播放」",
+              page.locator("button[aria-label='关闭随机播放']").count() > 0)
+        page.keyboard.press("s")
+        page.wait_for_timeout(400)
+        check("S：再按恢复「开启随机播放」",
+              page.locator("button[aria-label='开启随机播放']").count() > 0)
+
+        # ② R 循环切换（默认「列表循环」→ 单曲 → 不循环 → 列表循环）
+        page.keyboard.press("r")
+        page.wait_for_timeout(400)
+        check("R：循环切到「单曲循环」",
+              page.locator("button[aria-label^='循环模式：单曲循环']").count() > 0)
+        page.keyboard.press("r")
+        page.wait_for_timeout(400)
+        check("R：再按到「不循环」",
+              page.locator("button[aria-label^='循环模式：不循环']").count() > 0)
+        page.keyboard.press("r")
+        page.wait_for_timeout(400)
+        check("R：第三次回到「列表循环」（完整一圈）",
+              page.locator("button[aria-label^='循环模式：列表循环']").count() > 0)
+
+        # ③ ↑↓ 音量步进 0.05（先降两次避开默认 1.0 天花板，再升回来）
+        vol = page.locator("input[aria-label='音量']")
+        check("音量条存在", vol.count() > 0)
+        v0 = float(vol.input_value())
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(200)
+        v1 = float(vol.input_value())
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(200)
+        v2 = float(vol.input_value())
+        page.keyboard.press("ArrowUp")
+        page.wait_for_timeout(200)
+        v3 = float(vol.input_value())
+        check("↓↓↑：音量按 0.05 步进（+ 回升）",
+              abs(v1 - (v0 - 0.05)) < 0.001 and abs(v2 - (v0 - 0.10)) < 0.001 and abs(v3 - v1) < 0.001,
+              f"{v0}→{v1}→{v2}→{v3}")
+
+        # ④ M 静音
+        page.keyboard.press("m")
+        page.wait_for_timeout(200)
+        check("M：静音按钮翻转为「取消静音」",
+              page.locator("button[aria-label='取消静音']").count() > 0)
+        page.keyboard.press("m")
+        page.wait_for_timeout(200)
+        check("M：再按恢复「静音」", page.locator("button[aria-label='静音']").count() > 0)
+
+        # ⑤ / 聚焦搜索框
+        page.keyboard.press("/")
+        page.wait_for_timeout(300)
+        focused = page.evaluate(
+            "() => { const el = document.activeElement; return el ? el.getAttribute('aria-label') : ''; }"
+        )
+        check("/：焦点进入搜索输入框", focused == "搜索关键词", f"focused={focused!r}")
+
+        # ⑥ 输入框守卫：焦点在输入框里按 s 是打字，不是切随机。
+        #    【为什么用 toast 计数而不是「正文不含『随机播放：』」】前面的用例
+        #    合法地弹过 S 的 toast，它 4 秒后才消失 —— 「正文不含」会被旧 toast
+        #    误伤（本护栏第一版就是这么假红的）。
+        toasts_before = page.locator('li[role="status"]').count()
+        page.keyboard.type("s")
+        page.wait_for_timeout(400)
+        typed = page.evaluate(
+            "() => document.querySelector('input[aria-label=\"搜索关键词\"]').value"
+        )
+        check("输入框内按 s：正常打字（值含 s）", "s" in typed, f"typed={typed!r}")
+        check("输入框内按 s：不触发随机切换（无新 toast、按钮未翻转）",
+              page.locator('li[role="status"]').count() == toasts_before
+              and page.locator("button[aria-label='开启随机播放']").count() > 0)
+
+        # ⑥ 原生 range 守卫：焦点在音量条上按 ↑ 只走原生 step（0.01），不能 +0.06
+        page.evaluate("() => document.querySelector('input[aria-label=\"音量\"]').focus()")
+        page.keyboard.press("ArrowUp")
+        page.wait_for_timeout(200)
+        v4 = float(page.locator("input[aria-label='音量']").input_value())
+        check("音量条聚焦时按 ↑：只走原生 step=0.01（不与全局快捷键叠加）",
+              abs(v4 - (v3 + 0.01)) < 0.001, f"{v3}→{v4}")
+    else:
+        for nm in ("L：toast 显示「已收藏」", "L：服务端真的收到了收藏请求",
+                   "L：再按一次 toast 显示「已取消收藏」", "L：服务端也收到了移除请求且收藏清空",
+                   "S：随机按钮存在", "S：toast 显示「随机播放：开」", "S：按钮 aria-label 翻转为「关闭随机播放」",
+                   "S：再按恢复「开启随机播放」", "R：循环切到「单曲循环」", "R：再按到「不循环」",
+                   "R：第三次回到「列表循环」（完整一圈）", "音量条存在", "↓↓↑：音量按 0.05 步进（+ 回升）",
+                   "M：静音按钮翻转为「取消静音」", "M：再按恢复「静音」", "/：焦点进入搜索输入框",
+                   "输入框内按 s：正常打字（值含 s）", "输入框内按 s：不触发随机切换（无 toast、按钮未翻转）",
+                   "音量条聚焦时按 ↑：只走原生 step=0.01（不与全局快捷键叠加）"):
+            check(nm, False, "前置：搜索结果为空")
+
+    page.screenshot(path=os.path.join(OUT, "keyboard-shortcuts.png"))
+    ctx6.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

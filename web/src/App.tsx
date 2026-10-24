@@ -28,6 +28,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import PlayerBar from '@/components/player/PlayerBar'
 import MobileTabBar from '@/components/player/MobileTabBar'
 import NowPlayingPanel from '@/components/player/NowPlayingPanel'
+import KeyboardShortcuts from '@/components/player/KeyboardShortcuts'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
 import SettingsShell from '@/pages/settings/SettingsShell'
@@ -221,6 +222,8 @@ function Shell() {  const { auth, refresh } = useAuth()
     // 换成 `100dvh`（动态视口高度）同样不解决「要减掉 header」这件事，所以真正的修法是：
     // 让内容区的最小高度 = 视口 − header 高度，两者相加恰好等于视口。
     <div className="flex min-h-[calc(100dvh-var(--header-h))] flex-col">
+      {/* 全局快捷键（渲染 null）：必须在 ToastHost + PlayerProvider 之内 */}
+      <KeyboardShortcuts />
       {/* 顶栏：流体毛玻璃质感与全局搜索 */}
       <header className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl">
         <div className="flex h-[var(--header-h)] items-center gap-4 px-4 md:px-8">
