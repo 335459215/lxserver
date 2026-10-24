@@ -773,6 +773,72 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "search-history.png"))
     ctx7.close()
 
+    # ================= 睡眠定时器（v2.35.0）=================
+    #
+    # 【验什么】UI 接线与状态可见性：入口存在 / 菜单项齐全 / 设定后倒计时
+    # 出现 / 进行中的项被禁用 / 两种模式切换 / 关闭复位。
+    # 【到点暂停为什么不在这验】需要真实时钟等 15 分钟；淡出与暂停的
+    # 语义边界在 test/sleepTimer.test.ts + mutation-check-sleeptimer.cjs
+    # （CI 常驻）里盯 —— e2e 只证明「接线对」，逻辑归单测。
+    print("\n--- 睡眠定时器 ---")
+    ctx8 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx8)
+    page = ctx8.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(2500)
+
+    trig = page.locator("button[aria-label='睡眠定时']").first
+    check("播放栏有睡眠定时入口", trig.count() > 0)
+    if trig.count() > 0:
+        trig.click()
+        page.wait_for_timeout(600)
+        menu_text = page.locator("[role='menu']").first.inner_text()
+        check("菜单含「播完当前这首」", "播完当前这首" in menu_text)
+        check("菜单含 15/30/60 分钟档", all(f"{m} 分钟" in menu_text for m in (15, 30, 60)))
+        check("菜单含「关闭睡眠定时」", "关闭睡眠定时" in menu_text)
+
+        page.locator("[role='menuitem']:has-text('30 分钟')").click()
+        page.wait_for_timeout(800)
+        check("设定后 toast「30 分钟后停止」", "30 分钟后停止" in page.evaluate("() => document.body.innerText"))
+        label = page.locator("button[aria-label^='睡眠定时']").first.get_attribute("aria-label") or ""
+        check("入口变为倒计时态（aria-label 带剩余时间）", "剩余" in label and any(c.isdigit() for c in label), label)
+
+        page.locator("button[aria-label^='睡眠定时']").first.click()
+        page.wait_for_timeout(600)
+        item30 = page.locator("[role='menuitem']:has-text('30 分钟')")
+        check("进行中的档位标注且禁用", "进行中" in (item30.first.inner_text() if item30.count() else ""),
+              item30.first.inner_text() if item30.count() else "未找到")
+
+        page.locator("[role='menuitem']:has-text('播完当前这首')").click()
+        page.wait_for_timeout(800)
+        label2 = page.locator("button[aria-label^='睡眠定时']").first.get_attribute("aria-label") or ""
+        check("切到「播完当前这首」（无倒计时）", "播完当前这首" in label2, label2)
+
+        page.locator("button[aria-label^='睡眠定时']").first.click()
+        page.wait_for_timeout(600)
+        page.locator("[role='menuitem']:has-text('关闭睡眠定时')").click()
+        page.wait_for_timeout(800)
+        label3 = page.locator("button[aria-label='睡眠定时']").first.get_attribute("aria-label") or ""
+        check("关闭后回到初始态", label3 == "睡眠定时", label3)
+        check("关闭后 toast「已关闭」", "已关闭睡眠定时" in page.evaluate("() => document.body.innerText"))
+
+    # 全屏播放页入口（移动端场景的主要入口）
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(2000)
+    rows = page.locator("ul li button[aria-label^='播放']")
+    if rows.count() > 0:
+        rows.first.click()
+        page.wait_for_timeout(1200)
+        link = page.locator('a[href$="/now-playing"]:visible').first
+        if link.count() > 0:
+            link.click()
+            page.wait_for_timeout(1500)
+        check("全屏播放页也有睡眠定时入口",
+              page.locator("[aria-label^='睡眠定时']").count() > 0)
+
+    page.screenshot(path=os.path.join(OUT, "sleep-timer.png"))
+    ctx8.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

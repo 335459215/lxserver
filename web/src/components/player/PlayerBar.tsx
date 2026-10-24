@@ -8,6 +8,7 @@ import { useToast } from '@/components/ui'
 import { downloadSong } from '@/lib/download'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 import QualityMenu from '@/components/player/QualityMenu'
+import SleepTimerMenu from '@/components/player/SleepTimerMenu'
 
 /** 音量条（含静音切换） */
 function VolumeControl() {
@@ -178,6 +179,7 @@ export default function PlayerBar() {
             </button>
           )}
           <VolumeControl />
+          <SleepTimerMenu />
           <Link
             to="/playlist"
             aria-label="播放队列"

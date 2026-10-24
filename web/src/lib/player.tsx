@@ -11,6 +11,7 @@ import {
 import { DEFAULT_QUALITY, qualityFallback, saveAutoBest, saveQuality, savedAutoBest, savedQuality } from '@/lib/quality'
 import { pickStartTier, songTiers } from '@/lib/qualityOptions'
 import { reportHistory } from '@/lib/history'
+import { applySleepAction, SLEEP_OFF, type SleepMode, type SleepTimerState } from '@/lib/sleepTimer'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -46,6 +47,8 @@ export interface PlayerState {
   shuffle: boolean
   /** 循环模式（持久化） */
   repeat: RepeatMode
+  /** 睡眠定时（会话级，不持久化 —— 重启后不该有一个幽灵定时在跑） */
+  sleep: SleepTimerState
   /** 是否已可播（首个 canplay 之后） */
   ready: boolean
   error: string | null
@@ -77,6 +80,8 @@ export interface PlayerApi extends PlayerState {
   toggleShuffle: () => void
   /** 循环模式轮换：不循环 → 列表循环 → 单曲循环 */
   cycleRepeat: () => void
+  /** 设置睡眠定时：'off' 取消；'endOfSong' 播完当前这首；'after' minutes 分钟后 */
+  setSleep: (mode: SleepMode, minutes?: number) => void
   /** 切换音质档位；若正在播放，会立刻用新档位重新解析当前曲目 */
   setQuality: (tier: string) => void
   /** 开关「按曲目自动选最高可用档位」；开启时对正在播放的曲目立即重新解析 */
@@ -104,6 +109,7 @@ const initialState: PlayerState = {
   muted: false,
   shuffle: false,
   repeat: 'all',
+  sleep: SLEEP_OFF,
   ready: false,
   error: null,
   attempts: [],
@@ -717,6 +723,77 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  // ===== 睡眠定时（v2.35.0）=====
+  //
+  // 触发与迁移分离：迁移走 lib/sleepTimer 的纯状态机（单测 + 变异盯边界），
+  // 这里只做接线 —— timeout / 淡出 / ended 拦截。
+  /** 'after' 模式的到期 timeout（含淡出阶段） */
+  const sleepTimeoutRef = React.useRef<number | null>(null)
+  /** 淡出间隔句柄 */
+  const sleepFadeRef = React.useRef<number | null>(null)
+  /** 淡出前的音量，暂停后还原 —— 否则下次播放是静音的 */
+  const preFadeVolumeRef = React.useRef(1)
+
+  const clearSleepTimers = React.useCallback(() => {
+    if (sleepTimeoutRef.current != null) {
+      window.clearTimeout(sleepTimeoutRef.current)
+      sleepTimeoutRef.current = null
+    }
+    if (sleepFadeRef.current != null) {
+      window.clearInterval(sleepFadeRef.current)
+      sleepFadeRef.current = null
+    }
+  }, [])
+
+  const setSleep = React.useCallback(
+    (mode: SleepMode, minutes?: number) => {
+      clearSleepTimers()
+      const next =
+        mode === 'off'
+          ? SLEEP_OFF
+          : applySleepAction(stateRef.current.sleep, { type: 'set', mode, minutes, now: Date.now() })
+      setState((s) => ({ ...s, sleep: next }))
+
+      if (next.mode !== 'after' || next.endsAt == null) return
+      const endsAt = next.endsAt
+      const FADE_MS = 4000
+      // 到点前 FADE_MS 开始淡出（听着睡着的人不该被「啪」地一下吵醒），
+      // 到点暂停并还原音量。淡出期间用户手动调音量会和它打架 ≤4s ——
+      // 可接受（换任何实现都避免不了），收益是停止时不生硬。
+      const startFade = Math.max(0, endsAt - FADE_MS - Date.now())
+      sleepTimeoutRef.current = window.setTimeout(() => {
+        const el = audioRef.current
+        if (!el || el.paused) {
+          // 没在播（用户自己早停了）：定时直接结束，不碰音量
+          setState((s) => ({ ...s, sleep: applySleepAction(s.sleep, { type: 'expire' }) }))
+          return
+        }
+        preFadeVolumeRef.current = stateRef.current.volume
+        let step = 0
+        const STEPS = 10
+        sleepFadeRef.current = window.setInterval(() => {
+          step += 1
+          if (step >= STEPS || el.paused) {
+            window.clearInterval(sleepFadeRef.current!)
+            sleepFadeRef.current = null
+            el.pause()
+            // 还原音量但不触发「调音量取消静音」语义之外的变化：
+            // 直接写回 state，下一首照常出声
+            setState((s) => ({
+              ...s,
+              volume: preFadeVolumeRef.current,
+              sleep: applySleepAction(s.sleep, { type: 'expire' }),
+            }))
+            return
+          }
+          setState((s) => ({ ...s, volume: preFadeVolumeRef.current * (1 - step / STEPS) }))
+        }, FADE_MS / STEPS)
+      }, startFade)
+    },
+    [clearSleepTimers],
+  )
+
+
   /** 切换音质档位。正在播放时立刻按新档位重新解析当前曲目 ——
    *  否则用户改了档位却要等下一首才生效，与「改设置即时生效」的预期不符。
    *  注意把 tier 显式传给 loadAndPlay：setState 是异步的，此刻 stateRef 还是旧值。 */
@@ -814,11 +891,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [loadAndPlay, stopAudio],
   )
 
-  // 播放自然结束 → 按播放模式推进（单曲循环重播本首、顺序播放在末尾停下）
+  // 播放自然结束 → 按播放模式推进（单曲循环重播本首、顺序播放在末尾停下）。
+  // 例外：睡眠定时「播完当前这首」—— ended 是停止点不是推进点（单曲循环也一样停）。
   React.useEffect(() => {
     const el = audioRef.current
     if (!el) return
-    const onEnded = () => advance(1, true)
+    const onEnded = () => {
+      if (stateRef.current.sleep.mode === 'endOfSong') {
+        el.pause()
+        setState((s) => ({ ...s, sleep: applySleepAction(s.sleep, { type: 'songEnded' }) }))
+        return
+      }
+      advance(1, true)
+    }
     el.addEventListener('ended', onEnded)
     return () => el.removeEventListener('ended', onEnded)
   }, [advance])
@@ -855,6 +940,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleMute,
       toggleShuffle,
       cycleRepeat,
+      setSleep,
       setQuality,
       setAutoBestQuality,
       clear,
@@ -874,6 +960,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleMute,
       toggleShuffle,
       cycleRepeat,
+      setSleep,
       setQuality,
       setAutoBestQuality,
       clear,
