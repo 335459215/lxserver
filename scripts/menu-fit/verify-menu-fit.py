@@ -1078,6 +1078,70 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "share-card-page.png"))
     ctx11.close()
 
+    # ================= 播放缓存（v2.39.0）=================
+    #
+    # 【验什么】核心承诺「重播零解析零下载」要用**服务端计数**证明：
+    #   ① 首播 A → 后台缓存（延迟可配，这里压到 1.5s）→ CacheStorage 有条目
+    #   ② 播 B（对照）→ 重播 A → 解析计数仍是 2（A 的重播零解析），
+    #      且 <audio>.src 是 blob:、界面显示「播放缓存」
+    #   ③ 关掉开关（localStorage + reload）→ 重播 A 重新解析（计数 +1）
+    print("\n--- 播放缓存 ---")
+    ctx12 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx12)
+    # 缓存写入延迟压到 1.5s（默认 15s 是「听了一段才算在听」的节流，测试不等它）
+    ctx12.add_init_script("localStorage.setItem('lx.player.cacheDelayMs', '1500')")
+    page = ctx12.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+
+    def url_resolves():
+        return page.evaluate(
+            """async () => (await (await fetch('/api/__fixture__/url-log')).json()).resolves"""
+        )
+
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("缓存场景：桩数据渲染出搜索结果", rows.count() >= 2, f"{rows.count()} 行")
+    if rows.count() >= 2:
+        # ① 首播 A（晴天）
+        page.locator("ul li button[aria-label*='晴天']").first.click()
+        page.wait_for_timeout(4500)  # 1.5s 延迟 + fetch WAV + 写入
+        cache_keys = page.evaluate(
+            """async () => { const c = await caches.open('lx-audio-v1'); return (await c.keys()).length }"""
+        )
+        check("首播后 CacheStorage 出现条目（音频 + meta ≥ 2）", cache_keys >= 2, f"{cache_keys} 条")
+        check("首播触发了一次解析", len(url_resolves()) == 1, str(len(url_resolves())))
+
+        # ② 播 B（对照），再重播 A
+        page.locator("ul li button[aria-label*='高品位']").first.click()
+        page.wait_for_timeout(2000)
+        page.locator("ul li button[aria-label*='晴天']").first.click()
+        page.wait_for_timeout(2500)
+        resolves = url_resolves()
+        check("重播 A 零解析（计数仍为 2：A 首播 + B）", len(resolves) == 2,
+              str([r["name"] for r in resolves]))
+        src = page.evaluate("() => { const a = document.querySelector('audio'); return a ? a.src : ''; }")
+        check("重播从缓存播（src 是 blob:）", src.startswith("blob:"), src[:40])
+        check("界面来源显示「播放缓存」", "播放缓存" in page.evaluate("() => document.body.innerText"))
+
+        # ③ 关掉开关 → 重播 A 走网络
+        page.evaluate("() => localStorage.setItem('lx.player.audioCache', '0')")
+        page.reload(wait_until="load")
+        page.wait_for_timeout(2500)
+        page.locator("ul li button[aria-label*='晴天']").first.click()
+        page.wait_for_timeout(3000)
+        check("关掉开关后重播 A 重新解析（计数 +1）", len(url_resolves()) == 3, str(len(url_resolves())))
+    else:
+        for nm in ("首播后 CacheStorage 出现条目（音频 + meta ≥ 2）", "首播触发了一次解析",
+                   "重播 A 零解析（计数仍为 2：A 首播 + B）", "重播从缓存播（src 是 blob:）",
+                   "界面来源显示「播放缓存」", "关掉开关后重播 A 重新解析（计数 +1）"):
+            check(nm, False, "前置：搜索结果不足 2 行")
+
+    page.screenshot(path=os.path.join(OUT, "audio-cache.png"))
+    ctx12.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

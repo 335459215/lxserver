@@ -1,9 +1,11 @@
+import * as React from 'react'
 import { Check } from 'lucide-react'
 import { useConfigForm } from '@/lib/useConfig'
 import { Button, InputField, Stack, SwitchField, useToast } from '@/components/ui'
 import { QUALITY_TIERS, qualityLabel } from '@/lib/quality'
 import { sizeLabel, songTiers } from '@/lib/qualityOptions'
 import { usePlayer } from '@/lib/player'
+import { createBrowserAudioCache } from '@/lib/audioCache'
 import { cn } from '@/lib/utils'
 
 const KEYS = [
@@ -127,6 +129,71 @@ function QualitySection() {
   )
 }
 
+/** 播放缓存（v2.39.0）：透明缓存层 —— 听过的歌自动缓存（LRU、上限 2GB），
+ *  重播零解析零下载、断网可放。不是下载管理：不产生文件，「下载本曲」另有按钮。 */
+function CacheSection() {
+  const { audioCacheOn, setAudioCacheOn } = usePlayer()
+  const { toast } = useToast()
+  const [usage, setUsage] = React.useState<{ total: number; count: number } | null>(null)
+  const [busy, setBusy] = React.useState(false)
+
+  const refresh = React.useCallback(() => {
+    const cache = createBrowserAudioCache()
+    if (!cache) return
+    void cache.usage().then(setUsage)
+  }, [])
+
+  React.useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const fmt = (n: number): string =>
+    n >= 1024 * 1024 * 1024 ? `${(n / 1024 / 1024 / 1024).toFixed(1)} GB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+
+  return (
+    <section className="rounded-2xl border border-line bg-panel p-5 shadow-card">
+      <h3 className="text-sm font-medium text-ink">播放缓存</h3>
+      <div className="mt-3">
+        <SwitchField
+          label="缓存听过的歌（推荐开启）"
+          description="联网播放稳定后自动缓存；重播同一首不再解析、不再下载，断网也能放。上限 2GB，超出自动淘汰最久没听的。"
+          checked={audioCacheOn}
+          onChange={(v) => {
+            setAudioCacheOn(v)
+            toast({ title: v ? '播放缓存已开启' : '播放缓存已关闭', description: v ? '新听的歌会自动缓存' : '已缓存的内容保留，但不再使用与写入' })
+          }}
+        />
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-dim">
+        <span>
+          {usage
+            ? `已缓存 ${usage.count} 首 · 占用 ${fmt(usage.total)} / 2 GB`
+            : '正在统计缓存占用…'}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || !usage || usage.count === 0}
+          onClick={async () => {
+            const cache = createBrowserAudioCache()
+            if (!cache) return
+            setBusy(true)
+            try {
+              await cache.clear()
+              refresh()
+              toast({ title: '已清空播放缓存' })
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          清空缓存
+        </Button>
+      </div>
+    </section>
+  )
+}
+
 /** 播放组：播放音质 + 通用播放行为 + 跨平台竞速 + 链接校验/粘滞缓存 + 死源熔断。
  * 这些 music.url.* 即解析器的调参旋钮（race-e2e 9 项是回归门槛） */
 export default function PlaybackGroup() {
@@ -150,6 +217,7 @@ export default function PlaybackGroup() {
     <Stack gap={5}>
       {/* 音质是纯客户端偏好，不参与下面的配置表单提交，故放在 <form> 之外 */}
       <QualitySection />
+      <CacheSection />
 
       <form onSubmit={onSave}>
         <Stack gap={5}>

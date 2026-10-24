@@ -150,6 +150,9 @@ let userListsStore = [
     ],
   },
 ]
+/** 记录音频解析请求 —— 播放缓存护栏断言「重播零解析」的依据 */
+let urlResolveLog = []
+
 /** 记录整份写回（restore）操作 —— 确认「导入真的发到了服务端」 */
 let transferLog = []
 /** 记录收藏增删操作（调试端点用），确认「L 键真的发到了服务端」 */
@@ -267,6 +270,11 @@ const server = http.createServer((req, res) => {
         send(res, 400, MIME['.txt'], 'bad json')
       }
     })
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/url-log') {
+    json(res, 200, { success: true, resolves: urlResolveLog.slice() })
     return
   }
 
@@ -424,6 +432,7 @@ const server = http.createServer((req, res) => {
       },
     ]
     transferLog = []
+    urlResolveLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
   }
@@ -454,6 +463,7 @@ const server = http.createServer((req, res) => {
       } catch {
         // 按默认处理
       }
+      urlResolveLog.push({ name: songName, quality: requested })
       const high = ['flac', 'flac24bit', 'hires']
       let actual
       if (songName.includes('高品位')) {

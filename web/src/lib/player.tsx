@@ -12,6 +12,7 @@ import { DEFAULT_QUALITY, qualityFallback, saveAutoBest, saveQuality, savedAutoB
 import { pickStartTier, songTiers } from '@/lib/qualityOptions'
 import { reportHistory } from '@/lib/history'
 import { applySleepAction, SLEEP_OFF, type SleepMode, type SleepTimerState } from '@/lib/sleepTimer'
+import { AudioCache, cacheKey, createBrowserAudioCache } from '@/lib/audioCache'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -50,6 +51,8 @@ export interface PlayerState {
   /** 播放倍速（持久化，默认 1）。⚠️ 换 src 会把 <audio> 的速率重置为 1，
    *  loadAndPlay 里每次设完 src 都必须重挂（见 applyPlaybackRate）。 */
   rate: number
+  /** 播放缓存开关（持久化，默认开）。关掉后不走缓存也不写缓存 */
+  audioCacheOn: boolean
   /** 睡眠定时（会话级，不持久化 —— 重启后不该有一个幽灵定时在跑） */
   sleep: SleepTimerState
   /** 是否已可播（首个 canplay 之后） */
@@ -87,6 +90,8 @@ export interface PlayerApi extends PlayerState {
   setSleep: (mode: SleepMode, minutes?: number) => void
   /** 设置播放倍速（0.25~3，越界夹回）；立即生效并持久化 */
   setRate: (rate: number) => void
+  /** 播放缓存开关；持久化 */
+  setAudioCacheOn: (on: boolean) => void
   /** 切换音质档位；若正在播放，会立刻用新档位重新解析当前曲目 */
   setQuality: (tier: string) => void
   /** 开关「按曲目自动选最高可用档位」；开启时对正在播放的曲目立即重新解析 */
@@ -103,6 +108,7 @@ const STORAGE_VOLUME = 'lx.player.volume'
 const STORAGE_SHUFFLE = 'lx.player.shuffle'
 const STORAGE_REPEAT = 'lx.player.repeat'
 const STORAGE_RATE = 'lx.player.rate'
+const STORAGE_AUDIO_CACHE = 'lx.player.audioCache'
 
 const initialState: PlayerState = {
   current: null,
@@ -116,6 +122,7 @@ const initialState: PlayerState = {
   shuffle: false,
   repeat: 'all',
   rate: restoreRate(),
+  audioCacheOn: restoreAudioCacheOn(),
   sleep: SLEEP_OFF,
   ready: false,
   error: null,
@@ -150,6 +157,19 @@ function restoreRate(): number {
   if (typeof localStorage === 'undefined') return 1
   const raw = Number.parseFloat(localStorage.getItem(STORAGE_RATE) ?? '')
   return Number.isFinite(raw) && raw >= 0.25 && raw <= 3 ? raw : 1
+}
+
+/** 播放缓存开关（默认开 —— 用户明确要的「缓存播放」） */
+function restoreAudioCacheOn(): boolean {
+  if (typeof localStorage === 'undefined') return true
+  return localStorage.getItem(STORAGE_AUDIO_CACHE) !== '0'
+}
+
+/** 缓存单例：caches 不可用（非安全上下文）时是 null，一切缓存路径静默跳过 */
+let audioCacheSingleton: AudioCache | null | undefined
+function getAudioCache(): AudioCache | null {
+  if (audioCacheSingleton === undefined) audioCacheSingleton = createBrowserAudioCache()
+  return audioCacheSingleton
 }
 
 /** MediaSession：锁屏/通知栏元数据 + 播放态（约束三：必须保留） */
@@ -423,6 +443,52 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     el.preservesPitch = true
   }, [])
 
+  /** 当前生效的 blob: URL（缓存命中时用它当 src）；换歌/换源时 revoke 旧句柄 */
+  const blobUrlRef = React.useRef<string | null>(null)
+  const applyBlobSrc = React.useCallback((blob: Blob, el: HTMLAudioElement): void => {
+    if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+    blobUrlRef.current = URL.createObjectURL(blob)
+    el.src = blobUrlRef.current
+  }, [])
+
+  /** 后台缓存写入的守卫句柄（seq 变了就作废） */
+  const cacheWriteSeqRef = React.useRef(0)
+
+  /** 联网播放稳定后后台缓存一次。
+   *  【为什么延后】跳过的歌不值得缓存（几十 MB 的 flac 白下）；听了一段
+   *  才算「真的在听」。默认 15s；测试可用 lx.player.cacheDelayMs 缩短。 */
+  const scheduleCacheWrite = React.useCallback(
+    (seq: number, songKeyStr: string, url: string, tier: string, song: Song) => {
+      if (!stateRef.current.audioCacheOn) return
+      const cache = getAudioCache()
+      if (!cache) return
+      const delay = Number.parseFloat(localStorage.getItem('lx.player.cacheDelayMs') ?? '') || 15000
+      cacheWriteSeqRef.current = seq
+      window.setTimeout(() => {
+        if (cacheWriteSeqRef.current !== seq) return // 已切歌
+        if (stateRef.current.status !== 'playing') return // 没在播（暂停/出错）不缓存
+        const st = stateRef.current
+        if (songKey(st.current) !== songKeyStr) return
+        void (async () => {
+          try {
+            const res = await fetch(url)
+            if (!res.ok) return
+            const blob = await res.blob()
+            if (cacheWriteSeqRef.current !== seq) return
+            await cache.put(cacheKey(songKeyStr, tier), blob, {
+              tier,
+              name: song.name,
+              singer: song.singer,
+            })
+          } catch {
+            /* 缓存失败不影响播放 */
+          }
+        })()
+      }, delay)
+    },
+    [],
+  )
+
   const loadAndPlay = React.useCallback(
     async (song: Song, tierOverride?: string, autoBestOverride?: boolean) => {
       const el = audioRef.current
@@ -468,6 +534,27 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       let lastMessage = '解析失败'
       let lastAttempts: ResolveAttempt[] = []
 
+      // 播放缓存优先（v2.39.0）：命中直接播 blob —— 不发解析请求、不下载，
+      // 断网也能放。键用**起手档位**（同一偏好下次点同一首必然同键），
+      // 实得档位以缓存里记录的为准。
+      if (stateRef.current.audioCacheOn) {
+        const cache = getAudioCache()
+        const hit = cache ? await cache.get(cacheKey(key, startTier)) : null
+        if (seq !== reqSeqRef.current) return
+        if (hit) {
+          patch({ resolvedQuality: hit.tier, sourceName: '播放缓存', attempts: [] })
+          applyBlobSrc(hit.blob, el)
+          el.load()
+          applyPlaybackRate(stateRef.current.rate)
+          try {
+            await el.play()
+          } catch {
+            if (seq === reqSeqRef.current) patch({ status: 'paused' })
+          }
+          return
+        }
+      }
+
       // 本地音乐带直链：解析器只认在线平台，对本地文件必然失败，直接用它播放。
       // 封面/时长等元信息由 lib/localMusic.ts 在构造 Song 时补好。
       if (song.url) {
@@ -499,6 +586,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             attempts: result.attempts ?? [],
           })
 
+          if (blobUrlRef.current) {
+            URL.revokeObjectURL(blobUrlRef.current)
+            blobUrlRef.current = null
+          }
           el.src = result.url
           el.load()
           applyPlaybackRate(stateRef.current.rate)
@@ -512,6 +603,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             // 自动播放被拦：保持 paused 等用户点播放，不算错误
             if (seq === reqSeqRef.current) patch({ status: 'paused' })
           }
+          // 缓存键用**请求档位**（quality），实际写入字节是 result.quality 的 ——
+          // 降级时缓存的就是低档字节，info.tier 如实记录，重播不会谎报档位
+          scheduleCacheWrite(seq, key, result.url, String(result.quality ?? quality), song)
           return
         } catch (e) {
           if (seq !== reqSeqRef.current) return
@@ -523,9 +617,32 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (seq !== reqSeqRef.current) return
+      // 所有档位都解析失败：缓存里这首歌任意档位兜底（断网/全源故障时仍能放）
+      if (stateRef.current.audioCacheOn) {
+        const cache = getAudioCache()
+        const fallback = cache ? await cache.newestFor(key) : null
+        if (seq !== reqSeqRef.current) return
+        if (fallback) {
+          patch({
+            resolvedQuality: fallback.tier,
+            sourceName: '播放缓存（音源不可用兜底）',
+            attempts: lastAttempts,
+            error: null,
+          })
+          applyBlobSrc(fallback.blob, el)
+          el.load()
+          applyPlaybackRate(stateRef.current.rate)
+          try {
+            await el.play()
+          } catch {
+            if (seq === reqSeqRef.current) patch({ status: 'paused' })
+          }
+          return
+        }
+      }
       patch({ status: 'error', error: lastMessage, attempts: lastAttempts, ready: false })
     },
-    [patch, applyPlaybackRate],
+    [patch, applyPlaybackRate, scheduleCacheWrite, applyBlobSrc],
   )
 
   /** 音频层失败后的自动换源：把刚失败的源排除，再解析一次。
@@ -833,8 +950,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [applyPlaybackRate],
   )
 
+  const setAudioCacheOn = React.useCallback((on: boolean) => {
+    setState((s) => ({ ...s, audioCacheOn: on }))
+    try {
+      localStorage.setItem(STORAGE_AUDIO_CACHE, on ? '1' : '0')
+    } catch {
+      /* 隐私模式：不持久化也能用 */
+    }
+  }, [])
 
-  /** 切换音质档位。正在播放时立刻按新档位重新解析当前曲目 ——
+  /** 倍速落到 <audio> 并持久化。正在播放时立刻按新档位重新解析当前曲目 ——
    *  否则用户改了档位却要等下一首才生效，与「改设置即时生效」的预期不符。
    *  注意把 tier 显式传给 loadAndPlay：setState 是异步的，此刻 stateRef 还是旧值。 */
   const setQuality = React.useCallback(
@@ -868,6 +993,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
+    cacheWriteSeqRef.current = reqSeqRef.current // 让进行中的后台缓存作废
     abortRef.current?.abort()
     // 清空/切换队列时解除上报守卫，避免「同一首歌在两次播放会话里只记一次」
     reportedRef.current = ''
@@ -982,6 +1108,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       cycleRepeat,
       setSleep,
       setRate,
+      setAudioCacheOn,
       setQuality,
       setAutoBestQuality,
       clear,
@@ -1003,6 +1130,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       cycleRepeat,
       setSleep,
       setRate,
+      setAudioCacheOn,
       setQuality,
       setAutoBestQuality,
       clear,
