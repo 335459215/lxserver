@@ -76,12 +76,29 @@ const FIXTURE_SONGS = [
 ]
 
 /** 播放历史桩数据：**可变**（删除/撤销会真的改动它）。
- *  时间用「相对现在」算，不写死时间戳 —— 否则过几天这份 fixture 就过期了。 */
+ *  时间锚定「本地日界」生成，不写死时间戳（过几天也不过期）。
+ *
+ *  【为什么不能「now 减固定小时」—— 2026-10-24 CI 实测翻车】
+ *  v2.29.0 最初用 `now - 2h / now - 5h` 当「今天」。CI 是 UTC 机器，
+ *  一次 01:39 UTC 的运行里 now-2h 落到昨天 23:39 —— 两首「今天」的歌
+ *  全掉进「昨天」组，分桶/统计/删除用例全红。同一份代码在 09:30 UTC 跑
+ *  却是绿的：**护栏按一天中的时刻随机红**。这与 v2.29.0 钉时区是同一家族
+ *  的问题 —— 凡涉及「自然日」的数据与断言，都必须锚定本地日界。
+ *  正解：先取本地零点，再在零点上加减整天 + 当天时刻；
+ *  「今天」的条目还要与 now 取 min（凌晨 1 点跑时 08:00 在未来），
+ *  并兜底不早于零点后 30 秒（刚过零点的第 1 分钟里 now-Δ 会掉回昨天）。 */
 function buildHistory() {
   const now = Date.now()
   const H = 3600_000
   const D = 24 * H
-  const mk = (i, name, singer, agoMs, playCount) => ({
+  const midnight = new Date()
+  midnight.setHours(0, 0, 0, 0)
+  const M0 = midnight.getTime()
+  /** 今天的某个时刻：目标时刻若在未来（凌晨跑）就退回 now */
+  const todayAt = (h) => Math.max(M0 + 30_000, Math.min(M0 + h * H, now))
+  /** N 天前的某个时刻（整天偏移，夏令时 ±1h 由分桶的 Math.round 吸收） */
+  const daysAgoAt = (n, h) => M0 - n * D + h * H
+  const mk = (i, name, singer, playedAt, playCount) => ({
     key: `kw|stub-${i}`,
     source: 'kw',
     songmid: `stub-${i}`,
@@ -90,20 +107,20 @@ function buildHistory() {
     interval: '03:30',
     albumName: '桩专辑',
     img: null,
-    playedAt: now - agoMs,
+    playedAt,
     playCount,
   })
   return [
     // 今天：2 首
-    mk(1, '今天听的歌', '周杰伦、费玉清', 2 * H, 3),
-    mk(2, '今天第二首', '林俊杰', 5 * H, 1),
-    // 昨天：1 首（用「昨天此刻」而不是固定 24h，跨零点也仍然算昨天）
-    mk(3, '昨天听的歌', '周杰伦', D + H, 2),
+    mk(1, '今天听的歌', '周杰伦、费玉清', todayAt(8), 3),
+    mk(2, '今天第二首', '林俊杰', todayAt(11), 1),
+    // 昨天：1 首（零点减 1h = 昨天 23:00，任何时刻跑都必然是昨天）
+    mk(3, '昨天听的歌', '周杰伦', M0 - H, 2),
     // 最近一周：2 首
-    mk(4, '三天前的歌', '五月天', 3 * D, 1),
-    mk(5, '五天前的歌', '五月天', 5 * D, 4),
+    mk(4, '三天前的歌', '五月天', daysAgoAt(3, 5), 1),
+    mk(5, '五天前的歌', '五月天', daysAgoAt(5, 9), 4),
     // 更早：1 首
-    mk(6, '很久以前的歌', '陈奕迅', 30 * D, 1),
+    mk(6, '很久以前的歌', '陈奕迅', daysAgoAt(30, 7), 1),
   ]
 }
 let historyStore = buildHistory()
