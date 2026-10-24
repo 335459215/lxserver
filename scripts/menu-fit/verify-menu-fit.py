@@ -839,6 +839,85 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "sleep-timer.png"))
     ctx8.close()
 
+    # ================= 倍速播放（v2.36.0）=================
+    #
+    # 【验什么】本特性最大的坑不是「设了没生效」，而是「**换歌后悄悄回落 1x**」——
+    # 换 src 会把 <audio> 的 playbackRate 重置为 1，内核必须在每次设完 src 后
+    # 重挂。所以断言直接读 <audio> 元素的真实状态（不是只看 UI 标签）：
+    #   ① 设 1.5x → audio.playbackRate === 1.5 且 preservesPitch（变速不变调）
+    #   ② 切到下一首（换 src）→ 仍是 1.5（重挂生效）
+    #   ③ reload 后再播 → 持久化的倍速被应用
+    print("\n--- 倍速播放 ---")
+    ctx9 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx9)
+    page = ctx9.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(2500)
+
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("倍速场景：桩数据渲染出搜索结果", rows.count() > 0, f"{rows.count()} 行")
+    if rows.count() > 0:
+        rows.first.click()
+        page.wait_for_timeout(1500)
+        link = page.locator('a[href$="/now-playing"]:visible').first
+        if link.count() > 0:
+            link.click()
+            page.wait_for_timeout(1500)
+
+        trig = page.locator("button[aria-label^='倍速：']").first
+        check("播放页有倍速入口（默认 1x）", trig.count() > 0,
+              trig.get_attribute("aria-label") if trig.count() else "未找到")
+
+        trig.click()
+        page.wait_for_timeout(600)
+        menu_text = page.locator("[role='menu']").first.inner_text()
+        check("菜单含 0.5x~2x 六档", all(f"{v}x" in menu_text for v in ("0.5", "0.75", "1", "1.25", "1.5", "2")))
+        check("当前档（1x）标注并禁用", "1x（当前）" in menu_text)
+
+        page.locator("[role='menuitem']:has-text('1.5x')").click()
+        page.wait_for_timeout(800)
+        audio = page.evaluate(
+            "() => { const a = document.querySelector('audio'); return a ? { rate: a.playbackRate, pitch: a.preservesPitch } : null; }"
+        )
+        check("设 1.5x：audio.playbackRate 真的变了", audio and abs(audio["rate"] - 1.5) < 0.001,
+              f"rate={audio and audio['rate']}")
+        check("变速不变调（preservesPitch）", audio and audio["pitch"] is True, str(audio))
+        check("入口标签更新为 1.5x", page.locator("button[aria-label='倍速：1.5x']").count() > 0)
+
+        # 换歌（换 src）：playbackRate 必须仍是被设的值
+        page.keyboard.press("Shift+ArrowRight")
+        page.wait_for_timeout(2000)
+        audio2 = page.evaluate("() => { const a = document.querySelector('audio'); return a ? a.playbackRate : 0; }")
+        check("切到下一首（换 src）后仍是 1.5x（重挂生效）",
+              abs(audio2 - 1.5) < 0.001, f"rate={audio2}")
+
+        # 持久化：换 1.25x → 整页重载 → 重新播一首 → 1.25 被应用。
+        # ⚠️ 此时 URL 已在全屏播放页，reload 后没有搜索结果 —— 必须 goto 回
+        # 搜索页（同源导航，localStorage 保留）。
+        page.locator("button[aria-label^='倍速：']").first.click()
+        page.wait_for_timeout(600)
+        page.locator("[role='menuitem']:has-text('1.25x')").click()
+        page.wait_for_timeout(600)
+        page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+        page.wait_for_timeout(2500)
+        rows2 = page.locator("ul li button[aria-label^='播放']")
+        if rows2.count() > 0:
+            rows2.first.click()
+            page.wait_for_timeout(2000)
+            audio3 = page.evaluate("() => { const a = document.querySelector('audio'); return a ? a.playbackRate : 0; }")
+            check("reload 后持久化的 1.25x 被应用", abs(audio3 - 1.25) < 0.001, f"rate={audio3}")
+        else:
+            check("reload 后持久化的 1.25x 被应用", False, "reload 后无搜索结果")
+    else:
+        for nm in ("播放页有倍速入口（默认 1x）", "菜单含 0.5x~2x 六档", "当前档（1x）标注并禁用",
+                   "设 1.5x：audio.playbackRate 真的变了", "变速不变调（preservesPitch）",
+                   "入口标签更新为 1.5x", "切到下一首（换 src）后仍是 1.5x（重挂生效）",
+                   "reload 后持久化的 1.25x 被应用"):
+            check(nm, False, "前置：搜索结果为空")
+
+    page.screenshot(path=os.path.join(OUT, "playback-rate.png"))
+    ctx9.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

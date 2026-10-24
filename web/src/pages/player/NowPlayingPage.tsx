@@ -9,6 +9,7 @@ import { downloadSong } from '@/lib/download'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 import QualityMenu from '@/components/player/QualityMenu'
 import SleepTimerMenu from '@/components/player/SleepTimerMenu'
+import PlaybackRateMenu from '@/components/player/PlaybackRateMenu'
 import Lyrics from '@/components/player/Lyrics'
 import QueueList from '@/components/player/QueueList'
 import { cn } from '@/lib/utils'
@@ -324,6 +325,7 @@ export default function NowPlayingPage() {
               {sourceName ?? sourceLabel(current.source)}
             </span>
             <QualityMenu className="h-6 px-2 rounded-md border border-accent/25 bg-accent/10 font-semibold text-accent hover:bg-accent/20" />
+            <PlaybackRateMenu />
             <SleepTimerMenu className="h-6 px-2 rounded-md border border-line bg-panel-2/80 hover:border-accent/30" />
             {total > 0 && (
               <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-mono text-faint">

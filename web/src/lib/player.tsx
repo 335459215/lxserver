@@ -47,6 +47,9 @@ export interface PlayerState {
   shuffle: boolean
   /** 循环模式（持久化） */
   repeat: RepeatMode
+  /** 播放倍速（持久化，默认 1）。⚠️ 换 src 会把 <audio> 的速率重置为 1，
+   *  loadAndPlay 里每次设完 src 都必须重挂（见 applyPlaybackRate）。 */
+  rate: number
   /** 睡眠定时（会话级，不持久化 —— 重启后不该有一个幽灵定时在跑） */
   sleep: SleepTimerState
   /** 是否已可播（首个 canplay 之后） */
@@ -82,6 +85,8 @@ export interface PlayerApi extends PlayerState {
   cycleRepeat: () => void
   /** 设置睡眠定时：'off' 取消；'endOfSong' 播完当前这首；'after' minutes 分钟后 */
   setSleep: (mode: SleepMode, minutes?: number) => void
+  /** 设置播放倍速（0.25~3，越界夹回）；立即生效并持久化 */
+  setRate: (rate: number) => void
   /** 切换音质档位；若正在播放，会立刻用新档位重新解析当前曲目 */
   setQuality: (tier: string) => void
   /** 开关「按曲目自动选最高可用档位」；开启时对正在播放的曲目立即重新解析 */
@@ -97,6 +102,7 @@ const PlayerContext = React.createContext<PlayerApi | null>(null)
 const STORAGE_VOLUME = 'lx.player.volume'
 const STORAGE_SHUFFLE = 'lx.player.shuffle'
 const STORAGE_REPEAT = 'lx.player.repeat'
+const STORAGE_RATE = 'lx.player.rate'
 
 const initialState: PlayerState = {
   current: null,
@@ -109,6 +115,7 @@ const initialState: PlayerState = {
   muted: false,
   shuffle: false,
   repeat: 'all',
+  rate: restoreRate(),
   sleep: SLEEP_OFF,
   ready: false,
   error: null,
@@ -136,6 +143,13 @@ function restoreRepeat(): RepeatMode {
   if (typeof localStorage === 'undefined') return 'all'
   const raw = localStorage.getItem(STORAGE_REPEAT)
   return REPEAT_ORDER.includes(raw as RepeatMode) ? (raw as RepeatMode) : 'all'
+}
+
+/** 读回播放倍速（0.25~3 之外一律回落 1） */
+function restoreRate(): number {
+  if (typeof localStorage === 'undefined') return 1
+  const raw = Number.parseFloat(localStorage.getItem(STORAGE_RATE) ?? '')
+  return Number.isFinite(raw) && raw >= 0.25 && raw <= 3 ? raw : 1
 }
 
 /** MediaSession：锁屏/通知栏元数据 + 播放态（约束三：必须保留） */
@@ -399,6 +413,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
    *  `tierOverride` 用于「刚切换档位、state 还没提交」的场景 —— 此时 stateRef
    *  里的 preferredQuality 仍是旧值（ref 由 useEffect 同步，晚于本次调用），
    *  直接读 ref 会拿着旧档位去解析，表现为「切了档位但音质没变」。 */
+  /** 倍速落到 <audio> 并持久化。preservesPitch 显式置 true：
+   *  音乐场景默认不该出现「变速变调」（现代浏览器默认即 true，显式写
+   *  是防旧内核/未来默认变化）。 */
+  const applyPlaybackRate = React.useCallback((rate: number) => {
+    const el = audioRef.current
+    if (!el) return
+    el.playbackRate = rate
+    el.preservesPitch = true
+  }, [])
+
   const loadAndPlay = React.useCallback(
     async (song: Song, tierOverride?: string, autoBestOverride?: boolean) => {
       const el = audioRef.current
@@ -450,6 +474,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         patch({ resolvedQuality: null, sourceName: '本地音乐', attempts: [] })
         el.src = song.url
         el.load()
+        applyPlaybackRate(stateRef.current.rate)
         try {
           await el.play()
         } catch {
@@ -476,6 +501,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
           el.src = result.url
           el.load()
+          applyPlaybackRate(stateRef.current.rate)
           // 设置 src 后立即起表，而不是等 `waiting` 事件。
           // 慢源在拿到第一个字节前可能**根本不触发 waiting**（连接建立中），
           // 只靠事件起表会漏掉最典型的「点了歌一直转圈」那一类。
@@ -499,7 +525,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (seq !== reqSeqRef.current) return
       patch({ status: 'error', error: lastMessage, attempts: lastAttempts, ready: false })
     },
-    [patch],
+    [patch, applyPlaybackRate],
   )
 
   /** 音频层失败后的自动换源：把刚失败的源排除，再解析一次。
@@ -793,6 +819,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [clearSleepTimers],
   )
 
+  const setRate = React.useCallback(
+    (rate: number) => {
+      const v = Math.min(3, Math.max(0.25, rate))
+      setState((s) => ({ ...s, rate: v }))
+      try {
+        localStorage.setItem(STORAGE_RATE, String(v))
+      } catch {
+        /* 隐私模式：不持久化也能用，不炸主流程 */
+      }
+      applyPlaybackRate(v)
+    },
+    [applyPlaybackRate],
+  )
+
 
   /** 切换音质档位。正在播放时立刻按新档位重新解析当前曲目 ——
    *  否则用户改了档位却要等下一首才生效，与「改设置即时生效」的预期不符。
@@ -941,6 +981,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setSleep,
+      setRate,
       setQuality,
       setAutoBestQuality,
       clear,
@@ -961,6 +1002,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setSleep,
+      setRate,
       setQuality,
       setAutoBestQuality,
       clear,
