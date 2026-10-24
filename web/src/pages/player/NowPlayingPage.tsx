@@ -8,6 +8,9 @@ import { usePlayer } from '@/lib/player'
 import { downloadSong } from '@/lib/download'
 import { ProgressRow, TransportControls } from '@/components/player/TransportControls'
 import QualityMenu from '@/components/player/QualityMenu'
+import { Share2 } from 'lucide-react'
+import { buildShareCardData, renderShareCard } from '@/lib/shareCard'
+import { activeLineIndex, useLyric } from '@/lib/lyric'
 import SleepTimerMenu from '@/components/player/SleepTimerMenu'
 import PlaybackRateMenu from '@/components/player/PlaybackRateMenu'
 import Lyrics from '@/components/player/Lyrics'
@@ -119,6 +122,11 @@ export default function NowPlayingPage() {
   const { current, status, error, attempts, duration, sourceName } = player
   const { toast } = useToast()
   const [downloading, setDownloading] = React.useState(false)
+  const [sharing, setSharing] = React.useState(false)
+  // 歌词行给分享卡片用。 Lyrics 组件内部也有一个 useLyric —— 这里再来一个
+  // 是刻意的：歌词接口带 max-age=86400，第二个消费者命中浏览器缓存，
+  // 代价 ≈ 0；而为了省一次缓存命中的请求把歌词状态提升成全局 context 不值得。
+  const lyric = useLyric(current)
 
   const cover = coverUrl(current)
   const tokens = useCoverAccent(cover)
@@ -146,6 +154,33 @@ export default function NowPlayingPage() {
       })
     } finally {
       setDownloading(false)
+    }
+  }
+
+  /** 生成分享卡片（封面+歌名+当前歌词行）并下载 PNG */
+  const handleShareCard = async () => {
+    if (!current || sharing) return
+    setSharing(true)
+    try {
+      const lines = lyric.data?.lines ?? []
+      const active = activeLineIndex(lines, player.position)
+      const data = buildShareCardData(current, active >= 0 ? lines[active].text : null, sourceLabel(current.source), tokens?.accent ?? '#6366f1')
+      const blob = await renderShareCard(data, cover)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `分享卡片-${current.name}.png`
+      a.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+      toast({ title: '已生成分享卡片', description: '已保存为图片，去发给你想分享的人吧' })
+    } catch (e) {
+      toast({
+        title: '分享卡片生成失败',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      })
+    } finally {
+      setSharing(false)
     }
   }
 
@@ -346,6 +381,21 @@ export default function NowPlayingPage() {
                 <Download className="size-3" />
               )}
               <span>下载本曲</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleShareCard()}
+              disabled={sharing}
+              aria-label="生成分享卡片"
+              title="生成封面+歌词的分享图片"
+              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
+            >
+              {sharing ? (
+                <Loader2 className="size-3 animate-spin text-accent" />
+              ) : (
+                <Share2 className="size-3" />
+              )}
+              <span>分享卡片</span>
             </button>
           </div>
         </div>

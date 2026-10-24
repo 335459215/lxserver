@@ -1037,6 +1037,47 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "playlist-transfer.png"))
     ctx10.close()
 
+    # ================= 分享卡片（v2.38.0）=================
+    #
+    # 【验什么】点按钮真的产出一张 PNG（验文件签名与体积，不是只看 toast）。
+    # 桩歌曲无封面 → 占位分支被覆盖；真实封面走 crossOrigin + 污染回退，
+    # 离线桩不了 CDN CORS，那层由实现里的双保险 + 线上实测覆盖。
+    print("\n--- 分享卡片 ---")
+    ctx11 = browser.new_context(viewport={"width": 1440, "height": 900}, accept_downloads=True)
+    inject_login(ctx11)
+    page = ctx11.new_page()
+    page.goto(f"{BASE}/app/search?q=周杰伦", wait_until="load")
+    page.wait_for_timeout(2500)
+    rows = page.locator("ul li button[aria-label^='播放']")
+    check("分享卡片场景：桩数据渲染出搜索结果", rows.count() > 0, f"{rows.count()} 行")
+    if rows.count() > 0:
+        rows.first.click()
+        page.wait_for_timeout(1500)
+        link = page.locator('a[href$="/now-playing"]:visible').first
+        if link.count() > 0:
+            link.click()
+            page.wait_for_timeout(2000)
+
+        btn = page.locator("button[aria-label='生成分享卡片']")
+        check("播放页有「分享卡片」按钮", btn.count() > 0)
+        card_path = os.path.join(OUT, "share-card.png")
+        with page.expect_download(timeout=15000) as dl:
+            btn.click()
+        dl.value.save_as(card_path)
+        with open(card_path, "rb") as f:
+            head = f.read(8)
+            size = os.path.getsize(card_path)
+        check("下载的是 PNG（文件签名）", head[:4] == b"\x89PNG", str(head[:4]))
+        check("PNG 有真实内容（> 8KB，不是空白画布）", size > 8192, f"{size} bytes")
+        check("toast 提示生成成功", "已生成分享卡片" in page.evaluate("() => document.body.innerText"))
+    else:
+        for nm in ("播放页有「分享卡片」按钮", "下载的是 PNG（文件签名）",
+                   "PNG 有真实内容（> 8KB，不是空白画布）", "toast 提示生成成功"):
+            check(nm, False, "前置：搜索结果为空")
+
+    page.screenshot(path=os.path.join(OUT, "share-card-page.png"))
+    ctx11.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]
