@@ -17,6 +17,7 @@ import {
 import { coverUrl } from '@/lib/music'
 import { createPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, type Playlist } from '@/lib/lists'
 import { useLists } from '@/lib/useLists'
+import { PlaylistTransferButtons } from '@/components/player/PlaylistTransfer'
 
 /** 歌单卡片：封面取第一首有封面的曲目 */
 function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' | 'list' }) {
@@ -126,7 +127,10 @@ export default function PlaylistPage() {
     <div className="w-full rise">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight text-ink">歌单</h1>
-        <CreatePlaylistDialog onDone={(id) => navigate(`/playlist/${encodeURIComponent(id)}`)} />
+        <div className="flex items-center gap-2">
+          <PlaylistTransferButtons onDone={() => void reload(true)} />
+          <CreatePlaylistDialog onDone={(id) => navigate(`/playlist/${encodeURIComponent(id)}`)} />
+        </div>
       </header>
 
       {loading && (

@@ -133,6 +133,25 @@ let removedLog = []
 let lyricLog = []
 /** 收藏列表桩（有状态）：L 键的「收藏/取消收藏」会真的改动它 */
 let loveStore = []
+/** 用户歌单桩（有状态）：导入/导出的「全量恢复」会真的改动它 */
+let userListsStore = [
+  {
+    id: 'user_seed',
+    name: '导入前的歌单',
+    list: [
+      {
+        id: 'kw_228908',
+        name: '晴天',
+        singer: '周杰伦',
+        source: 'kw',
+        songmid: '228908',
+        interval: '04:29',
+      },
+    ],
+  },
+]
+/** 记录整份写回（restore）操作 —— 确认「导入真的发到了服务端」 */
+let transferLog = []
 /** 记录收藏增删操作（调试端点用），确认「L 键真的发到了服务端」 */
 let loveLog = []
 
@@ -229,7 +248,34 @@ const server = http.createServer((req, res) => {
   // 【必须是有状态的】与历史删除同理：收藏是有副作用的操作，固定列表会让
   // 「请求没发出去」看起来也对。add/remove 真的改动 loveStore，并记进 loveLog。
   if (urlPath === '/api/user/list' && req.method === 'GET') {
-    json(res, 200, { defaultList: [], loveList: loveStore, userList: [] })
+    json(res, 200, { defaultList: [], loveList: loveStore, userList: userListsStore })
+    return
+  }
+
+  // 整份写回（导入的最后一跳）。语义与真实服务端一致：全量替换 + 记日志
+  if (urlPath === '/api/user/list' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}') || {}
+        loveStore = Array.isArray(data.loveList) ? data.loveList : loveStore
+        userListsStore = Array.isArray(data.userList) ? data.userList : userListsStore
+        transferLog.push({ op: 'restore', lists: userListsStore.length, songs: userListsStore.reduce((a, l) => a + (l.list || []).length, 0) + loveStore.length })
+        json(res, 200, { success: true })
+      } catch {
+        send(res, 400, MIME['.txt'], 'bad json')
+      }
+    })
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/transfer-log') {
+    json(res, 200, {
+      success: true,
+      ops: transferLog.slice(),
+      userLists: userListsStore.map((l) => ({ id: l.id, name: l.name, count: (l.list || []).length })),
+    })
     return
   }
 
@@ -368,6 +414,16 @@ const server = http.createServer((req, res) => {
     lyricLog = []
     loveStore = []
     loveLog = []
+    userListsStore = [
+      {
+        id: 'user_seed',
+        name: '导入前的歌单',
+        list: [
+          { id: 'kw_228908', name: '晴天', singer: '周杰伦', source: 'kw', songmid: '228908', interval: '04:29' },
+        ],
+      },
+    ]
+    transferLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
   }

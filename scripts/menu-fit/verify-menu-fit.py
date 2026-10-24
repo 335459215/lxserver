@@ -918,6 +918,125 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "playback-rate.png"))
     ctx9.close()
 
+    # ================= 歌单导入导出（v2.37.0）=================
+    #
+    # 【验什么】导出的文件内容真的对（不是只看 toast）；导入真的发到了
+    # 服务端（transfer-log）；合并语义（同 id 并入、现有保留）；坏文件
+    # 被拒且不发请求。导入走「全量恢复」接口，任何丢失都是删用户数据。
+    print("\n--- 歌单导入导出 ---")
+    ctx10 = browser.new_context(viewport={"width": 1440, "height": 900}, accept_downloads=True)
+    inject_login(ctx10)
+    page = ctx10.new_page()
+    page.goto(f"{BASE}/app/playlist", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+
+    check("歌单页显示种子歌单", "导入前的歌单" in page.evaluate("() => document.body.innerText"))
+
+    # ① 导出：下载文件并验内容
+    export_path = os.path.join(OUT, "export-check.json")
+    with page.expect_download() as dl:
+        page.locator("button[aria-label='导出歌单']").click()
+    page.locator("button[aria-label='导出歌单']").first  # noqa: B018
+    dl.value.save_as(export_path)
+    try:
+        with open(export_path, encoding="utf-8") as f:
+            exported = json.load(f)
+        check("导出文件是本站信封（type/version/exportedAt）",
+              exported.get("type") == "lxserver.playlists" and exported.get("version") == 1
+              and "exportedAt" in exported)
+        check("导出文件含种子歌单与其歌曲",
+              len(exported.get("data", {}).get("userList", [])) == 1
+              and exported["data"]["userList"][0]["list"][0]["name"] == "晴天")
+    except Exception as e:  # noqa: BLE001
+        check("导出文件是本站信封（type/version/exportedAt）", False, str(e)[:80])
+        check("导出文件含种子歌单与其歌曲", False, str(e)[:80])
+
+    def transfer_state():
+        return page.evaluate(
+            """async () => (await (await fetch('/api/__fixture__/transfer-log')).json())"""
+        )
+
+    # ② 导入：新 id 歌单（含一首与种子重复的晴天 —— 跨歌单不去重，歌单是独立集合）
+    import_new = os.path.join(OUT, "import-new.json")
+    with open(import_new, "w", encoding="utf-8") as f:
+        json.dump({
+            "type": "lxserver.playlists", "version": 1,
+            "data": {
+                "defaultList": [], "loveList": [],
+                "userList": [{
+                    "id": "user_imported", "name": "外部导入歌单",
+                    "list": [
+                        {"id": "kw_228908", "name": "晴天", "singer": "周杰伦", "source": "kw", "songmid": "228908", "interval": "04:29"},
+                        {"id": "kw_777", "name": "七里香", "singer": "周杰伦", "source": "kw", "songmid": "777", "interval": "04:59"},
+                    ],
+                }],
+            },
+        }, f, ensure_ascii=False)
+    page.set_input_files("input[aria-label='选择歌单备份文件']", import_new)
+    page.wait_for_timeout(1200)
+    dlg = page.locator("[role='dialog']")
+    check("导入前弹确认对话框（含数量摘要）", dlg.count() > 0 and "新增歌单 1 个" in dlg.inner_text(),
+          dlg.inner_text()[:60] if dlg.count() else "未弹")
+    if dlg.count() > 0:
+        page.locator("button:has-text('确认导入')").click()
+        page.wait_for_timeout(1500)
+        st = transfer_state()
+        check("服务端收到整份写回（2 个歌单、共 3 首）",
+              st["ops"] and st["ops"][-1]["op"] == "restore" and st["ops"][-1]["lists"] == 2
+              and st["ops"][-1]["songs"] == 3, f"ops={st['ops']}")
+        page.wait_for_timeout(1000)
+        check("页面上出现导入的歌单（现有歌单仍在）",
+              "外部导入歌单" in page.evaluate("() => document.body.innerText")
+              and "导入前的歌单" in page.evaluate("() => document.body.innerText"))
+    else:
+        for nm in ("服务端收到整份写回（2 个歌单、共 4 首）", "页面上出现导入的歌单（现有歌单仍在）"):
+            check(nm, False, "前置：确认对话框未出现")
+
+    # ③ 导入：同 id 歌单 → 并入不新增
+    import_merge = os.path.join(OUT, "import-merge.json")
+    with open(import_merge, "w", encoding="utf-8") as f:
+        json.dump({
+            "type": "play_list",
+            "data": {
+                "defaultList": [], "loveList": [],
+                "userList": [{
+                    "id": "user_seed", "name": "同 id 歌单",
+                    "list": [{"name": "晴天", "singer": "周杰伦", "source": "kw", "songmid": "228908"},
+                             {"name": "夜曲", "singer": "周杰伦", "source": "kw", "songmid": "555"}],
+                }],
+            },
+        }, f, ensure_ascii=False)
+    page.set_input_files("input[aria-label='选择歌单备份文件']", import_merge)
+    page.wait_for_timeout(1200)
+    dlg2 = page.locator("[role='dialog']")
+    if dlg2.count() > 0 and "并入已有歌单 1 个" in dlg2.inner_text():
+        page.locator("button:has-text('确认导入')").click()
+        page.wait_for_timeout(1500)
+        st2 = transfer_state()
+        seed = next((u for u in st2["userLists"] if u["id"] == "user_seed"), None)
+        check("同 id 歌单并入（种子歌单 1→2 首，歌单总数不变）",
+              st2["ops"][-1]["lists"] == 2 and seed and seed["count"] == 2,
+              f"seed={seed} lists={st2['ops'][-1]['lists']}")
+    else:
+        check("同 id 歌单并入（种子歌单 1→2 首，歌单总数不变）", False,
+              dlg2.inner_text()[:50] if dlg2.count() else "对话框未弹/摘要不对")
+
+    # ④ 坏文件：被拒且不发任何请求
+    before_ops = len(transfer_state()["ops"])
+    bad = os.path.join(OUT, "import-bad.json")
+    with open(bad, "w", encoding="utf-8") as f:
+        f.write('{"hello": 1}')
+    page.set_input_files("input[aria-label='选择歌单备份文件']", bad)
+    page.wait_for_timeout(1000)
+    check("坏文件被拒（toast 报错）", "无法导入" in page.evaluate("() => document.body.innerText"))
+    check("坏文件没有触发整份写回", len(transfer_state()["ops"]) == before_ops)
+
+    page.screenshot(path=os.path.join(OUT, "playlist-transfer.png"))
+    ctx10.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]

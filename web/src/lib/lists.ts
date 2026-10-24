@@ -84,6 +84,29 @@ export async function fetchLists(signal?: AbortSignal): Promise<ListsSnapshot> {
   }
 }
 
+/** 整份写回歌单（POST /api/user/list = 全量恢复语义：先清空再重建）。
+ *
+ *  ⚠️ 调用方必须先拉**最新**全量、在内存里合并完再传 —— 直接把外部文件
+ *  POST 上去等于清空用户现有歌单。歌单导入（playlistTransfer）走这条。
+ *  wire 形状：userList 每项的曲目字段是 list（不是快照里的 songs）。 */
+export async function restoreLists(raw: {
+  defaultList: Song[]
+  loveList: Song[]
+  userList: Array<{ id: string; name: string; list: Song[]; [key: string]: unknown }>
+}): Promise<void> {
+  const auth = userAuthHeaders()
+  if (!auth['x-user-token']) throw new ListsApiError('登录已过期，请重新登录后再导入')
+  const res = await fetch('/api/user/list', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify(raw),
+  })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '')
+    throw new ListsApiError(msg || `写回歌单失败（HTTP ${res.status}）`)
+  }
+}
+
 /** 从快照里按 id 找列表（'default' / 'love' / 用户歌单 id） */
 export function findPlaylist(
   snapshot: ListsSnapshot | null,
