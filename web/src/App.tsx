@@ -6,6 +6,7 @@ import {
   Heart,
   History,
   Home,
+  Keyboard,
   ListMusic,
   LogOut,
   Menu,
@@ -285,6 +286,18 @@ function Shell() {  const { auth, refresh } = useAuth()
             </div>
 
             {/* 正在播放抽屉开关 */}
+            {/* 快捷键帮助入口：真正的开关在 KeyboardShortcuts 里监听这个事件 */}
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('lx:shortcuts-help'))}
+              aria-label="键盘快捷键"
+              title="键盘快捷键（?）"
+              aria-haspopup="dialog"
+              className="hidden size-9 items-center justify-center rounded-xl border border-transparent text-dim transition-all hover:border-line/60 hover:bg-panel-2 hover:text-ink md:flex"
+            >
+              <Keyboard className="size-4" />
+            </button>
+
             <button
               type="button"
               onClick={() => setPanel((v) => !v)}

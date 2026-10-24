@@ -662,6 +662,35 @@ with sync_playwright() as p:
         v4 = float(page.locator("input[aria-label='音量']").input_value())
         check("音量条聚焦时按 ↑：只走原生 step=0.01（不与全局快捷键叠加）",
               abs(v4 - (v3 + 0.01)) < 0.001, f"{v3}→{v4}")
+
+        # ⑦ ? 帮助面板（v2.33.0）。先 blur：上个用例把焦点留在音量输入框上，
+        #    不 blur 的话 ? 会被输入框守卫吞掉（那本身也是对的行为，但测不了面板）。
+        #    ⚠️ 必须按 "Shift+Slash" 而不是 "?"：playwright 的 press("?") 会合成
+        #    shift=False 的 keydown，而真实键盘按 ? 必然带 Shift ——
+        #    实现按 e.shiftKey 分流（? 帮助 / / 聚焦搜索），用 "?" 按出来的是
+        #    「聚焦搜索」，第一版就这么假红的。
+        page.evaluate("() => document.activeElement && document.activeElement.blur()")
+        page.keyboard.press("Shift+Slash")
+        page.wait_for_timeout(600)
+        dlg = page.locator("[role='dialog']")
+        check("？：帮助面板弹出", dlg.count() > 0)
+        if dlg.count() > 0:
+            txt = dlg.inner_text()
+            check("帮助面板列出 L 收藏当前曲", "收藏 / 取消收藏当前曲" in txt)
+            check("帮助面板列出空格与 ?", "Space" in txt and "?" in txt)
+            check("帮助面板列出 / 聚焦搜索", "聚焦搜索框" in txt)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            check("Esc 关闭帮助面板", page.locator("[role='dialog']").count() == 0)
+
+        btn = page.locator("header button[aria-label='键盘快捷键']")
+        check("顶栏有键盘图标入口", btn.count() > 0)
+        if btn.count() > 0:
+            btn.click()
+            page.wait_for_timeout(500)
+            check("点顶栏按钮也弹出帮助面板", page.locator("[role='dialog']").count() > 0)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
     else:
         for nm in ("L：toast 显示「已收藏」", "L：服务端真的收到了收藏请求",
                    "L：再按一次 toast 显示「已取消收藏」", "L：服务端也收到了移除请求且收藏清空",
@@ -669,8 +698,11 @@ with sync_playwright() as p:
                    "S：再按恢复「开启随机播放」", "R：循环切到「单曲循环」", "R：再按到「不循环」",
                    "R：第三次回到「列表循环」（完整一圈）", "音量条存在", "↓↓↑：音量按 0.05 步进（+ 回升）",
                    "M：静音按钮翻转为「取消静音」", "M：再按恢复「静音」", "/：焦点进入搜索输入框",
-                   "输入框内按 s：正常打字（值含 s）", "输入框内按 s：不触发随机切换（无 toast、按钮未翻转）",
-                   "音量条聚焦时按 ↑：只走原生 step=0.01（不与全局快捷键叠加）"):
+                   "输入框内按 s：正常打字（值含 s）", "输入框内按 s：不触发随机切换（无新 toast、按钮未翻转）",
+                   "音量条聚焦时按 ↑：只走原生 step=0.01（不与全局快捷键叠加）",
+                   "？：帮助面板弹出", "帮助面板列出 L 收藏当前曲", "帮助面板列出空格与 ?",
+                   "帮助面板列出 / 聚焦搜索", "Esc 关闭帮助面板", "顶栏有键盘图标入口",
+                   "点顶栏按钮也弹出帮助面板"):
             check(nm, False, "前置：搜索结果为空")
 
     page.screenshot(path=os.path.join(OUT, "keyboard-shortcuts.png"))
