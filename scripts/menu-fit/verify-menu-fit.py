@@ -57,6 +57,21 @@ def check(name, cond, detail=""):
     print(("PASS  " if cond else "FAIL  ") + name + (f"  [{detail}]" if detail else ""))
 
 
+def reset_fixture(page):
+    """把桩服务的历史状态重置成初始 6 条。
+
+    【为什么每段历史用例前都要调】
+    historyStore 是桩进程的内存状态，会跨用例、跨 run 累积。
+    实测踩过：手动删了一条后重跑护栏，统计变成「8 首 / 14 次」，
+    分组变成 4/1/2/1 —— 断言全红，但报错指向业务逻辑，排查方向完全错了。
+    测试之间必须彼此隔离。
+    """
+    try:
+        page.evaluate("async () => { await fetch('/api/__fixture__/reset', {method:'POST'}); }")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def inject_login(ctx):
     """直接注入登录态：不依赖真实 /api/login，离线也能过登录门。"""
     ctx.add_init_script(
@@ -292,6 +307,9 @@ with sync_playwright() as p:
     inject_login(ctx3)
     page = ctx3.new_page()
     page.goto(f"{BASE}/app/history", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
     page.wait_for_timeout(3000)
 
     headings = page.evaluate(
@@ -358,6 +376,99 @@ with sync_playwright() as p:
 
     page.screenshot(path=os.path.join(OUT, "history-buckets.png"))
     ctx3.close()
+
+    # ================= 播放历史：单条删除 + 撤销 =================
+    #
+    # 【为什么这段必须验，且必须验「服务端真的收到请求」】
+    # 前端做了「乐观更新」：点删除立刻从列表移除。于是如果只是断言
+    # 「列表少了一条」，**即使删除请求根本没发出去、或服务端返回 500，
+    # 断言依然会绿** —— 因为 UI 已经先移除了。这是典型的假绿。
+    #
+    # 所以这里分三层验：
+    #   ① UI：条目消失、统计数字跟着变（不是只有列表变了）
+    #   ② 服务端：桩服务记录的 removedLog 里必须有这个 key（证明请求真的到了）
+    #   ③ 撤销：点「撤销」后条目回来，且服务端列表也恢复
+    print("\n--- 播放历史：单条删除与撤销 ---")
+    ctx4 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx4)
+    page = ctx4.new_page()
+    page.goto(f"{BASE}/app/history", wait_until="load")
+    page.wait_for_timeout(1500)
+    reset_fixture(page)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(3000)
+
+    def stats_text():
+        return page.evaluate(
+            """() => {
+              const g = document.querySelector('main .grid');
+              return g ? (g.innerText || '').replace(/\\n/g, '|') : '';
+            }"""
+        )
+
+    before_stats = stats_text()
+    check("删除前统计为 6 首 / 12 次", "6" in before_stats and "12" in before_stats, before_stats[:60])
+
+    # 删「昨天」组那条（它独处一组，删完该组应整个消失 —— 顺带验证空分组不渲染）
+    yday = page.locator("section:has(h2#hist-yesterday)")
+    check("删除前存在「昨天」分组", yday.count() > 0)
+    if yday.count() > 0:
+        # 删除按钮是行内的 trash 图标；用 title/aria-label 定位更稳
+        del_btn = yday.locator("ul li button[title*='移除'], ul li button[title*='删除'], ul li button[aria-label*='移除'], ul li button[aria-label*='删除']").first
+        if del_btn.count() == 0:
+            # 退化：取该行最后一个 button（SongList 里删除按钮在末尾）
+            del_btn = yday.locator("ul li").first.locator("button").last
+        check("「昨天」分组有删除入口", del_btn.count() > 0)
+        del_btn.click()
+        page.wait_for_timeout(1200)
+
+        check("删除后条目从列表消失", page.locator("section:has(h2#hist-yesterday)").count() == 0,
+              "昨天分组应整个消失（只剩 1 条且被删）")
+
+        after_stats = stats_text()
+        check("删除后统计跟着变（5 首 / 10 次）",
+              "5" in after_stats and "10" in after_stats, after_stats[:60])
+
+        # ② 服务端确实收到了删除请求
+        log = page.evaluate(
+            """async () => {
+              const r = await fetch('/api/__fixture__/removed-log');
+              return (await r.json()).removed || [];
+            }"""
+        )
+        check("服务端真的收到了删除请求（不是只在 UI 上移除）",
+              "kw|stub-3" in log, f"removedLog={log}")
+
+        # ③ 撤销
+        undo = page.locator('button:has-text("撤销")')
+        if undo.count() > 0:
+            undo.first.click()
+            page.wait_for_timeout(1500)
+            check("点撤销后条目回到列表",
+                  page.locator("section:has(h2#hist-yesterday)").count() > 0,
+                  "撤销后应重新出现「昨天」分组")
+            restored = page.evaluate(
+                """async () => {
+                  const r = await fetch('/api/music/history/list');
+                  const j = await r.json();
+                  return { total: j.total, names: (j.list||[]).map(x => x.name) };
+                }"""
+            )
+            check("撤销后服务端列表也恢复了",
+                  restored["total"] == 6 and any("昨天听的歌" in n for n in restored["names"]),
+                  f"total={restored['total']}")
+        else:
+            check("删除后出现「撤销」按钮", False, "没找到撤销按钮")
+            check("撤销后服务端列表也恢复了", False, "跳过")
+    else:
+        for nm in ("「昨天」分组有删除入口", "删除后条目从列表消失",
+                   "删除后统计跟着变（5 首 / 10 次）",
+                   "服务端真的收到了删除请求（不是只在 UI 上移除）",
+                   "删除后出现「撤销」按钮", "撤销后服务端列表也恢复了"):
+            check(nm, False, "前置：昨天分组不存在")
+
+    page.screenshot(path=os.path.join(OUT, "history-remove.png"))
+    ctx4.close()
 
     browser.close()
 

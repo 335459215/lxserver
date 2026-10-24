@@ -2053,6 +2053,48 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         return
       }
 
+      // 删除**单条**历史（用户鉴权）。
+      //
+      // 【为什么要有这个接口】
+      // `HistoryDataManage.remove(key)` 早就写好了，但一直没暴露路由 ——
+      // 前端只能「全清」，误点一次就把半个月的记录删光。这是典型的
+      // 「后端能力已就绪、差最后一公里」。
+      //
+      // 【为什么不接受批量】
+      // 批量删除和「清空」的边界很模糊，而单条删除 + 前端逐个调用已经够用
+      // （历史页一屏几十条，用户不会一次删很多）。接口面越小越不容易被滥用。
+      //
+      // 用 POST 而不是 DELETE：本项目所有写操作都走 POST（见其它路由），
+      // 保持一致比贴合 REST 更重要 —— 混用会让代理/客户端的处理路径分叉。
+      if (pathname === '/api/music/history/remove' && req.method === 'POST') {
+        const username = verifyUserAuth(req)
+        if (!username) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: '需要用户认证' }))
+          return
+        }
+        void readBody(req).then(body => {
+          try {
+            const { key } = JSON.parse(body || '{}') as { key?: unknown }
+            if (typeof key !== 'string' || !key.trim()) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ success: false, message: '缺少 key' }))
+              return
+            }
+            // remove() 返回 false 表示没这条（可能已被别的标签页删掉）。
+            // 这种情况**仍回 200 + removed:false**，不回 404：
+            // 对调用方而言「目标状态已达成」，回错误会让前端弹出无意义的失败提示。
+            const removed = getUserSpace(username).historyManage.remove(key.trim())
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: true, removed }))
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, message: err?.message || '删除失败' }))
+          }
+        })
+        return
+      }
+
       // [新增] Batch Remove Songs from List (User Auth)
       if (pathname === '/api/music/user/list/remove' && req.method === 'POST') {
         const username = verifyUserAuth(req)

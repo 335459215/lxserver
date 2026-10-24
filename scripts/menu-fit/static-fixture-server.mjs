@@ -75,6 +75,41 @@ const FIXTURE_SONGS = [
   },
 ]
 
+/** 播放历史桩数据：**可变**（删除/撤销会真的改动它）。
+ *  时间用「相对现在」算，不写死时间戳 —— 否则过几天这份 fixture 就过期了。 */
+function buildHistory() {
+  const now = Date.now()
+  const H = 3600_000
+  const D = 24 * H
+  const mk = (i, name, singer, agoMs, playCount) => ({
+    key: `kw|stub-${i}`,
+    source: 'kw',
+    songmid: `stub-${i}`,
+    name,
+    singer,
+    interval: '03:30',
+    albumName: '桩专辑',
+    img: null,
+    playedAt: now - agoMs,
+    playCount,
+  })
+  return [
+    // 今天：2 首
+    mk(1, '今天听的歌', '周杰伦、费玉清', 2 * H, 3),
+    mk(2, '今天第二首', '林俊杰', 5 * H, 1),
+    // 昨天：1 首（用「昨天此刻」而不是固定 24h，跨零点也仍然算昨天）
+    mk(3, '昨天听的歌', '周杰伦', D + H, 2),
+    // 最近一周：2 首
+    mk(4, '三天前的歌', '五月天', 3 * D, 1),
+    mk(5, '五天前的歌', '五月天', 5 * D, 4),
+    // 更早：1 首
+    mk(6, '很久以前的歌', '陈奕迅', 30 * D, 1),
+  ]
+}
+let historyStore = buildHistory()
+/** 记录被删过的 key（调试端点用），确认「删除真的发到了服务端」 */
+let removedLog = []
+
 const send = (res, code, type, body) => {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
   res.end(body)
@@ -132,39 +167,17 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // ---- 【播放历史】分桶与统计 ----
+  // ---- 【播放历史】分桶 + 统计 + 单条删除 ----
   //
   // 刻意造出**四个分组都有数据**的时间分布，且带 playCount 与多歌手串，
   // 这样「今天/昨天/最近一周/更早」四段与统计卡才会被真正渲染到。
   // 时间用「相对现在」算，不写死时间戳 —— 否则过几天这份 fixture 就过期了。
+  //
+  // 【必须是有状态的】删除/撤销是有副作用的操作，若每次都返回固定列表，
+  // 前端「乐观移除」后即使服务端没删成功，界面看起来也是对的 —— 假绿。
+  // 这里维护一份内存中的 historyStore，remove/report 真的改动它。
   if (urlPath === '/api/music/history/list') {
-    const now = Date.now()
-    const H = 3600_000
-    const D = 24 * H
-    const mk = (i, name, singer, agoMs, playCount) => ({
-      key: `kw|stub-${i}`,
-      source: 'kw',
-      songmid: `stub-${i}`,
-      name,
-      singer,
-      interval: '03:30',
-      albumName: '桩专辑',
-      img: null,
-      playedAt: now - agoMs,
-      playCount,
-    })
-    const list = [
-      // 今天：2 首
-      mk(1, '今天听的歌', '周杰伦、费玉清', 2 * H, 3),
-      mk(2, '今天第二首', '林俊杰', 5 * H, 1),
-      // 昨天：1 首（用「昨天此刻」而不是固定 24h，跨零点也仍然算昨天）
-      mk(3, '昨天听的歌', '周杰伦', D + H, 2),
-      // 最近一周：2 首
-      mk(4, '三天前的歌', '五月天', 3 * D, 1),
-      mk(5, '五天前的歌', '五月天', 5 * D, 4),
-      // 更早：1 首
-      mk(6, '很久以前的歌', '陈奕迅', 30 * D, 1),
-    ]
+    const list = historyStore.slice()
     json(res, 200, {
       success: true,
       list,
@@ -173,6 +186,79 @@ const server = http.createServer((req, res) => {
       pageSize: 50,
       hasMore: false,
     })
+    return
+  }
+
+  if (urlPath === '/api/music/history/remove' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let key = ''
+      try {
+        key = String(JSON.parse(body || '{}').key || '')
+      } catch {
+        /* 空 key 会走下面的 400 */
+      }
+      if (!key) {
+        json(res, 400, { success: false, message: '缺少 key' })
+        return
+      }
+      const before = historyStore.length
+      historyStore = historyStore.filter((x) => x.key !== key)
+      removedLog.push(key)
+      json(res, 200, { success: true, removed: historyStore.length < before })
+    })
+    return
+  }
+
+  // 撤销 = 重新上报（与真实服务端语义一致：按 key 归并 + 置顶 + playCount+1）
+  if (urlPath === '/api/music/history/report' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      let p = {}
+      try {
+        p = JSON.parse(body || '{}')
+      } catch {
+        /* 忽略 */
+      }
+      const key = `${p.source}|${p.songmid}`
+      historyStore = historyStore.filter((x) => x.key !== key)
+      historyStore.unshift({
+        key,
+        source: p.source,
+        songmid: p.songmid,
+        name: p.name,
+        singer: p.singer ?? '',
+        interval: p.interval ?? null,
+        albumName: p.albumName,
+        img: p.img ?? null,
+        playedAt: Date.now(),
+        playCount: 1,
+      })
+      json(res, 200, { success: true })
+    })
+    return
+  }
+
+  // 调试端点：返回被删过的 key 序列，供护栏断言「删除真的发到了服务端」
+  if (urlPath === '/api/__fixture__/removed-log') {
+    json(res, 200, { success: true, removed: removedLog.slice() })
+    return
+  }
+
+  // 重置桩状态。
+  //
+  // 【为什么必须有】historyStore 是**进程内**状态：一次 run 里删了条目，
+  // 下一次 run 若复用同一个桩进程（本地调试、或同一 job 里跑多遍），
+  // 就会带着上一次的残留。实测踩过：手动删了一条后再跑护栏，
+  // 统计变成「8 首 / 14 次」（6 条数据 + 撤销时又上报的条目），
+  // 分组变成 4/1/2/1 —— 断言全错，但错误信息指向的是业务逻辑，极难排查。
+  // 护栏在开跑前调用它，保证每次从干净状态开始。
+  if (urlPath === '/api/__fixture__/reset') {
+    historyStore = buildHistory()
+    removedLog = []
+    json(res, 200, { success: true, total: historyStore.length })
     return
   }
 

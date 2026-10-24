@@ -87,6 +87,18 @@ type ToastPayload = {
   title: string
   description?: string
   variant?: 'default' | 'success' | 'destructive'
+  /** 可选的操作按钮（如「撤销」）。
+   *
+   *  【为什么需要它】
+   *  「删除」这类操作天然需要一个反悔入口，否则用户误删后只能去服务端翻数据。
+   *  没有 action 时，业务侧只能自己弹 Dialog 或干脆不做撤销 ——
+   *  前者太重（删一条记录弹个模态），后者是体验缺陷。
+   *
+   *  【点击后自动关闭这条 toast】
+   *  否则用户点了「撤销」还会看到「已删除一条记录」的提示挂在屏幕上，
+   *  状态与事实相反。由 ToastHost 在 onClick 后移除该项。
+   */
+  action?: { label: string; onClick: () => void }
 }
 
 /** 轻量全局 toast 上下文：业务侧 `const { toast } = useToast(); toast({ title: '已保存' })`。
@@ -123,6 +135,20 @@ export function ToastHost({ children }: { children: React.ReactNode }) {
               <ToastTitle>{it.title}</ToastTitle>
               {it.description && <ToastDescription>{it.description}</ToastDescription>}
             </div>
+            {it.action && (
+              <ToastAction
+                altText={it.action.label}
+                onClick={() => {
+                  // 先关掉这条 toast 再执行动作：动作里若又弹新 toast，
+                  // 后关会让新 toast 也被一并移除（列表是按 id 过滤的，
+                  // 但时序上更安全的是先移除旧的）。
+                  setItems((prev) => prev.filter((x) => x.id !== it.id))
+                  it.action?.onClick()
+                }}
+              >
+                {it.action.label}
+              </ToastAction>
+            )}
             <ToastClose />
           </Toast>
         ))}

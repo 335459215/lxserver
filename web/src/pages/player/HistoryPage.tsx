@@ -1,7 +1,14 @@
 import * as React from 'react'
 import { History, Loader2, Play, TriangleAlert, Trash2 } from 'lucide-react'
 import { Button, Stack, useToast } from '@/components/ui'
-import { clearHistory, fetchHistory, historyToSong, type HistoryItem } from '@/lib/history'
+import {
+  clearHistory,
+  fetchHistory,
+  historyToSong,
+  removeHistory,
+  restoreHistory,
+  type HistoryItem,
+} from '@/lib/history'
 import { bucketHistory, historyStats, type HistoryStats } from '@/lib/historyStats'
 import { useAsyncResource } from '@/lib/asyncResource'
 import { usePlayer } from '@/lib/player'
@@ -48,13 +55,28 @@ export default function HistoryPage() {
 
   const firstList = React.useMemo(() => res.data?.list ?? [], [res.data])
 
+  /** 本地已删除的 key。
+   *
+   *  【为什么不「删完重拉列表」】
+   *  历史是**分页**的：删掉第 3 条后重拉第一页，服务端返回的是新的前 50 条，
+   *  而前端已经追加了第 51~100 条 —— 中间那条被挤到下一页，于是
+   *  「加载更多」会跳过它，或出现重复。分页列表的本地删除必须**就地移除**，
+   *  不能靠重拉。
+   *
+   *  这里用 Set 而不是直接从数组里 splice：`items` 是由
+   *  `firstList`（来自 useAsyncResource 的不可变快照）+ `extra` 派生的，
+   *  直接改它们会破坏「派生值」的语义；用「已删除集合」做过滤更干净，
+   *  撤销时把它从集合里去掉即可**原样恢复**（位置都不变）。
+   */
+  const [removedKeys, setRemovedKeys] = React.useState<Set<string>>(() => new Set())
+
   // 首屏数据到位后用派生值表达 total/hasMore（不在 effect 里 setState）
-  const effectiveTotal = extra.length ? total : res.data?.total ?? 0
+  const effectiveTotal = (extra.length ? total : res.data?.total ?? 0) - removedKeys.size
   const effectiveHasMore = extra.length ? hasMore : res.data?.hasMore ?? false
-  const items = React.useMemo(
-    () => (extra.length ? [...firstList, ...extra] : firstList),
-    [firstList, extra],
-  )
+  const items = React.useMemo(() => {
+    const all = extra.length ? [...firstList, ...extra] : firstList
+    return removedKeys.size ? all.filter((x) => !removedKeys.has(x.key)) : all
+  }, [firstList, extra, removedKeys])
 
   const songs = React.useMemo(() => items.map(historyToSong), [items])
 
@@ -118,6 +140,9 @@ export default function HistoryPage() {
       setExtra([])
       setTotal(0)
       setHasMore(false)
+      // 一并清掉「本地已删除」集合：否则清空后重新产生的记录若 key 相同，
+      // 会被这个残留集合过滤掉，表现为「清空后新听同一首歌却看不到」。
+      setRemovedKeys(new Set())
       // **必须一并重置 page**：否则清空后又产生新记录时，「加载更多」会从
       // 清空前那页的下一页开始请求（如清空前加载到第 3 页 → 清空后请求第 4 页），
       // 把第 2、3 页的数据永久跳过。这是一个真实的分页 off-by-one。
@@ -132,6 +157,64 @@ export default function HistoryPage() {
       })
     } finally {
       setClearing(false)
+    }
+  }
+
+  /** 删除单条。
+   *
+   *  【顺序很重要：先本地移除，再发请求】
+   *  反过来（等请求成功再移除）在慢网下会出现「点了没反应」，用户会重复点。
+   *  先移除能立刻给反馈；失败了再把它**放回**去并提示 ——
+   *  这和「乐观更新 + 回滚」是同一套路，只是这里回滚很简单（从 Set 里去掉）。
+   *
+   *  【撤销为什么只保留最近一条】
+   *  toast 里的「撤销」按钮是**一次性**的：用户点第二次时上一次的 toast 早就没了。
+   *  维护一个撤销栈会让「撤销」这个动作变得不可预期（撤到哪一步？），
+   *  而历史删除本身是低频操作，单步撤销已经覆盖绝大多数误删场景。
+   */
+  const onRemoveOne = async (item: HistoryItem) => {
+    setRemovedKeys((prev) => new Set(prev).add(item.key))
+    try {
+      await removeHistory(item.key)
+      toast({
+        title: '已删除一条记录',
+        description: item.name,
+        action: {
+          label: '撤销',
+          onClick: () => {
+            void (async () => {
+              try {
+                await restoreHistory(item)
+                // 从「已删除」集合里去掉 → 条目按**原位置**回到列表
+                setRemovedKeys((prev) => {
+                  const next = new Set(prev)
+                  next.delete(item.key)
+                  return next
+                })
+                toast({ title: '已恢复记录', description: '会出现在「今天」组' })
+              } catch (e) {
+                toast({
+                  title: '恢复失败',
+                  description: e instanceof Error ? e.message : String(e),
+                  variant: 'destructive',
+                })
+              }
+            })()
+          },
+        },
+      })
+    } catch (e) {
+      // 失败回滚：把它放回列表，否则用户会以为删掉了、实际还在服务端
+      setRemovedKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(item.key)
+        return next
+      })
+      toast({
+        title: '删除失败',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      })
     }
   }
 
@@ -223,6 +306,7 @@ export default function HistoryPage() {
                   const globalIndex = items.findIndex((x) => x.key === b.items[i].key)
                   player.playQueue(songs, globalIndex >= 0 ? globalIndex : i)
                 }}
+                onRemove={(_, i) => void onRemoveOne(b.items[i])}
                 allowDownload={false}
               />
             </section>

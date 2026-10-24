@@ -106,3 +106,63 @@ export async function clearHistory(): Promise<void> {
     throw new Error(data?.message ?? `清空失败（HTTP ${res.status}）`)
   }
 }
+
+/** 删除单条历史。
+ *
+ *  返回 `true` 表示确实删掉了一条，`false` 表示服务端已经没有这条
+ *  （例如在另一个标签页删过了）。
+ *  **两种情况都不抛错**：对调用方而言「目标状态已达成」，
+ *  抛错只会让前端弹一个毫无意义的失败提示。
+ *
+ *  ⚠️ 删除后**不要重新拉取列表来刷新 UI** —— 历史是分页的，
+ *  删掉第 3 条后重拉第一页会让「加载更多」的游标错位（有一条被跳过）。
+ *  正确做法是本地移除该条，并同步递减 total。
+ */
+export async function removeHistory(key: string): Promise<boolean> {
+  const res = await fetch('/api/music/history/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...userAuthHeaders() },
+    body: JSON.stringify({ key }),
+  })
+  if (res.status === 401) throw new Error('登录已过期，请重新登录后再删')
+  const data = await res.json().catch(() => null)
+  if (!res.ok || !data?.success) {
+    throw new Error(data?.message ?? `删除失败（HTTP ${res.status}）`)
+  }
+  return !!data.removed
+}
+
+/** 撤销删除。
+ *
+ *  【为什么是「重新上报」而不是「恢复原条目」】
+ *  服务端的 `report()` 语义是「按 key 归并 + 置顶 + playCount 递增」，
+ *  没有「插回原位」的能力。真要做精确还原，得让服务端接受 playedAt/playCount
+ *  并允许覆盖 —— 那等于给历史开一个可伪造时间戳的写入口，代价太大。
+ *
+ *  权衡：撤销后这首歌会回到「今天」组的最前面，`playCount` 也会 +1
+ *  （因为它确实被"播放"了一次语义上的记录）。这比「删了就是删了」好，
+ *  也比开一个可伪造时间戳的接口安全。
+ *  前端文案因此写「已恢复记录」而不是「已还原到原位置」。
+ */
+export async function restoreHistory(item: HistoryItem): Promise<void> {
+  const headers = userAuthHeaders()
+  if (!Object.keys(headers).length) throw new Error('登录已过期，请重新登录后再恢复')
+  const res = await fetch('/api/music/history/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({
+      source: item.source,
+      songmid: item.songmid,
+      name: item.name,
+      singer: item.singer,
+      interval: item.interval ?? null,
+      albumName: item.albumName,
+      img: item.img ?? null,
+    }),
+  })
+  if (res.status === 401) throw new Error('登录已过期，请重新登录后再恢复')
+  const data = await res.json().catch(() => null)
+  if (!res.ok || !data?.success) {
+    throw new Error(data?.message ?? `恢复失败（HTTP ${res.status}）`)
+  }
+}
