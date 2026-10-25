@@ -11,6 +11,7 @@ import {
 import { DEFAULT_QUALITY, qualityFallback, saveAutoBest, saveQuality, savedAutoBest, savedQuality } from '@/lib/quality'
 import { pickStartTier, songTiers } from '@/lib/qualityOptions'
 import { reportHistory } from '@/lib/history'
+import { userAuthHeaders } from '@/lib/auth'
 import { applySleepAction, SLEEP_OFF, type SleepMode, type SleepTimerState } from '@/lib/sleepTimer'
 import { AudioCache, cacheKey, createBrowserAudioCache } from '@/lib/audioCache'
 
@@ -471,7 +472,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (songKey(st.current) !== songKeyStr) return
         void (async () => {
           try {
-            const res = await fetch(url)
+            // 直链是跨域 CDN，页面 fetch 会被 CORS 拦（<audio> 标签不受限、
+            // JS 读字节受限）—— 走服务端中转（/api/music/download 本就是
+            // 流式代理，inline=1 不带附件头），同源响应才能读成 Blob
+            const res = await fetch(
+              `/api/music/download?url=${encodeURIComponent(url)}&inline=1`,
+              { headers: userAuthHeaders() },
+            )
             if (!res.ok) return
             const blob = await res.blob()
             if (cacheWriteSeqRef.current !== seq) return

@@ -1123,6 +1123,10 @@ with sync_playwright() as p:
             }"""
         )
         check("首播后 CacheStorage 出现条目（音频 + meta ≥ 2）", cache_keys >= 2, f"{cache_keys} 条")
+        proxies = page.evaluate(
+            """async () => (await (await fetch('/api/__fixture__/proxy-log')).json()).fetches"""
+        )
+        check("后台缓存抓取走了服务端中转（CORS 安全路径）", len(proxies) >= 1, f"{len(proxies)} 次")
         check("首播触发了一次解析", len(url_resolves()) == 1, str(len(url_resolves())))
 
         # ② 播 B（对照），再重播 A

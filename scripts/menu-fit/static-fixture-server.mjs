@@ -150,6 +150,9 @@ let userListsStore = [
     ],
   },
 ]
+/** 记录音频中转请求（缓存后台抓取走 /api/music/download） */
+let proxyLog = []
+
 /** 记录音频解析请求 —— 播放缓存护栏断言「重播零解析」的依据 */
 let urlResolveLog = []
 
@@ -270,6 +273,19 @@ const server = http.createServer((req, res) => {
         send(res, 400, MIME['.txt'], 'bad json')
       }
     })
+    return
+  }
+
+  if (urlPath === '/api/music/download' && req.method === 'GET') {
+    const target = new URL(req.url || '/', 'http://localhost').searchParams.get('url') || ''
+    proxyLog.push(target.slice(0, 60))
+    // 桩环境里目标地址就是本机的 /api/stub-audio.wav —— 直接按同路径响应
+    send(res, 200, 'audio/wav', makeWav())
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/proxy-log') {
+    json(res, 200, { success: true, fetches: proxyLog.slice() })
     return
   }
 
@@ -433,6 +449,7 @@ const server = http.createServer((req, res) => {
     ]
     transferLog = []
     urlResolveLog = []
+    proxyLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
   }
