@@ -76,8 +76,23 @@ export class AudioCache {
     await this.store.put(META_KEY, new Blob([JSON.stringify(this.meta)], { type: 'application/json' }))
   }
 
-  /** 命中返回 blob 并刷新 lastUsed；未命中返回 null */
+  // ===== 公开方法的统一防御 =====
+  // 【契约】缓存层任何错误（隐私模式阻断 IDB / 磁盘满 / 打开失败）都**不得拖垮播放**：
+  // 第一版没包这层，IDB 一抛错 loadAndPlay 就成了 unhandled rejection，
+  // 播放器永远卡在 loading —— 缓存坏了的最坏结果应该是「退化成无缓存」。
+  // 内存态与存储态可能因此不同步（如 saveMeta 失败），自愈路径：
+  // get 发现 store.match miss 会清掉脏 meta 条目（见下）。
+
+  /** 命中返回 blob 并刷新 lastUsed；未命中或缓存层故障返回 null */
   async get(key: string): Promise<CacheHit | null> {
+    try {
+      return await this.getInner(key)
+    } catch {
+      return null
+    }
+  }
+
+  private async getInner(key: string): Promise<CacheHit | null> {
     await this.loadMeta()
     const info = this.meta.entries[key]
     if (!info) return null
@@ -93,8 +108,16 @@ export class AudioCache {
     return { blob, tier: info.tier, name: info.name }
   }
 
-  /** 写入并执行容量策略：超出 cap 按 lastUsed 从旧到新淘汰；单条放不下就放弃这条 */
+  /** 写入并执行容量策略；缓存层故障静默放弃（调用方无需 try/catch） */
   async put(key: string, blob: Blob, brief: { tier: string; name: string; singer: string }): Promise<void> {
+    try {
+      await this.putInner(key, blob, brief)
+    } catch {
+      /* 放弃这次写入 */
+    }
+  }
+
+  private async putInner(key: string, blob: Blob, brief: { tier: string; name: string; singer: string }): Promise<void> {
     await this.loadMeta()
     if (blob.size > this.cap) return // 单条超过总上限：存了也立刻挤掉别人，不存
     const info: CacheEntryInfo = {
@@ -124,8 +147,16 @@ export class AudioCache {
     await this.saveMeta()
   }
 
-  /** 兜底：这首歌任意已缓存档位里最近用过的（全部音源都失败时用） */
+  /** 兜底：这首歌任意已缓存档位里最近用过的（全部音源都失败时用）；故障返回 null */
   async newestFor(songKey: string): Promise<CacheHit | null> {
+    try {
+      return await this.newestForInner(songKey)
+    } catch {
+      return null
+    }
+  }
+
+  private async newestForInner(songKey: string): Promise<CacheHit | null> {
     await this.loadMeta()
     const prefix = `audio|${songKey}|`
     const hits = Object.entries(this.meta.entries)
@@ -141,14 +172,22 @@ export class AudioCache {
   /** 仅重置 meta；**不删**存储里的音频条目 —— 存储层没有「枚举删除」原语，
    *  浏览器实现（createBrowserAudioCache）会用 cache.keys() 覆写成真清空。 */
   async clear(): Promise<void> {
-    this.meta = { entries: {} }
-    this.loaded = true
-    await this.saveMeta()
+    try {
+      this.meta = { entries: {} }
+      this.loaded = true
+      await this.saveMeta()
+    } catch {
+      /* 同上：清空失败不拖垮调用方（设置页按钮） */
+    }
   }
 
   async usage(): Promise<{ total: number; count: number }> {
-    await this.loadMeta()
-    return { total: this.totalSize(), count: Object.keys(this.meta.entries).length }
+    try {
+      await this.loadMeta()
+      return { total: this.totalSize(), count: Object.keys(this.meta.entries).length }
+    } catch {
+      return { total: 0, count: 0 }
+    }
   }
 
   private totalSize(): number {

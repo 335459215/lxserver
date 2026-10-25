@@ -113,3 +113,40 @@ test('clear 后 usage 归零', async () => {
   assert.equal(usage.count, 0)
   assert.equal(await cache.get(cacheKey('kw:1', '128k')), null)
 })
+
+test('防御契约：存储层抛错时公开方法不抛、返回安全值（不得拖垮播放）', async () => {
+  // 真实场景：隐私模式阻断 IDB / 磁盘满 / open 失败。第一版没这层，
+  // store 一抛 loadAndPlay 就成了 unhandled rejection，播放器卡死 loading
+  const bomb: AudioCacheStore = {
+    async put() { throw new Error('quota') },
+    async match() { throw new Error('blocked') },
+    async delete() { throw new Error('io') },
+  }
+  const cache = new AudioCache(bomb, 10 * MB)
+  assert.equal(await cache.get(cacheKey('kw:1', '128k')), null, 'get 故障应返回 null')
+  await cache.put(cacheKey('kw:1', '128k'), blobOf(1), brief) // 不应抛
+  assert.equal(await cache.newestFor('kw:1'), null, 'newestFor 故障应返回 null')
+  const usage = await cache.usage()
+  assert.deepEqual(usage, { total: 0, count: 0 }, 'usage 故障应返回零值')
+  await cache.clear() // 不应抛
+})
+
+test('防御契约：部分故障自愈 —— 一条数据丢失只清该条，其余可用', async () => {
+  const store = createMemoryStore()
+  let failKey: string | null = null
+  const flaky: AudioCacheStore = {
+    ...store,
+    async match(key: string) {
+      if (key === failKey) throw new Error('io')
+      return store.match(key)
+    },
+  }
+  const cache = new AudioCache(flaky, 10 * MB, () => 1)
+  await cache.put(cacheKey('kw:a', '128k'), blobOf(1), brief)
+  await cache.put(cacheKey('kw:b', '128k'), blobOf(1), brief)
+  failKey = cacheKey('kw:a', '128k')
+  assert.equal(await cache.get(cacheKey('kw:a', '128k')), null, '故障条目按未命中处理')
+  // 注意：match 抛错会被 get 吞成 null，但不清脏 meta（自愈靠下次故障恢复）；
+  // b 必须完全不受影响
+  assert.ok(await cache.get(cacheKey('kw:b', '128k')), '健康条目不受单条故障影响')
+})

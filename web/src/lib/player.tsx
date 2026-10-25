@@ -454,6 +454,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   /** 后台缓存写入的守卫句柄（seq 变了就作废） */
   const cacheWriteSeqRef = React.useRef(0)
+  /** 进行中的缓存下载（服务端中转，整首歌几十 MB）—— 切歌/停止必须中止，
+   *  否则快速切歌时每个 15s 窗口都可能挂着一个无人认领的几十 MB 下载在跑 */
+  const cacheFetchAbortRef = React.useRef<AbortController | null>(null)
 
   /** 联网播放稳定后后台缓存一次。
    *  【为什么延后】跳过的歌不值得缓存（几十 MB 的 flac 白下）；听了一段
@@ -465,6 +468,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (!cache) return
       const delay = Number.parseFloat(localStorage.getItem('lx.player.cacheDelayMs') ?? '') || 15000
       cacheWriteSeqRef.current = seq
+      cacheFetchAbortRef.current?.abort()
+      const ac = new AbortController()
+      cacheFetchAbortRef.current = ac
       window.setTimeout(() => {
         if (cacheWriteSeqRef.current !== seq) return // 已切歌
         if (stateRef.current.status !== 'playing') return // 没在播（暂停/出错）不缓存
@@ -477,7 +483,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             // 流式代理，inline=1 不带附件头），同源响应才能读成 Blob
             const res = await fetch(
               `/api/music/download?url=${encodeURIComponent(url)}&inline=1`,
-              { headers: userAuthHeaders() },
+              { headers: userAuthHeaders(), signal: ac.signal },
             )
             if (!res.ok) return
             const blob = await res.blob()
@@ -506,6 +512,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       abortRef.current?.abort()
       const ac = new AbortController()
       abortRef.current = ac
+      // 上一首的缓存下载（若有）立即中止：seq 守卫只拦「写入」，拦不住已发出的下载
+      cacheFetchAbortRef.current?.abort()
 
       const key = songKey(song)
       const exclude = excludedRef.current.get(key) ?? []
@@ -1001,6 +1009,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const stopAudio = React.useCallback(() => {
     reqSeqRef.current += 1
     cacheWriteSeqRef.current = reqSeqRef.current // 让进行中的后台缓存作废
+    cacheFetchAbortRef.current?.abort()
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
     abortRef.current?.abort()
     // 清空/切换队列时解除上报守卫，避免「同一首歌在两次播放会话里只记一次」
     reportedRef.current = ''
