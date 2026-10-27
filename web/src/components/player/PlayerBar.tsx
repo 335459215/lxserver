@@ -169,7 +169,7 @@ export default function PlayerBar() {
               disabled={downloading}
               aria-label={`下载当前歌曲 ${current.name}`}
               title={downloading ? '正在准备下载...' : `下载当前歌曲 (${current.name})`}
-              className="flex size-8.5 items-center justify-center rounded-xl text-dim transition-all hover:bg-accent-soft hover:text-accent active:scale-95 disabled:opacity-50"
+              className="flex size-9 items-center justify-center rounded-xl text-dim transition-all hover:bg-accent-soft hover:text-accent active:scale-95 disabled:opacity-50"
             >
               {downloading ? (
                 <Loader2 className="size-4 animate-spin text-accent" />
@@ -184,7 +184,7 @@ export default function PlayerBar() {
             to="/playlist"
             aria-label="播放队列"
             title={queue.length ? `播放队列（${queue.length} 首）` : '播放队列'}
-            className="relative flex size-8.5 items-center justify-center rounded-xl text-dim transition-all hover:bg-panel-2 hover:text-ink active:scale-95"
+            className="relative flex size-9 items-center justify-center rounded-xl text-dim transition-all hover:bg-panel-2 hover:text-ink active:scale-95"
           >
             <ListMusic className="size-4" />
             {queue.length > 0 && (
@@ -197,7 +197,7 @@ export default function PlayerBar() {
             to="/now-playing"
             aria-label="展开全屏播放页"
             title="全屏沉浸播放"
-            className="flex size-8.5 items-center justify-center rounded-xl text-dim transition-all hover:bg-panel-2 hover:text-ink active:scale-95"
+            className="flex size-9 items-center justify-center rounded-xl text-dim transition-all hover:bg-panel-2 hover:text-ink active:scale-95"
           >
             <Maximize2 className="size-4" />
           </Link>

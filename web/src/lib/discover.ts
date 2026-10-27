@@ -81,19 +81,6 @@ export interface SingerHit {
   source?: string
 }
 
-// ===== 热搜 =====
-
-export function useHotSearch(source: string): AsyncResource<string[]> {
-  return useAsyncResource(`hot:${source}`, async (signal) => {
-    const data = await getJson<{ list?: unknown }>(
-      `/api/music/hotSearch?source=${encodeURIComponent(source)}`,
-      signal,
-    )
-    // 服务端在拿不到热搜时会返回空数组而不是报错
-    return Array.isArray(data.list) ? data.list.filter((s): s is string => typeof s === 'string') : []
-  })
-}
-
 // ===== 排行榜 =====
 
 export function cleanBoardName(name: string): string {
@@ -261,32 +248,6 @@ export function useAggregatedLeaderboardSongs(
 
     const merged = dedupeSongs(interleaved)
     return { total: totalCount || merged.length, list: merged }
-  })
-}
-
-export function useLeaderboardBoards(source: string): AsyncResource<LeaderboardBoard[]> {
-  return useAsyncResource(`boards:${source}`, async (signal) => {
-    const data = await getJson<{ list?: LeaderboardBoard[] }>(
-      `/api/music/leaderboard/boards?source=${encodeURIComponent(source)}`,
-      signal,
-    )
-    return Array.isArray(data.list) ? data.list : []
-  })
-}
-
-/** 榜单曲目。bangid 为空时不请求。 */
-export function useLeaderboardSongs(
-  source: string,
-  bangid: string | null,
-): AsyncResource<LeaderboardPageResult> {
-  return useAsyncResource(bangid ? `board:${source}:${bangid}` : '', async (signal) => {
-    const data = await getJson<{ total?: number; list?: Song[] }>(
-      `/api/music/leaderboard/list?source=${encodeURIComponent(source)}&bangid=${encodeURIComponent(
-        bangid ?? '',
-      )}&page=1`,
-      signal,
-    )
-    return { total: data.total ?? 0, list: Array.isArray(data.list) ? data.list : [] }
   })
 }
 

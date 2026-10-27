@@ -52,7 +52,7 @@ function RoleBadge() {
   const initial = (auth.user.username?.[0] || 'U').toUpperCase()
   return (
     <div className="flex items-center gap-1.5 sm:gap-2 rounded-full border border-line/80 bg-panel/80 px-2 sm:px-2.5 py-1 text-xs shadow-xs backdrop-blur-sm">
-      <span className="flex size-5 sm:size-5.5 items-center justify-center rounded-full bg-accent/15 text-accent font-semibold text-[11px]">
+      <span className="flex size-5 sm:size-6 items-center justify-center rounded-full bg-accent/15 text-accent font-semibold text-[11px]">
         {initial}
       </span>
       <span className="hidden sm:inline font-medium text-ink max-w-[90px] truncate">{auth.user.username}</span>
@@ -109,7 +109,7 @@ function NavItems({
         <div className="space-y-1">
           {NAV_DISCOVER.map((m) => (
             <NavLink key={m.to} to={m.to} end={m.end} className={nav} onClick={onNavigate}>
-              <m.icon className="size-4.5" />
+              <m.icon className="size-4" />
               <span>{m.label}</span>
             </NavLink>
           ))}
@@ -123,7 +123,7 @@ function NavItems({
         <div className="space-y-1">
           {NAV_LIBRARY.map((m) => (
             <NavLink key={m.to} to={m.to} className={nav} onClick={onNavigate}>
-              <m.icon className="size-4.5" />
+              <m.icon className="size-4" />
               <span>{m.label}</span>
             </NavLink>
           ))}
@@ -137,7 +137,7 @@ function NavItems({
           </div>
           <div className="space-y-1">
             <NavLink to="/settings" className={nav} onClick={onNavigate}>
-              <Settings className="size-4.5" />
+              <Settings className="size-4" />
               <span>系统设置</span>
             </NavLink>
           </div>
@@ -154,7 +154,7 @@ function NavItems({
             }}
             className="flex w-full items-center gap-3 rounded-xl border border-line/80 bg-panel px-3 py-2.5 text-sm font-medium text-ink shadow-xs hover:border-accent/40 hover:bg-accent-soft hover:text-accent transition-all"
           >
-            <Download className="size-4.5 text-accent" />
+            <Download className="size-4 text-accent" />
             <span>安装为独立应用</span>
           </button>
         </div>
@@ -229,7 +229,7 @@ function Shell() {  const { auth, refresh } = useAuth()
       <header className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl">
         <div className="flex h-[var(--header-h)] items-center gap-4 px-4 md:px-8">
           <button
-            className="-ml-2 rounded-xl p-2.5 text-dim hover:bg-panel-2 hover:text-ink lg:hidden transition-colors"
+            className="-ml-2 flex size-10 max-md:size-11 items-center justify-center rounded-xl text-dim hover:bg-panel-2 hover:text-ink lg:hidden transition-colors"
             onClick={() => setDrawer(true)}
             aria-label="打开导航"
           >
@@ -251,21 +251,28 @@ function Shell() {  const { auth, refresh } = useAuth()
             </div>
           </NavLink>
 
-          {/* 全局桌面搜索快捷条 */}
-          <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
+          {/* 全局桌面搜索快捷条。
+              ⚠️ 搜索条在 `md`(768) 就出现，而汉堡/侧栏要到 `lg`(1024) 才切换 ——
+              768~1023 这一档顶栏要同时装下「汉堡 + 品牌 + 搜索 + 右控件簇」。
+              必须给本容器与内层都加 `min-w-0`：flex 项默认 `min-width:auto`，
+              最小宽 = 文字宽（实测 238px），**不会随视口收窄**，于是整条顶栏的
+              min-content 被锁死在 835px —— 768~834px 下每页横向溢出 67px、
+              右侧控件被裁到屏幕外（check-overflow 的 tablet-768 常年红）。
+              另加 `lg:min-w-[9rem]` 下限，避免 768 下搜索框被压成只剩图标一条缝。 */}
+          <div className="hidden md:flex items-center flex-1 min-w-0 lg:min-w-[9rem] max-w-md mx-3 lg:mx-6">
             <div
               onClick={() => navigate('/search')}
-              className="group flex w-full cursor-pointer items-center gap-2.5 rounded-full border border-line/80 bg-panel-2/80 px-4 py-2 text-xs text-dim transition-all hover:border-accent/40 hover:bg-panel hover:shadow-xs"
+              className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-full border border-line/80 bg-panel-2/80 px-4 py-2 text-xs text-dim transition-all hover:border-accent/40 hover:bg-panel hover:shadow-xs"
             >
-              <Search className="size-3.5 text-faint group-hover:text-accent transition-colors" />
+              <Search className="size-3.5 shrink-0 text-faint group-hover:text-accent transition-colors" />
               <span className="flex-1 truncate">搜索海量音乐、歌手、专辑...</span>
-              <kbd className="hidden sm:inline-block rounded-md border border-line bg-panel px-1.5 py-0.5 text-[10px] font-mono text-faint shadow-2xs">
+              <kbd className="hidden lg:inline-block rounded-md border border-line bg-panel px-1.5 py-0.5 text-[10px] font-mono text-faint shadow-2xs">
                 /
               </kbd>
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2 xl:gap-3">
             {/* PWA 原生应用安装按钮：当浏览器支持安装且未安装时展示 */}
             {canPromptNative && !isInstalled && (
               <button
@@ -279,8 +286,10 @@ function Shell() {  const { auth, refresh } = useAuth()
               </button>
             )}
 
-            {/* 无损母带品质标识 */}
-            <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-ok/30 bg-ok/5 px-2.5 py-1 text-[11px] font-medium text-ok">
+            {/* 无损母带品质标识：纯装饰（无交互），lg 以下隐藏 ——
+                它是顶栏最宽的非必要元素（实测 121px），768~1023 这一档
+                先牺牲它，把空间让给搜索与账号操作。 */}
+            <div className="hidden lg:flex items-center gap-1.5 rounded-full border border-ok/30 bg-ok/5 px-2.5 py-1 text-[11px] font-medium text-ok">
               <Sparkles className="size-3" />
               <span>Hi-Res Lossless</span>
             </div>
@@ -313,7 +322,7 @@ function Shell() {  const { auth, refresh } = useAuth()
 
             {isLoggedIn(auth) && (
               <button
-                className="flex items-center gap-1.5 rounded-xl border border-line/70 px-3 py-1.5 text-xs font-medium text-dim hover:border-danger/30 hover:bg-danger/5 hover:text-danger transition-all"
+                className="flex h-9 max-md:h-11 max-md:min-w-11 items-center justify-center gap-1.5 rounded-xl border border-line/70 px-3 py-1.5 text-xs font-medium text-dim hover:border-danger/30 hover:bg-danger/5 hover:text-danger transition-all"
                 onClick={async () => {
                   player.clear()
                   await api.logoutAll()

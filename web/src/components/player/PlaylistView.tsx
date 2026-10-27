@@ -282,7 +282,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
           <div className="rounded-2xl border border-dashed border-line bg-panel-2/50 p-12 text-center">
             <p className="text-sm font-semibold text-ink">这个歌单还是空的</p>
             <p className="mt-1 text-xs text-dim">
-              去 <Link to="/search" className="text-accent hover:underline font-medium">搜索</Link> 找歌，或从试听列表里收藏。
+              去 <Link to="/search" className="link-inline text-accent hover:underline font-medium">搜索</Link> 找歌，或从试听列表里收藏。
             </p>
           </div>
         ) : (

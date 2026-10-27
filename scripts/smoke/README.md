@@ -1,5 +1,22 @@
 # scripts/smoke — 冒烟测试框架
 
+> ## ⚠️ 已失效（2026-10-27 标注）：不要再运行，也不要照着它写新测试
+>
+> 这套框架是**阶段 0 的一次性历史工具**，用于「旧前端 vs 新前端」能力对照。
+> 它的两个前提都已不存在：
+> 1. **旧前端已于 v2.23.0 彻底删除** —— `--surface old` 指向的 `public/music/index.html`
+>    和 `/admin` 都不存在了，跑起来只会 404。
+> 2. **`playwright` 不是本仓库的依赖**（`package.json` / `web/package.json` 都没有），
+>    `lib/browser.mjs` 直接 `import { chromium } from 'playwright'` → 必然 MODULE_NOT_FOUND。
+> 3. 它**没有进 CI**（`npm run test:unit` / `test:mutation` / `scripts/menu-fit` 才是现行门禁）。
+>
+> **保留原因**：`docs/stage0/*` 的多份勘查记录引用这里的用例 ID 与 fixture 路径
+> （如 `defect-ledger.md` 的 D-003/D-004 建模）。按本项目惯例，
+> **历史文档描述的是当时的事实，不篡改** —— 所以文件留档、README 加这条警示。
+>
+> 现行替代：能力回归 = `scripts/menu-fit/verify-menu-fit.py`（144 项离线护栏），
+> 真机回归 = `.playwright/verify-*.py`（不进 git），单测 + 变异 = `npm run test:unit` / `test:mutation`。
+
 阶段 0 的能力对照测试：**同一套用例分别跑旧前端（`--surface old`）和新前端（`--surface new`），
 逐项比对通过与否**。"没丢功能"靠客观证据，不靠人眼。
 

@@ -184,7 +184,7 @@ function SongRow({
             disabled={downloading}
             aria-label={`下载 ${song.name} - ${song.singer}`}
             title={downloading ? '正在准备下载...' : `下载到本地 (${song.name})`}
-            className="flex size-8.5 items-center justify-center rounded-xl text-dim opacity-70 transition-all hover:bg-accent-soft hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40 active:scale-95"
+            className="flex size-9 items-center justify-center rounded-xl text-dim opacity-70 transition-all hover:bg-accent-soft hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40 active:scale-95"
           >
             {downloading ? (
               <Loader2 className="size-4 animate-spin text-accent" />
@@ -203,7 +203,7 @@ function SongRow({
             }}
             aria-label={`从列表移除 ${song.name}`}
             title="从列表移除"
-            className="flex size-8.5 items-center justify-center rounded-xl text-faint opacity-60 transition-all hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-hover:opacity-100 active:scale-95"
+            className="flex size-9 items-center justify-center rounded-xl text-faint opacity-60 transition-all hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-hover:opacity-100 active:scale-95"
           >
             <X className="size-4" />
           </button>

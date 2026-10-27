@@ -15,12 +15,18 @@ export interface AccentColor {
 }
 
 export const ACCENT_COLORS: readonly AccentColor[] = [
-  { name: '靛蓝', value: '#4f46e5', hover: '#4338ca', soft: '#eef2ff' },
-  { name: '翡翠', value: '#059669', hover: '#047857', soft: '#ecfdf5' },
-  { name: '玫红', value: '#e11d48', hover: '#be123c', soft: '#fff1f2' },
-  { name: '琥珀', value: '#d97706', hover: '#b45309', soft: '#fffbeb' },
-  { name: '天蓝', value: '#0284c7', hover: '#0369a1', soft: '#f0f9ff' },
-  { name: '紫罗兰', value: '#7c3aed', hover: '#6d28d9', soft: '#f5f3ff' },
+  // 每个 `value` 都必须在白底上 >= 4.5:1（WCAG AA 正文）—— 强调色会被用在
+  // 文字、图标、链接上，不只是装饰。2026-10-27 实测修正三个不达标的：
+  //   翡翠 #059669 3.77 → #047857 5.48
+  //   琥珀 #d97706 3.19 → #b45309 5.02
+  //   天蓝 #0284c7 4.10 → #0369a1 5.93
+  // hover 相应加深一档，保持「悬停更深」的既有语义。
+  { name: '靛蓝', value: '#4f46e5', hover: '#4338ca', soft: '#eef2ff' },   // 6.29
+  { name: '翡翠', value: '#047857', hover: '#046c4e', soft: '#ecfdf5' },   // 5.48
+  { name: '玫红', value: '#e11d48', hover: '#be123c', soft: '#fff1f2' },   // 4.70
+  { name: '琥珀', value: '#b45309', hover: '#92400e', soft: '#fffbeb' },   // 5.02
+  { name: '天蓝', value: '#0369a1', hover: '#075985', soft: '#f0f9ff' },   // 5.93
+  { name: '紫罗兰', value: '#7c3aed', hover: '#6d28d9', soft: '#f5f3ff' }, // 5.70
 ]
 
 const STORAGE_KEY = 'lx.appearance.accent'

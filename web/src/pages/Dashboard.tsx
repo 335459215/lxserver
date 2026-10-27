@@ -128,7 +128,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '私享甄选',
     desc: '基于全网五大平台热度与声学品味智能聚合',
     gradient: 'from-indigo-600 via-indigo-700 to-purple-800',
-    badgeColor: 'bg-indigo-400/20 text-indigo-100',
+    badgeColor: 'bg-white/95 text-indigo-900',
     query: '经典',
   },
   {
@@ -137,7 +137,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '潮流爆款',
     desc: '全网华语主流热播与全球流行音乐风向速递',
     gradient: 'from-rose-500 via-pink-600 to-rose-700',
-    badgeColor: 'bg-rose-400/20 text-rose-100',
+    badgeColor: 'bg-white/95 text-rose-900',
     query: '流行',
   },
   {
@@ -146,7 +146,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '经典金曲',
     desc: '回响岁月的港台经典与千禧黄金时代流行记忆',
     gradient: 'from-amber-500 via-amber-600 to-orange-700',
-    badgeColor: 'bg-amber-400/20 text-amber-100',
+    badgeColor: 'bg-white/95 text-amber-900',
     query: '时光',
   },
   {
@@ -155,7 +155,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '专注工作',
     desc: '低保真器乐、环境音与纯音，助你深度对焦',
     gradient: 'from-emerald-600 via-teal-700 to-cyan-800',
-    badgeColor: 'bg-emerald-400/20 text-emerald-100',
+    badgeColor: 'bg-white/95 text-emerald-900',
     query: '纯音乐',
   },
   {
@@ -164,7 +164,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '夜幕漫游',
     desc: '慵懒 R&B、City Pop 与温柔民谣，治愈疲惫心绪',
     gradient: 'from-violet-700 via-purple-800 to-slate-900',
-    badgeColor: 'bg-purple-400/20 text-purple-100',
+    badgeColor: 'bg-white/95 text-purple-900',
     query: '晚安',
   },
   {
@@ -173,7 +173,7 @@ const CURATED_MIXES: CuratedMix[] = [
     tag: '动感电音',
     desc: '强劲节拍与电子浪潮，释放驾驶与运动活力',
     gradient: 'from-cyan-600 via-blue-600 to-indigo-800',
-    badgeColor: 'bg-cyan-400/20 text-cyan-100',
+    badgeColor: 'bg-white/95 text-cyan-900',
     query: '摇滚',
   },
 ]
