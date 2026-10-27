@@ -359,6 +359,41 @@ export default function SearchPage() {
           </div>
         )}
 
+        {/* 平台快捷切换：此前只在桌面端显示，移动端搜特定平台要靠桌面一样的一排按钮。
+            移动端场景：聚合搜不到想要版本（翻唱/Live）时，切单平台重搜是高频动作。 */}
+        <div className="flex flex-wrap items-center gap-2 pt-3 mt-1 md:pt-3 md:mt-4 border-t border-line/40">
+          <span className="text-xs font-semibold text-faint mr-1">音源：</span>
+          {MUSIC_SOURCES.map((s) => {
+            const active = source === s.key
+            return (
+              <button
+                key={s.key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  setSource(s.key)
+                  const q = keyword.trim() || searchedFor
+                  if (q) void runSearch(q, s.key, kind)
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all active:scale-95',
+                  active
+                    ? 'bg-accent/10 border border-accent/30 text-accent font-semibold shadow-2xs'
+                    : 'bg-panel-2/70 border border-line/70 text-dim hover:border-line-strong hover:bg-panel hover:text-ink',
+                )}
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full',
+                    active ? 'bg-accent' : 'bg-faint/60',
+                  )}
+                />
+                <span>{s.label}</span>
+              </button>
+            )
+          })}
+        </div>
+
         {/* 快捷平台切换药丸标签：仅在桌面端显示；移动端默认聚合搜索，无冗余按钮 */}
         <div className="hidden md:flex flex-wrap items-center gap-2 pt-3 mt-4 border-t border-line/40">
           <span className="text-xs font-semibold text-faint mr-1">音源平台：</span>
@@ -458,6 +493,40 @@ export default function SearchPage() {
         <div className="rounded-2xl border border-dashed border-line bg-panel/60 p-10 text-center">
           <p className="text-sm font-medium text-ink">没有找到「{searchedFor}」</p>
           <p className="mt-1 text-xs text-dim">换个关键词，或换一个音源平台再试。</p>
+        </div>
+      )}
+
+      {/* 空态引导（v2.40.0）：首进搜索页时整页只有一条搜索框、下方全空 ——
+          实测截图里就是一整屏白。新用户不知道能搜什么、老用户没有可点的词。
+          给三样东西：热门场景词（点词即搜）、平台入口说明、最近搜索（上面已有）。
+          只在 idle 且无历史时出现；一旦有历史，上面的 chips 已经承担引导职责。 */}
+      {phase === 'idle' && history.length === 0 && (
+        <div className="flex flex-col items-center gap-5 py-10 text-center md:py-16">
+          <span className="flex size-14 items-center justify-center rounded-2xl bg-accent-soft text-accent">
+            <Search className="size-6" />
+          </span>
+          <div>
+            <p className="text-base font-semibold text-ink">搜一首想听的歌</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-dim">
+              支持歌名、歌手、专辑；全网聚合一次搜五平台，
+              也可以在上方切到单一平台精确查找。
+            </p>
+          </div>
+          <div className="flex max-w-md flex-wrap justify-center gap-2">
+            {['周杰伦', '王菲', '薛之谦', '经典老歌', '轻音乐', '粤语', '日语', '钢琴'].map((w) => (
+              <button
+                key={w}
+                type="button"
+                onClick={() => {
+                  setKeyword(w)
+                  void runSearch(w, source, kind)
+                }}
+                className="rounded-full border border-line/80 bg-panel px-3.5 py-1.5 text-xs font-medium text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent active:scale-95"
+              >
+                {w}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

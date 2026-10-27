@@ -35,6 +35,7 @@ import { searchMusicAggregate } from '@/lib/music'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
 import { downloadSong } from '@/lib/download'
+import IosInstallGuide from '@/components/pwa/IosInstallGuide'
 import { cn } from '@/lib/utils'
 
 /** 根据当前时刻生成亲切问候语 */
@@ -360,6 +361,12 @@ export default function Dashboard() {
             <span>全网五大平台音源在线聚合</span>
           </div>
         </div>
+
+        {/* iOS 安装引导：iOS Safari 不触发 beforeinstallprompt（那是 Chromium 机制），
+            顶栏的「安装应用」按钮在 iPhone 上从不出现 —— iOS 用户唯一的安装路径
+            （分享 → 添加到主屏幕）必须由界面教给用户。非 iOS / 已安装 / 关闭过 30 天内
+            时组件自己返回 null。 */}
+        <IosInstallGuide />
 
         {/* 快捷听歌 4 磁贴：我喜欢的音乐、播放历史、自建歌单、本地曲库 */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

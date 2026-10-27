@@ -97,28 +97,38 @@ export default function LeaderboardPage() {
           )}
 
           {boards.length > 0 && (
-            <ul className="flex gap-1.5 overflow-x-auto pb-1 lg:max-h-[calc(100vh-11rem)] lg:flex-col lg:overflow-y-auto lg:pb-0 lg:pr-1">
-              {boards.map((b) => {
-                const active = b.name === boardName
-                return (
-                  <li key={b.id} className="shrink-0 lg:shrink">
-                    <button
-                      type="button"
-                      onClick={() => setPickedName(b.name)}
-                      aria-current={active ? 'true' : undefined}
-                      className={cn(
-                        'w-full whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-sm transition-colors lg:whitespace-normal font-medium',
-                        active
-                          ? 'bg-accent-soft text-accent shadow-xs'
-                          : 'text-dim hover:bg-panel2 hover:text-ink',
-                      )}
-                    >
-                      {b.name}
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+            /* 横向滚动的榜单 chips：右缘加一条渐隐遮罩，暗示「右边还有、可以滑」。
+                没有这个提示时（实测截图），「流行指数榜」被硬生生裁在屏幕边上，
+                用户不知道是裁掉了还是本来就这么多。桌面端 lg 起变纵向列表，遮罩只在移动端有意义。
+                遮罩用 pointer-events-none 的伪元素层实现，不影响 chips 点击。 */
+            <div className="relative lg:static">
+              <ul className="flex gap-1.5 overflow-x-auto pb-1 lg:max-h-[calc(100vh-11rem)] lg:flex-col lg:overflow-y-auto lg:pb-0 lg:pr-1">
+                {boards.map((b) => {
+                  const active = b.name === boardName
+                  return (
+                    <li key={b.id} className="shrink-0 lg:shrink">
+                      <button
+                        type="button"
+                        onClick={() => setPickedName(b.name)}
+                        aria-current={active ? 'true' : undefined}
+                        className={cn(
+                          'w-full whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-sm transition-colors lg:whitespace-normal font-medium',
+                          active
+                            ? 'bg-accent-soft text-accent shadow-xs'
+                            : 'text-dim hover:bg-panel2 hover:text-ink',
+                        )}
+                      >
+                        {b.name}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-bg to-transparent lg:hidden"
+              />
+            </div>
           )}
         </section>
 

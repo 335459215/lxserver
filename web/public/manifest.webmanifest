@@ -6,12 +6,19 @@
   "scope": "/",
   "id": "/",
   "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "orientation": "portrait-primary",
   "background_color": "#fafafa",
   "theme_color": "#4f46e5",
   "lang": "zh-CN",
   "dir": "ltr",
-  "categories": ["music", "entertainment"],
+  "categories": [
+    "music",
+    "entertainment"
+  ],
   "icons": [
     {
       "src": "/app/icons/icon-192.png",
@@ -37,19 +44,34 @@
       "name": "搜索音乐",
       "short_name": "搜索",
       "url": "/search",
-      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+      "icons": [
+        {
+          "src": "/app/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     },
     {
       "name": "排行榜",
       "short_name": "排行榜",
       "url": "/leaderboard",
-      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+      "icons": [
+        {
+          "src": "/app/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     },
     {
       "name": "本地音乐",
       "short_name": "本地",
       "url": "/local",
-      "icons": [{ "src": "/app/icons/icon-192.png", "sizes": "192x192" }]
+      "icons": [
+        {
+          "src": "/app/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     }
   ]
 }

@@ -77,6 +77,18 @@
   /* 顶栏高度 */
   --header-h: 3.75rem;
 
+  /* ===== PWA 安全区（刘海屏 / Android 手势条）=====
+   * viewport-fit=cover 已在 index.html 开启 → 网页会铺到状态栏与手势条底下，
+   * 各贴边组件必须自己避让，否则真机 iPhone 的刘海会盖住顶栏内容。
+   * 集中定义成变量（而不是每处各写一遍 env()）：不支持该环境的浏览器 env() 会
+   * 整条声明失效，这里兜底 0px，保证桌面上零影响。
+   * 只在「standalone/全屏」时顶部才有非零值；浏览器标签页里由浏览器自己管，
+   * env() 恒为 0 —— 所以无条件写是安全的。 */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
   /* ===== 通道三元组 ===== */
   --bg-rgb: 248 250 252;
   --panel-rgb: 255 255 255;

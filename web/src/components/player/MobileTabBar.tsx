@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import { FileMusic, History, Home, ListMusic, MoreHorizontal, Search, Settings, Sparkles, Trophy } from 'lucide-react'
@@ -32,10 +32,20 @@ const MORE_NAV: Array<{ to: string; label: string; icon: LucideIcon; hint: strin
  *  拇指可达区域；同时把可点击区域从 44px 放大到 60px（整行都是全屏播放页入口），
  *  这是手机上一只手最容易点到的位置。 */
 function MiniPlayer() {
-  const { current, status, position, duration, error } = usePlayer()
+  const { current, status, position, duration, error, seek } = usePlayer()
   const cover = coverUrl(current)
   const total = duration > 0 ? duration : 0
   const pct = total > 0 ? Math.min(100, (position / total) * 100) : 0
+  // 进度条独立可点：点按/拖动跳转。整行NavLink负责「进全屏页」，进度条
+  // stopPropagation 后自己吃掉这一下 —— 拇指最常划的就是这条位置。
+  const barRef = React.useRef<HTMLSpanElement>(null)
+  const seekFromEvent = (e: React.PointerEvent) => {
+    if (!total) return
+    const r = barRef.current?.getBoundingClientRect()
+    if (!r || r.width === 0) return
+    const p = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+    seek(p * total)
+  }
 
   return (
     <NavLink
@@ -60,9 +70,34 @@ function MiniPlayer() {
           {error ?? current?.singer ?? '点这里搜索并播放'}
         </span>
       </span>
-      {/* 极简进度：读得出「播到哪了」即可，精确 seek 留给全屏播放页 */}
-      <span className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-panel2" aria-hidden>
-        <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
+      {/* 可点进度条（v2.40.0）：从「纯指示」升级为「可直接点按跳转」。
+          4px 高是/thumb 精度的下限，两端透明命中区各扩 6px（py 增大盒子），
+          保证好点但不占视觉高度。点击会 stopPropagation，不触发整行的进全屏页。 */}
+      <span
+        ref={barRef}
+        role="slider"
+        aria-label="播放进度"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(total)}
+        aria-valuenow={Math.round(position)}
+        tabIndex={current ? 0 : -1}
+        onPointerDown={(e) => {
+          if (!current) return
+          e.stopPropagation()
+          e.preventDefault()
+          seekFromEvent(e)
+          ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+        }}
+        onPointerMove={(e) => {
+          if (!current || e.buttons === 0) return
+          e.stopPropagation()
+          seekFromEvent(e)
+        }}
+        className="-my-1.5 flex h-7 w-16 shrink-0 cursor-pointer touch-none items-center py-2.5"
+      >
+        <span className="h-1 w-full overflow-hidden rounded-full bg-panel2" aria-hidden>
+          <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
+        </span>
       </span>
       {/* 播放状态指示：加载中呼吸、播放中常亮。这是条 fixed 栏，用 CSS 动画而不是
           等 position 变化去驱动每一帧 re-render（进度条已经是真值驱动了）。 */}
@@ -124,15 +159,16 @@ export default function MobileTabBar() {
           平板/横屏下不让它被拉成一整条通栏。 */}
       <div
         id="mobile-tabbar"
-        className="fixed bottom-0 right-3 z-40 lg:hidden"
+        className="fixed bottom-0 z-40 lg:hidden"
         role="navigation"
         aria-label="移动端导航"
+        style={{ left: 'var(--safe-left)', paddingRight: 'var(--safe-right)' }}
       >
         <div className="mx-auto mb-2 w-[min(26rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-pop backdrop-blur">
           {!isNowPlaying && <MiniPlayer />}
           <div
             className={cn(
-              'flex items-stretch pb-[env(safe-area-inset-bottom)]',
+              'flex items-stretch',
               !isNowPlaying && 'border-t border-line',
             )}
           >
@@ -143,7 +179,7 @@ export default function MobileTabBar() {
                 end={t.end}
                 className={({ isActive }) =>
                   cn(
-                    'flex min-h-[3.25rem] flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 transition-colors',
+                    'flex min-h-[3.25rem] flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 pb-[var(--safe-bottom)] transition-colors',
                     isActive ? 'text-accent' : 'text-faint active:text-dim',
                   )
                 }
@@ -162,7 +198,7 @@ export default function MobileTabBar() {
               onClick={() => setMore(true)}
               aria-expanded={more}
               aria-haspopup="dialog"
-              className="flex min-h-[3.25rem] flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 text-faint transition-colors active:text-dim"
+              className="flex min-h-[3.25rem] flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 pb-[var(--safe-bottom)] text-faint transition-colors active:text-dim"
             >
               <MoreHorizontal className="size-5" />
               <span className="text-[10px] leading-none">更多</span>
@@ -176,7 +212,9 @@ export default function MobileTabBar() {
       {more && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-label="更多">
           <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setMore(false)} />
-          <div className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line bg-panel p-4 shadow-pop rise">
+          <div
+            className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line bg-panel p-4 pb-[calc(1rem+var(--safe-bottom))] shadow-pop rise"
+          >
             <div className="mb-3 flex items-center justify-between">
               <span className="text-sm font-semibold text-ink">更多</span>
               <button

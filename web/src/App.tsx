@@ -226,7 +226,13 @@ function Shell() {  const { auth, refresh } = useAuth()
       {/* 全局快捷键（渲染 null）：必须在 ToastHost + PlayerProvider 之内 */}
       <KeyboardShortcuts />
       {/* 顶栏：流体毛玻璃质感与全局搜索 */}
-      <header className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl">
+      {/* 顶栏：流体毛玻璃质感与全局搜索。
+          PWA standalone 下（viewport-fit=cover）页面会铺到状态栏底下，
+          顶部要加 safe-area-inset-top 避让刘海 —— 桌面/普通浏览器里 env() 为 0，零影响。 */}
+      <header
+        className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl"
+        style={{ paddingTop: 'var(--safe-top)' }}
+      >
         <div className="flex h-[var(--header-h)] items-center gap-4 px-4 md:px-8">
           <button
             className="-ml-2 flex size-10 max-md:size-11 items-center justify-center rounded-xl text-dim hover:bg-panel-2 hover:text-ink lg:hidden transition-colors"
@@ -360,7 +366,16 @@ function Shell() {  const { auth, refresh } = useAuth()
         {drawer && (
           <div className="fixed inset-0 z-50 lg:hidden">
             <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setDrawer(false)} />
-            <div className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise">
+            {/* 抽屉要避开刘海与手势条：横向（横屏左缘）+ 顶部 + 底部。
+                padding-bottom 用 calc 叠加，横屏时左缘用 padding-left 避开刘海。 */}
+            <div
+              className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise"
+              style={{
+                paddingLeft: 'calc(1rem + var(--safe-left))',
+                paddingTop: 'calc(1rem + var(--safe-top))',
+                paddingBottom: 'calc(1rem + var(--safe-bottom))',
+              }}
+            >
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-sm font-semibold">导航</span>
                 <button

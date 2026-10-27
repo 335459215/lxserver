@@ -7,18 +7,23 @@
     <title>lxserver 音乐</title>
 
     <!-- PWA：可安装到主屏/桌面，独立窗口打开。
-         manifest 与 sw.js 都放在 public/ 下，Vite 按 base('/app/') 原样拷到 app/ 根，
-         于是两者天然落在 /app/ 作用域内。
-         注：v2.24.0 起页面也能从根路径 `/` 打开，但 PWA 的 scope 仍是 /app/
-         （已安装的实例依赖它，改 scope 等于让所有已装用户失效）。 -->
+         manifest 与 sw.js 都放在 public/ 下，Vite 按 base('/app/') 原样拷到 app/ 根。
+         v2.33 起 scope/start_url 是根 `/`（服务端在根路径直投 /manifest.json 与 /sw.js），
+         让「从根路径访问的用户」也能安装。 -->
     <link rel="manifest" href="/app/manifest.webmanifest" />
     <meta name="theme-color" content="#4f46e5" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#4f46e5" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f172a" />
     <!-- 浏览器标签页 / 书签 / 桌面快捷方式的图标（部分浏览器不看 manifest 的 icons） -->
     <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon.png" />
     <!-- iOS 不吃 manifest 的 theme_color / display，这几条是老版本 Safari 的补丁 -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- default = 状态栏用系统默认（白底黑字），与本应用的亮色主题一致；
+         black-translucent 会把状态栏浮在页面内容上 —— 那时才需要 safe-area-inset-top，
+         这里选 default 更稳妥（顶部由系统接管，页面内容不被刘海压住）。 -->
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="lxserver" />
 
