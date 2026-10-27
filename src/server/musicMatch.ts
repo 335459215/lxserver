@@ -173,6 +173,26 @@ export const normalizeSongInfo = (songInfo: any) => {
   if (!songInfo) return songInfo
   const meta = songInfo.meta || {}
 
+  // 0. 剥 songmid / id 上的平台前缀（wy_493735159 -> 493735159）。
+  //
+  // 【真实缺陷（2026-10-25 用户报告）】落雪桌面同步来的歌单条目，songmid 字段
+  // 被写成了桌面端的 id 格式（带 "wy_" 前缀）。带前缀的 id 对各平台 SDK 都是
+  // **无效 id**：官方 API 查不到 → 自定义源竞速里按歌名搜的替身源接管 →
+  // 播的是**同名别的歌**（翻唱/现场版/铃声版）—— 用户感知为
+  // 「歌单里显示 A 播的是 B」。搜索结果的 songmid 是原生干净的，所以
+  // 只有歌单/收藏/默认列表才错位，与用户描述完全吻合。
+  // 歌词路由早有同样的修复（[Fix] Normalize ID by stripping source prefix），
+  // 这里把对称的修复补到解析入口。**无条件剥**（旧逻辑只在 songmid 缺失时
+  // 才从 id 转换并剥前缀，songmid 已存在时直接放行 —— 正是漏掉的情况）。
+  // kg 的 songmid 内部可能含下划线（数字_哈希），前缀必须完整匹配 `${source}_`
+  // 才剥，不受影响。
+  for (const field of ['songmid', 'id'] as const) {
+    const v = songInfo[field]
+    if (typeof v === 'string' && v.startsWith(`${songInfo.source}_`)) {
+      songInfo[field] = v.slice(songInfo.source.length + 1)
+    }
+  }
+
   // 1. 处理音质信息 (types / _types)
   if (!songInfo.types && meta) {
     songInfo.types = meta.qualitys || meta.types

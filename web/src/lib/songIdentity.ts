@@ -159,3 +159,31 @@ export function dedupeSongs<T extends IdentifiableSong>(songs: T[]): T[] {
   }
   return out
 }
+
+/** 剥 songmid/id 上的平台前缀（wy_493735159 -> 493735159）。
+ *
+ *  【真实缺陷（2026-10-25 用户报告）】落雪桌面同步来的歌单条目，songmid 字段
+ *  被写成了桌面端的 id 格式（带 "wy_" 前缀）。带前缀的 id 对各平台 SDK 都是
+ *  **无效 id**：官方 API 查不到 → 自定义源竞速里按歌名搜的替身源接管 →
+ *  播的是**同名别的歌** —— 用户感知为「歌单里显示 A 播的是 B」。
+ *  搜索结果的 songmid 原生干净，所以只有歌单/收藏才错位。
+ *  前端 songKey 剥它（缓存键/排除清单与搜索歌统一，旧错曲缓存自然失效）；
+ *  服务端 normalizeSongInfo 也剥（src/server/musicMatch.ts 有对称实现 ——
+ *  两侧各自内联 8 行，避免服务端构建跨包引入 web 模块）。
+ *  kg 的 songmid 内部可能含下划线（数字_哈希），前缀必须完整匹配才剥。 */
+export function stripSourcePrefix(source: string, id: string): string {
+  const prefix = `${source}_`
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id
+}
+
+/** 歌曲稳定键：source + 剥前缀后的 songmid（缺失回落 名|歌手）。
+ *  从 music.ts 搬来（v2.39.5）：它要被缓存键/换源排除清单/歌词键共用，
+ *  且必须可直接单测 —— 与 dedupeSongs 同一搬家理由（music.ts 同名转发，线上跑的就是这份）。 */
+export function songKey(song: IdentifiableSong | null): string {
+  if (!song) return ''
+  const raw = song.songmid ?? song.id ?? song.meta?.songId
+  const src = String(song.source ?? '')
+  if (raw == null) return `${src}:${song.name}|${song.singer}`
+  const id = stripSourcePrefix(src, String(raw))
+  return `${src}:${id}`
+}

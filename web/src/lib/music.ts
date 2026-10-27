@@ -10,7 +10,7 @@ import { userAuthHeaders } from '@/lib/auth'
 // 去重实现放在零依赖的 songIdentity.ts（便于单测直接 import）。
 // 这里必须**同时** import 进来用 + 转发出去：只写 `export {} from` 不会
 // 在本文件里建立局部绑定，而 searchMusicAggregate 自己就要调用它。
-import { dedupeSongs } from '@/lib/songIdentity'
+import { dedupeSongs, songKey as stableSongKey } from '@/lib/songIdentity'
 export { dedupeSongs }
 
 /** 各平台搜索结果字段名不统一，这里只声明公共字段，其余透传。
@@ -339,9 +339,7 @@ export function sameSong(a: Song | null, b: Song | null): boolean {
  *  用于搜索分页追加时去重（各平台翻页结果常出现重复条目），
  *  播放内核也用它记忆「哪些源已经试过且失败」。无曲目时返回空串。 */
 export function songKey(song: Song | null): string {
-  if (!song) return ''
-  const id = song.songmid ?? song.id ?? song.meta?.songId
-  return id != null ? `${song.source}:${id}` : `${song.source}:${song.name}|${song.singer}`
+  return stableSongKey(song)
 }
 
 /** 跨平台身份判定与去重：实现见 lib/songIdentity.ts（零依赖，便于单测直接 import）。

@@ -515,6 +515,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 上一首的缓存下载（若有）立即中止：seq 守卫只拦「写入」，拦不住已发出的下载
       cacheFetchAbortRef.current?.abort()
 
+      console.warn('[DBG loadAndPlay]', song.source + ':' + song.songmid, song.name, (new Error().stack || '').split(String.fromCharCode(10)).slice(2, 5).join(' | ').slice(0, 300))
       const key = songKey(song)
       const exclude = excludedRef.current.get(key) ?? []
       // 换到别的曲目时重置自动换源计数（同一曲目的重试会保留计数）

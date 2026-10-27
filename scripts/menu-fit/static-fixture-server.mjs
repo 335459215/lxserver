@@ -64,6 +64,18 @@ const FIXTURE_SONGS = [
     ],
   },
   {
+    // 【前缀污染对照曲】搜索形态 songmid 干净；歌单形态见 defaultList 桩（wy_777002）。
+    // 修复前两者缓存键不同（缓存分裂+歌单形态播错曲），修复后同键命中。
+    name: '同曲异源歌',
+    singer: '测试',
+    source: 'wy',
+    songmid: '777002',
+    albumName: '测试专辑',
+    interval: '03:00',
+    img: '',
+    types: [{ type: '128k', size: '3.00Mb' }],
+  },
+  {
     name: '只有高品位的歌',
     singer: '测试歌手',
     source: 'kw',
@@ -154,6 +166,7 @@ let userListsStore = [
 let proxyLog = []
 
 /** 记录音频解析请求 —— 播放缓存护栏断言「重播零解析」的依据 */
+let urlBodies = []
 let urlResolveLog = []
 
 /** 记录整份写回（restore）操作 —— 确认「导入真的发到了服务端」 */
@@ -254,7 +267,14 @@ const server = http.createServer((req, res) => {
   // 【必须是有状态的】与历史删除同理：收藏是有副作用的操作，固定列表会让
   // 「请求没发出去」看起来也对。add/remove 真的改动 loveStore，并记进 loveLog。
   if (urlPath === '/api/user/list' && req.method === 'GET') {
-    json(res, 200, { defaultList: [], loveList: loveStore, userList: userListsStore })
+    json(res, 200, {
+      defaultList: [
+        // 【前缀污染形态】歌单条目 songmid 带平台前缀（落雪桌面同步的真实形态）
+        { id: 'wy_777002', name: '同曲异源歌', singer: '测试', source: 'wy', songmid: 'wy_777002', interval: '03:00' },
+      ],
+      loveList: loveStore,
+      userList: userListsStore,
+    })
     return
   }
 
@@ -279,13 +299,21 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/api/music/download' && req.method === 'GET') {
     const target = new URL(req.url || '/', 'http://localhost').searchParams.get('url') || ''
     proxyLog.push(target.slice(0, 60))
-    // 桩环境里目标地址就是本机的 /api/stub-audio.wav —— 直接按同路径响应
-    send(res, 200, 'audio/wav', makeWav())
+    // 桩环境里目标地址就是本机的 /api/stub-audio.wav —— 必须回**同样的 30 秒音频**。
+    // 【真实教训（2026-10-25）】这里曾偷懒回 makeWav()（0.6 秒），被后台缓存原样
+    // 固化 → 重播缓存命中 0.6 秒就 ended → advance 跳下一首 → 「显示 A 实际播 B」
+    // 的完整假象，护栏成片红。中转的字节 = 未来缓存回放的字节，必须与直链一致。
+    send(res, 200, 'audio/wav', makeWav(30))
     return
   }
 
   if (urlPath === '/api/__fixture__/proxy-log') {
     json(res, 200, { success: true, fetches: proxyLog.slice() })
+    return
+  }
+
+  if (urlPath === '/api/__fixture__/url-bodies') {
+    json(res, 200, { success: true, bodies: urlBodies.slice() })
     return
   }
 
@@ -449,6 +477,7 @@ const server = http.createServer((req, res) => {
     ]
     transferLog = []
     urlResolveLog = []
+    urlBodies = []
     proxyLog = []
     json(res, 200, { success: true, total: historyStore.length })
     return
@@ -480,7 +509,11 @@ const server = http.createServer((req, res) => {
       } catch {
         // 按默认处理
       }
-      urlResolveLog.push({ name: songName, quality: requested })
+      let reqSongmid = ''
+      try { reqSongmid = String(JSON.parse(body || '{}').songInfo?.songmid || '') } catch { /* 保留空 */ }
+      urlResolveLog.push({ name: songName, quality: requested, songmid: reqSongmid })
+      urlBodies.push(body.slice(0, 300))
+            console.log('[url-stub] body=' + body.slice(0, 300))
       const high = ['flac', 'flac24bit', 'hires']
       let actual
       if (songName.includes('高品位')) {

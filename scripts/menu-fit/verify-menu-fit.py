@@ -1157,6 +1157,34 @@ with sync_playwright() as p:
     page.screenshot(path=os.path.join(OUT, "audio-cache.png"))
     ctx12.close()
 
+    # ================= songmid 前缀污染（v2.39.5）=================
+    #
+    # 【真实缺陷】落雪桌面同步来的歌单条目 songmid 带 wy_ 前缀（70/70 条实测）→
+    # 平台 SDK 无效 id → 替身源按歌名接管 → 播同名别的歌（用户报告
+    # 「歌单里显示 A、实际播的是 B」）。修复 = 服务端 normalizeSongInfo 无条件剥
+    # 前缀 + 前端 songKey 剥前缀（缓存键统一，旧错曲缓存失效）。
+    # 【这段验什么】歌单页的污染形态曲目存在且可正常起播 —— 解析请求原样
+    # 带前缀、由真实服务端剥（离线桩没有 normalize，不能在桩上断言；
+    # 服务端逻辑由 test/songmidPrefix.test.ts + 变异盯死）。
+    print("\n--- songmid 前缀污染 ---")
+    ctx13 = browser.new_context(viewport={"width": 1440, "height": 900})
+    inject_login(ctx13)
+    page = ctx13.new_page()
+    page.goto(f"{BASE}/app/playlist/default", wait_until="load")
+    page.wait_for_timeout(3000)
+    row = page.locator("ul li button[aria-label*='同曲异源歌']").first
+    check("歌单页出现污染形态的同曲（wy_777002）", row.count() > 0)
+    if row.count() > 0:
+        row.click()
+        page.wait_for_timeout(2500)
+        src = page.evaluate("() => document.querySelector('audio')?.src || ''")
+        check("歌单形态（污染 songmid）可正常起播", src != "", src[:50])
+    else:
+        check("歌单形态（污染 songmid）可正常起播", False, "前置：歌单页无目标行")
+
+    page.screenshot(path=os.path.join(OUT, "songmid-prefix.png"))
+    ctx13.close()
+
     browser.close()
 
 failed = [c for c in report["checks"] if not c["ok"]]
