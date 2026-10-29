@@ -22,6 +22,7 @@ import {
 import { api, AuthProvider, isAdmin, isLoggedIn, useAuth } from '@/lib/auth'
 import { SETTINGS_GROUPS } from '@/lib/groups'
 import { PlayerProvider, usePlayer } from '@/lib/player'
+import { clearSearchSnapshot } from '@/lib/searchSession'
 import { ToastHost } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
@@ -331,6 +332,9 @@ function Shell() {  const { auth, refresh } = useAuth()
                 className="flex h-9 max-md:h-11 max-md:min-w-11 items-center justify-center gap-1.5 rounded-xl border border-line/70 px-3 py-1.5 text-xs font-medium text-dim hover:border-danger/30 hover:bg-danger/5 hover:text-danger transition-all"
                 onClick={async () => {
                   player.clear()
+                  // 搜索快照是账号相关的临时态：退出/切换账号后不该把上一个人的
+                  // 搜索结果带到下一个会话里（与 player.clear 同一语义）。
+                  clearSearchSnapshot()
                   await api.logoutAll()
                   await refresh()
                   navigate('/')

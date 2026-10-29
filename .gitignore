@@ -105,3 +105,7 @@ _commit-msg-*.txt
 
 # 视口护栏的截图产物（CI 里也会生成）
 scripts/menu-fit/shots/
+
+# Python 缓存（e2e 脚本运行产生）
+__pycache__/
+*.pyc

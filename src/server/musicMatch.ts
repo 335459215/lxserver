@@ -24,6 +24,54 @@ export const normalizeSongNameText = (value: unknown) => String(value || '')
   .toLowerCase()
   .replace(/[\s\p{P}\p{S}]/gu, '')
 
+/** 从歌名里抽出**版本词**集合（live / 伴奏 / remix / 纯音乐 …），用于判定
+ *  「候选与目标是不是同一个录音」。见 getSongMatchScore 里的详细说明。
+ *
+ *  【为什么返回排序后的字符串而不是数组】调用方只需要判等，字符串比较最直接。
+ *
+ *  【为什么必须归一化全角括号】平台常用 `（Live）`（全角），
+ *  不做归一化会漏掉一半的版本标记 —— 而漏掉就是放行错歌。
+ *
+ *  【收录标准】只收「明确改变录音本体」的词。 */
+const VERSION_PATTERNS: Array<[RegExp, string]> = [
+  [/\blive\b/, 'live'],
+  [/现场/, 'live'],
+  [/\bunplugged\b/, 'unplugged'],
+  [/\bacoustic\b/, 'acoustic'],
+  [/不插电/, 'unplugged'],
+  [/伴奏/, 'instrumental'],
+  [/\binstrumental\b/, 'instrumental'],
+  [/\bkaraoke\b/, 'karaoke'],
+  [/\boff\s*vocal\b/, 'karaoke'],
+  [/\bremix\b/, 'remix'],
+  [/混音/, 'remix'],
+  [/\bcover\b/, 'cover'],
+  [/翻唱/, 'cover'],
+  [/\breprise\b/, 'reprise'],
+  [/\bnightcore\b/, 'nightcore'],
+  [/\bslowed\b/, 'slowed'],
+  [/加速版?/, 'nightcore'],
+  [/慢速|降速/, 'slowed'],
+  [/\bpiano\s*version\b/, 'piano'],
+  [/钢琴版/, 'piano'],
+  [/\bmusic\s*box\b/, 'musicbox'],
+  [/\b8d\s*audio\b/, '8d'],
+]
+
+export const versionTags = (rawName: unknown): string => {
+  // 全角 ASCII → 半角（覆盖 （） ： 等标点与全角字母），再统一小写
+  const text = String(rawName || '')
+    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/　/g, ' ')
+    .toLowerCase()
+  const tags = new Set<string>()
+  for (const [re, tag] of VERSION_PATTERNS) {
+    if (re.test(text)) tags.add(tag)
+  }
+  // 排序保证「同集合、不同书写顺序」判等一致
+  return [...tags].sort().join('+')
+}
+
 const splitSingerNames = (value: unknown) => String(value || '')
   .toLowerCase()
   .split(/[、，,&；;|/+]/)
@@ -74,8 +122,35 @@ export const getSongMatchScore = (candidate: any, target: any) => {
   if (!candidateName.includes(targetName) && !targetName.includes(candidateName)) return -1
   if (!isSingerMatch(candidate?.singer, target?.singer)) return -1
 
+  // ===== 版本后缀护栏（2026-10-29 用户报告）=====
+  //
+  // 【缺陷】用户实测：「显示的是 A，播出来的是另一首」—— 只在歌单里出现，
+  // 直接把音质调到最高、再开「自动选最高档」后必然复现。
+  //
+  // 链路：高音质档（flac/hires）原平台拿不到链接 → 服务端启用跨平台替身
+  // → 按「歌名+歌手」在其它平台**搜替身**顶上去。上面的包含判断太松：
+  // 目标 `晴天` 与候选 `晴天 (Live)`、`晴天 (伴奏)`、`晴天 - Remix`
+  // 全部通过（候选名.includes(目标名)），歌手也相同、时长差在 8s 内的
+  // 现场版/伴奏版由此被当成同一首 —— 用户听到的是**同一首歌的另一个录音**，
+  // 体感就是「显示 A、播出来不是 A」。
+  //
+  // 低音质时不容易触发：320k 及以下原平台大多能直接给出链接，替身几乎不参与。
+  //
+  // 【为什么用「版本词」而非严格相等】平台命名不统一（`(Live)`/`（live版）`/
+  // ` - Live`/`[伴奏]`），严格相等会误杀正常匹配（多数候选名带 `(feat. X)` 等
+  // 可忽略后缀）。做法：把两侧的版本词集合抽出来，**不一致就否决**；
+  // 一侧有版本词、另一侧没有，也否决（`晴天` vs `晴天 (Live)` 不是同一录音）。
+  const candidateVersion = versionTags(candidate?.name)
+  const targetVersion = versionTags(target?.name)
+  if (candidateVersion !== targetVersion) return -1
+
+  // ===== 时长必填护栏 =====
+  // 原实现「任一侧时长缺失就不算分」，等于对缺失时长的候选完全放行 ——
+  // 自定义源搜出来的条目经常没有 interval，恰是最容易混进错歌的一类。
+  // 目标有时长、候选没有：宁可不用这个替身（少换一次源），也不要播错歌。
   const candidateDuration = getSongDurationSeconds(candidate?.interval)
   const targetDuration = getSongDurationSeconds(target?.interval)
+  if (targetDuration > 0 && candidateDuration <= 0) return -1
   let durationScore = 0
   if (candidateDuration > 0 && targetDuration > 0) {
     const durationDiff = Math.abs(candidateDuration - targetDuration)

@@ -27,6 +27,18 @@ export interface CacheEntryInfo {
   tier: string
   name: string
   singer: string
+  /** 解析时**实际命中的曲目 key**（跨平台替身时与请求的 songKey 不同）。
+   *
+   *  【为什么要记这个（2026-10-29 用户报告）】服务端跨平台替身按歌名搜到的
+   *  可能是同名的另一个录音；那批字节被缓存在**原歌**的键下 —— 一旦写进去，
+   *  之后每次都命中缓存直接播错歌，且不再经过解析器（连换源都救不回来）。
+   *  记录真实来源 key 后：命中时用户可见地知道「这是替身」，
+   *  且旧缓存被识别为可疑（见 isForeignSubstitute）。
+   *
+   *  旧条目没有此字段 → 视为「与请求 key 相同」（保守：不误杀历史缓存）。 */
+  resolvedKey?: string
+  /** 实际命中的平台（跨平台替身时与请求源不同），供诊断与 UI 说明 */
+  resolvedSource?: string
 }
 
 export interface CacheMeta {
@@ -46,6 +58,9 @@ export interface CacheHit {
   blob: Blob
   tier: string
   name: string
+  /** 实际来源 key（旧条目 undefined = 与请求 key 相同） */
+  resolvedKey?: string
+  resolvedSource?: string
 }
 
 export class AudioCache {
@@ -105,11 +120,17 @@ export class AudioCache {
     }
     info.lastUsed = this.now()
     await this.saveMeta()
-    return { blob, tier: info.tier, name: info.name }
+    return {
+      blob,
+      tier: info.tier,
+      name: info.name,
+      resolvedKey: info.resolvedKey,
+      resolvedSource: info.resolvedSource,
+    }
   }
 
   /** 写入并执行容量策略；缓存层故障静默放弃（调用方无需 try/catch） */
-  async put(key: string, blob: Blob, brief: { tier: string; name: string; singer: string }): Promise<void> {
+  async put(key: string, blob: Blob, brief: { tier: string; name: string; singer: string; resolvedKey?: string; resolvedSource?: string }): Promise<void> {
     try {
       await this.putInner(key, blob, brief)
     } catch {
@@ -117,7 +138,7 @@ export class AudioCache {
     }
   }
 
-  private async putInner(key: string, blob: Blob, brief: { tier: string; name: string; singer: string }): Promise<void> {
+  private async putInner(key: string, blob: Blob, brief: { tier: string; name: string; singer: string; resolvedKey?: string; resolvedSource?: string }): Promise<void> {
     await this.loadMeta()
     if (blob.size > this.cap) return // 单条超过总上限：存了也立刻挤掉别人，不存
     const info: CacheEntryInfo = {
@@ -126,6 +147,8 @@ export class AudioCache {
       tier: brief.tier,
       name: brief.name,
       singer: brief.singer,
+      resolvedKey: brief.resolvedKey,
+      resolvedSource: brief.resolvedSource,
     }
     // 同键覆盖时先按旧 size 结账
     const prev = this.meta.entries[key]
@@ -153,6 +176,21 @@ export class AudioCache {
       return await this.newestForInner(songKey)
     } catch {
       return null
+    }
+  }
+
+  /** 删除单条（含 meta 记账）；故障静默 —— 调用方是「发现脏数据就清掉」的修复路径，
+   *  清理失败不应影响播放本身。 */
+  async delete(key: string): Promise<void> {
+    try {
+      await this.loadMeta()
+      await this.store.delete(key)
+      if (this.meta.entries[key]) {
+        delete this.meta.entries[key]
+        await this.saveMeta()
+      }
+    } catch {
+      /* 清理失败不影响播放 */
     }
   }
 

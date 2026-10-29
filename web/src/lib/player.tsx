@@ -446,6 +446,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   /** 当前生效的 blob: URL（缓存命中时用它当 src）；换歌/换源时 revoke 旧句柄 */
   const blobUrlRef = React.useRef<string | null>(null)
+  /** **<audio> 里此刻挂着的曲目 key**（不是 state.current —— 界面可能已切到新歌，
+   *  而音频还在放上一首）。切歌判定必须用它，见 loadAndPlay 里的说明。
+   *  初始为空串：首次播放时与任何真实 key 都不同 → 走「清空」分支（无害）。 */
+  const audioSongKeyRef = React.useRef<string>('')
   const applyBlobSrc = React.useCallback((blob: Blob, el: HTMLAudioElement): void => {
     if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
     blobUrlRef.current = URL.createObjectURL(blob)
@@ -462,10 +466,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
    *  【为什么延后】跳过的歌不值得缓存（几十 MB 的 flac 白下）；听了一段
    *  才算「真的在听」。默认 15s；测试可用 lx.player.cacheDelayMs 缩短。 */
   const scheduleCacheWrite = React.useCallback(
-    (seq: number, songKeyStr: string, url: string, tier: string, song: Song) => {
+    (seq: number, songKeyStr: string, url: string, tier: string, song: Song, resolvedKey?: string, resolvedSource?: string) => {
       if (!stateRef.current.audioCacheOn) return
       const cache = getAudioCache()
       if (!cache) return
+      // 【替身不缓存（2026-10-29）】解析命中跨平台替身（resolvedKey 与请求 key 不同）
+      // 说明这条链接是**别的歌**的字节。把它缓存进本歌的键 = 永久固化错歌，
+      // 之后每次播放都直接命中缓存、连解析器都不经过，用户的「换源重试」也救不回来。
+      // 宁可这首歌每次重新解析，也绝不写进缓存。
+      if (resolvedKey && resolvedKey !== songKeyStr) {
+        console.warn('[播放缓存] 跳过缓存：解析命中跨平台替身', resolvedKey, '≠', songKeyStr)
+        return
+      }
       const delay = Number.parseFloat(localStorage.getItem('lx.player.cacheDelayMs') ?? '') || 15000
       cacheWriteSeqRef.current = seq
       cacheFetchAbortRef.current?.abort()
@@ -492,6 +504,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
               tier,
               name: song.name,
               singer: song.singer,
+              resolvedKey: resolvedKey ?? songKeyStr,
+              resolvedSource,
             })
           } catch {
             /* 缓存失败不影响播放 */
@@ -515,11 +529,37 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 上一首的缓存下载（若有）立即中止：seq 守卫只拦「写入」，拦不住已发出的下载
       cacheFetchAbortRef.current?.abort()
 
-      console.warn('[DBG loadAndPlay]', song.source + ':' + song.songmid, song.name, (new Error().stack || '').split(String.fromCharCode(10)).slice(2, 5).join(' | ').slice(0, 300))
       const key = songKey(song)
       const exclude = excludedRef.current.get(key) ?? []
       // 换到别的曲目时重置自动换源计数（同一曲目的重试会保留计数）
       if (audioFailRef.current.key !== key) audioFailRef.current = { key, count: 0 }
+
+      // 【必须立刻掐掉上一首的声音】
+      //
+      // 【实测缺陷（2026-10-29 用户报告）】歌单播放时「实际播放的歌曲和显示的
+      // 歌曲完全不是同一首」。根因就在这里：切歌只改了 state（current 立刻变成
+      // 新歌、界面同步刷新），但 <audio> 还挂着**上一首**的 src 继续出声，
+      // 直到解析完成、新链接设进去才换声。高音质档（flac/hires）解析要 1~5 秒，
+      // 这段窗口里「界面显示 A、耳朵听到 B」—— 与用户描述完全吻合。
+      //
+      // 为什么「直接搜索播放」不容易复现：搜索结果命中粘滞缓存/播放缓存的比例高，
+      // 解析几乎瞬时完成，窗口小到听不出来；歌单曲目大多是首次解析，
+      // 叠加「自动选最高档」把起手档位抬到 flac/hires 后更慢。
+      //
+      // 【只在换曲时清空】同一首重新解析（切音质/开自动选最高档/换源重试）时
+      // 必须**保持当前声音**，否则用户切个音质就听到断流。
+      // 判据用 <audio> 当前 src 对应的曲目 key，而不是 stateRef（state 可能已变）。
+      const previousKey = audioSongKeyRef.current
+      if (previousKey !== key) {
+        el.pause()
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current)
+          blobUrlRef.current = null
+        }
+        el.removeAttribute('src')
+        el.load()
+      }
+      audioSongKeyRef.current = key
 
       // 音质档位从 stateRef 读（不放进依赖数组）：否则每次切档都会重建 loadAndPlay，
       // 连锁让下游依赖它的 useCallback/useEffect 全部失效。ref 读最新值语义等价。
@@ -553,11 +593,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 播放缓存优先（v2.39.0）：命中直接播 blob —— 不发解析请求、不下载，
       // 断网也能放。键用**起手档位**（同一偏好下次点同一首必然同键），
       // 实得档位以缓存里记录的为准。
+      //
+      // 【替身污染护栏（2026-10-29）】缓存写入时记录了「实际命中的曲目 key」。
+      // 若它**不是这首歌**（跨平台替身按歌名搜到了别的录音），这条缓存就是
+      // 「错歌固化」——命中它等于每次都直接播错歌，且完全不经过解析器，
+      // 换源重试/黑名单全部失效。这里识别出来直接跳过并删掉，走正常解析。
+      // 旧条目没有 resolvedKey 字段（undefined）→ 视为同 key，不误杀历史缓存。
       if (stateRef.current.audioCacheOn) {
         const cache = getAudioCache()
         const hit = cache ? await cache.get(cacheKey(key, startTier)) : null
         if (seq !== reqSeqRef.current) return
-        if (hit) {
+        if (hit && hit.resolvedKey && hit.resolvedKey !== key) {
+          console.warn('[播放缓存] 命中条目实际是另一首歌（替身污染），丢弃并重新解析:', hit.resolvedKey, '→', key)
+          void cache?.delete(cacheKey(key, startTier))
+        } else if (hit) {
           patch({ resolvedQuality: hit.tier, sourceName: '播放缓存', attempts: [] })
           applyBlobSrc(hit.blob, el)
           el.load()
@@ -620,8 +669,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             if (seq === reqSeqRef.current) patch({ status: 'paused' })
           }
           // 缓存键用**请求档位**（quality），实际写入字节是 result.quality 的 ——
-          // 降级时缓存的就是低档字节，info.tier 如实记录，重播不会谎报档位
-          scheduleCacheWrite(seq, key, result.url, String(result.quality ?? quality), song)
+          // 降级时缓存的就是低档字节，info.tier 如实记录，重播不会谎报档位。
+          //
+          // resolvedKey 来自服务端返回的 resolvedSong：跨平台替身时它是**另一首歌**，
+          // 用来阻止把错歌固化进缓存（见 scheduleCacheWrite 的护栏）。
+          const resolvedKey = result.resolvedSong
+            ? songKey(result.resolvedSong as unknown as Song)
+            : key
+          scheduleCacheWrite(
+            seq, key, result.url, String(result.quality ?? quality), song,
+            resolvedKey, result.resolvedSource,
+          )
           return
         } catch (e) {
           if (seq !== reqSeqRef.current) return
@@ -739,6 +797,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
 
       const song = s.queue[idx]
+      // 【必须同步更新 stateRef】setState 是异步的，而 stateRef 由 effect 在
+      // **提交之后**才同步。用户连点「下一首」两次时，第二次 advance 读到的
+      // 还是上一次的 index —— 表现为「连点两下只前进一首」，或者更糟：
+      // 从旧下标重新算出的目标歌与界面已显示的那首错开一位，
+      // 与实际出声的音频对不上（2026-10-29 用户报告的错位形态之一）。
+      // 在发起点立刻把 ref 对齐到「即将生效」的状态，后续同步调用就能读到新值。
+      stateRef.current = { ...stateRef.current, index: idx, current: song, position: 0, duration: 0 }
       setState((prev) => ({ ...prev, index: idx, current: song, position: 0, duration: 0 }))
       void loadAndPlay(song)
     },
@@ -750,7 +815,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const prev = React.useCallback(() => {
     const el = audioRef.current
     // 播放超过 3 秒：上一首 = 回到本曲开头（与主流播放器一致）
-    if (el && el.currentTime > 3) {
+    //
+    // 【必须确认音频里确实是当前这首】切歌解析期间 <audio> 可能已经清空
+    // （src 被卸下、currentTime 归 0）或还挂着上一首 —— 直接读 currentTime
+    // 会把「回到开头」误判成「切上一首」，或者反过来。
+    // 用 audioSongKeyRef 对齐：只有音频里挂的确实是当前曲目时才认这个进度。
+    const sameTrackLoaded = audioSongKeyRef.current === songKey(stateRef.current.current)
+    if (el && sameTrackLoaded && el.currentTime > 3) {
       el.currentTime = 0
       patch({ position: 0 })
       return
@@ -771,6 +842,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         return
       }
       setState((p) => ({ ...p, index, current: song, position: 0, duration: 0 }))
+      stateRef.current = { ...stateRef.current, index, current: song, position: 0, duration: 0 }
       void loadAndPlay(song)
     },
     [loadAndPlay, patch],
@@ -782,6 +854,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const found = queue.findIndex((q) => sameSong(q, song))
         const idx = found >= 0 ? found : 0
         const target = queue[idx] ?? song
+        stateRef.current = { ...stateRef.current, queue, index: idx, current: target, position: 0, duration: 0 }
         setState((s) => ({ ...s, queue, index: idx, current: target, position: 0, duration: 0 }))
         void loadAndPlay(target)
         return
@@ -789,9 +862,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const s = stateRef.current
       const existing = s.queue.findIndex((q) => sameSong(q, song))
       if (existing >= 0) {
+        stateRef.current = { ...stateRef.current, index: existing, current: s.queue[existing], position: 0, duration: 0 }
         setState((p) => ({ ...p, index: existing, current: p.queue[existing], position: 0, duration: 0 }))
         void loadAndPlay(s.queue[existing])
         return
+      }
+      stateRef.current = {
+        ...stateRef.current,
+        queue: [...s.queue, song],
+        index: s.queue.length,
+        current: song,
+        position: 0,
+        duration: 0,
       }
       setState((p) => ({
         ...p,
@@ -811,6 +893,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (!songs.length) return
       const idx = Math.min(Math.max(startIndex, 0), songs.length - 1)
       const song = songs[idx]
+      // 同步 ref：见 advance 里的说明（连点/紧接着的操作必须读到新队列）
+      stateRef.current = { ...stateRef.current, queue: songs, index: idx, current: song, position: 0, duration: 0 }
       setState((s) => ({ ...s, queue: songs, index: idx, current: song, position: 0, duration: 0 }))
       void loadAndPlay(song)
     },
@@ -1018,6 +1102,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     abortRef.current?.abort()
     // 清空/切换队列时解除上报守卫，避免「同一首歌在两次播放会话里只记一次」
     reportedRef.current = ''
+    // 音频已卸下：清掉「当前挂着哪首」的记账，下次播放必走清空分支
+    audioSongKeyRef.current = ''
     const el = audioRef.current
     if (el) {
       el.pause()

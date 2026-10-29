@@ -61,6 +61,10 @@ export interface ResolveResult {
   quality?: string
   sourceName?: string
   resolvedSource?: string
+  /** 实际用于解析的歌曲（**跨平台替身时与请求的歌不同**）。
+   *  服务端按歌名+歌手在其它平台搜到替身并成功时返回它，播放内核据此
+   *  判断「播的到底是不是这首歌」（缓存污染护栏 / 诊断）。 */
+  resolvedSong?: { source?: string; songmid?: string | number; name?: string; singer?: string; [key: string]: unknown }
   requestedSource?: string
   downloadSource?: string
   attempts?: ResolveAttempt[]

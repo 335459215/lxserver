@@ -25,7 +25,14 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 // 本文件在 <repo>/scripts/menu-fit/ 下，构建产物在 <repo>/public/app/
-const PUBLIC_DIR = path.resolve(here, '..', '..', 'public')
+//
+// 【FX_PUBLIC_DIR 覆盖】只给本地调试/沙箱用：有些环境（如挂载出来的只读
+// fuse 目录）无法原地 `vite build` 覆盖 public/app，可以构建到临时目录后
+// 用 `FX_PUBLIC_DIR=/tmp/lxroot node static-fixture-server.mjs` 指过去。
+// CI 不设这个变量 → 行为与之前完全一致。
+const PUBLIC_DIR = process.env.FX_PUBLIC_DIR
+  ? path.resolve(process.env.FX_PUBLIC_DIR)
+  : path.resolve(here, '..', '..', 'public')
 const PORT = Number(process.argv[2] || 9701)
 
 const MIME = {

@@ -74,6 +74,22 @@ export function createSearchPager<T>(options: {
     hasMore = r.rawHasMore
   }
 
+  /** 用一份**已有结果**接管控制器（返回搜索页时恢复上次会话）。
+   *
+   *  【为什么要走到 loadedPage 而不只是 items】搜索页返回后用户往往继续
+   *  往下翻页。若只塞 items、loadedPage 仍是 0，`loadMore` 会被
+   *  `if (!loadedPage) return` 直接挡掉 —— 表现为「恢复结果后翻页按钮没反应」。
+   *  这里把页码一并接上，恢复后的「加载更多」从下一页继续。
+   *
+   *  代次照常 +1：任何恢复前还在飞的旧请求都必须作废。 */
+  const hydrate = (nextItems: T[], nextHasMore: boolean, loadedPageNo = 1) => {
+    reset()
+    items = nextItems
+    page = loadedPageNo
+    loadedPage = loadedPageNo
+    hasMore = nextHasMore
+  }
+
   /** 追加下一页。并发调用只发一次请求；失败保持可重试。 */
   const loadMore = async (fetchPage: (page: number, epoch: number) => Promise<PageResult<T>>): Promise<void> => {
     if (loadingMore || !hasMore || !loadedPage) return
@@ -113,6 +129,7 @@ export function createSearchPager<T>(options: {
     items: () => items,
     loadFirst,
     loadMore,
+    hydrate,
     reset,
     get pageSize() { return pageSize },
   }

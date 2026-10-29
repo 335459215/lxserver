@@ -23,6 +23,13 @@ import {
 } from '@/lib/discover'
 import { createSearchPager } from '@/lib/searchPaging'
 import {
+  isRestorable,
+  loadSearchSnapshot,
+  saveSearchScrollY,
+  saveSearchSnapshot,
+  type SearchSnapshot,
+} from '@/lib/searchSession'
+import {
   clearSearchHistory,
   loadSearchHistory,
   pushSearchHistory,
@@ -45,20 +52,44 @@ export default function SearchPage() {
   const player = usePlayer()
   const { toast } = useToast()
 
-  const [keyword, setKeyword] = React.useState('')
-  const [source, setSource] = React.useState<string>('all')
-  const [kind, setKind] = React.useState<Kind>('song')
-  const [phase, setPhase] = React.useState<Phase>('idle')
-  const [results, setResults] = React.useState<Song[]>([])
-  const [singers, setSingers] = React.useState<SingerHit[]>([])
-  const [error, setError] = React.useState<string | null>(null)
+  /** 本次挂载要恢复的上次会话（返回搜索页时）。
+   *
+   *  【恢复条件：URL 必须带着同一次搜索的 q】从结果点歌 → 播放页 → 返回，
+   *  history 里回到的是 `/search?q=周杰伦`，正是当初进入搜索页的那个 URL。
+   *  而用户从侧栏/顶栏点「搜索发现」（`/search`，**没有 q**）时，
+   *  他要的是一个新的搜索页 —— 若也把上次结果翻出来，会显得「清不掉」。
+   *  所以只在 URL 与快照完全对得上时才恢复；其它入口一律空态。
+   *
+   *  【为什么过 isRestorable】只恢复 done 终态。离开时还在 loading 的请求
+   *  卸载即被 abort，恢复一个永远转圈的骨架屏比空态更糟（见 searchSession.ts）。 */
+  const [restored] = React.useState<SearchSnapshot | null>(() => {
+    const s = loadSearchSnapshot()
+    if (!isRestorable(s)) return null
+    const p = new URLSearchParams(window.location.search)
+    const q = p.get('q')
+    if (!q) return null
+    const sameSearch =
+      s.searchedFor === q &&
+      s.keyword === q &&
+      s.kind === (p.get('type') === 'singer' ? 'singer' : 'song') &&
+      s.source === (p.get('source') ?? 'all')
+    return sameSearch ? s : null
+  })
+
+  const [keyword, setKeyword] = React.useState(restored?.keyword ?? '')
+  const [source, setSource] = React.useState<string>(restored?.source ?? 'all')
+  const [kind, setKind] = React.useState<Kind>(restored?.kind ?? 'song')
+  const [phase, setPhase] = React.useState<Phase>(restored?.phase ?? 'idle')
+  const [results, setResults] = React.useState<Song[]>(restored?.results ?? [])
+  const [singers, setSingers] = React.useState<SingerHit[]>(restored?.singers ?? [])
+  const [error, setError] = React.useState<string | null>(restored?.error ?? null)
   /** 上一次真正发起搜索的关键词，用于结果区标题与重试 */
-  const [searchedFor, setSearchedFor] = React.useState('')
+  const [searchedFor, setSearchedFor] = React.useState(restored?.searchedFor ?? '')
 
   // ===== 分页追加 =====
   // 注意：页码本身不再放 React state —— 它由 pager 持有（唯一真相），
   // 这里只保留渲染需要的两个标志位。多存一份页码就会出现两份状态不同步。
-  const [hasMore, setHasMore] = React.useState(false)
+  const [hasMore, setHasMore] = React.useState(restored?.hasMore ?? false)
   const [loadingMore, setLoadingMore] = React.useState(false)
 
   const abortRef = React.useRef<AbortController | null>(null)
@@ -70,12 +101,21 @@ export default function SearchPage() {
    *  分页有三个互相纠缠的约束（代次隔离、上游原始分页状态、失败重试），
    *  写在组件里既难测、又容易在后续改动中被悄悄破坏。
    *  交给纯逻辑控制器后，回归测试覆盖的就是**线上真正跑的那份代码**，
-   *  而不是一份「和它长得很像」的副本。React state 只负责渲染镜像。 */
+   *  而不是一份「和它长得很像」的副本。React state 只负责渲染镜像。
+   *
+   *  【为什么创建时就把恢复结果灌进去】恢复的会话必须接管页码，
+   *  否则恢复后「加载更多」会因 loadedPage=0 被 loadMore 的守卫直接挡掉
+   *  （按钮点了没反应）。在惰性初始化里做（而不是 render 里操作 ref），
+   *  既符合 react-hooks/refs 规则，也保证只执行一次。 */
   const pagerRef = React.useRef<ReturnType<typeof createSearchPager<Song>> | null>(null)
   // 用 `== null` 而不是 `!`：lint 规则认可这种「只初始化一次」的写法
   // （直接读 ref.current 做真值判断会被判为 render 期访问 ref）。
   if (pagerRef.current == null) {
-    pagerRef.current = createSearchPager<Song>({ pageSize: PAGE_SIZE, dedupe: dedupeSongs })
+    const pager = createSearchPager<Song>({ pageSize: PAGE_SIZE, dedupe: dedupeSongs })
+    if (restored && restored.kind === 'song' && restored.results.length > 0) {
+      pager.hydrate(restored.results, restored.hasMore)
+    }
+    pagerRef.current = pager
   }
   /** 当前查询的取消控制器（初搜与翻页各一个，互不干扰） */
   const moreAbortRef = React.useRef<AbortController | null>(null)
@@ -158,13 +198,25 @@ export default function SearchPage() {
   }, [syncFromPager])
 
   /** 支持 /search?q=xxx&source=yy&type=singer —— 首页搜索框、热搜标签、列表里的歌手/专辑链接
-   *  都会带参数跳过来，不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。 */
+   *  都会带参数跳过来，不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。
+   *
+   *  【返回时不重搜】从结果点歌 → 播放页 → 返回，URL 仍是 `/search?q=xxx`
+   *  （当初就是这么进来的）。若这里照常跑搜索，恢复出来的结果会被骨架屏冲掉、
+   *  还白打一遍上游。这里只跳过**恢复时那一组参数**（记在
+   *  restoredSearchRef 里），之后用户换成别的关键词（`?q=王菲`）仍会正常重搜。 */
   const [params] = useSearchParams()
   const search = params.toString()
+  /** 本次恢复所对应的那组 URL 参数；只跳过它一次，不影响后续任何导航。 */
+  const restoredSearchRef = React.useRef<string | null>(restored ? search : null)
   React.useEffect(() => {
     const p = new URLSearchParams(search)
     const q = p.get('q')
     if (!q) return
+    // 这一组参数正是本次挂载恢复出来的那组：结果已在屏幕上，不重复搜
+    if (restoredSearchRef.current === search) {
+      restoredSearchRef.current = null
+      return
+    }
     const k: Kind = p.get('type') === 'singer' ? 'singer' : 'song'
     const src = p.get('source') ?? 'all'
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -174,6 +226,70 @@ export default function SearchPage() {
     /* eslint-enable react-hooks/set-state-in-effect */
     void runSearch(q, src, k)
   }, [search, runSearch])
+
+  /** 每次搜索状态变化都把快照写回模块级单例 —— 用户从这里点歌进播放页、
+   *  再从播放页返回时，SearchPage 会重新挂载并从快照恢复（见文件顶部注释）。
+   *
+   *  【为什么 phase=loading 时不覆盖快照】上一次成功的 done 结果比「正在搜」
+   *  更有恢复价值。用户点了新搜索又立刻点走时，恢复上一次的完整结果，
+   *  比恢复成空态/转圈体验更好（新搜索本来就没完成，没有可展示的东西）。
+   *  error 同理：保留上一次成功结果，不让一次失败抹掉整页内容。
+   *
+   *  【为什么不做防抖】快照只是一次对象拷贝（结果数组按引用共享，不深克隆），
+   *  写入成本可忽略；而防抖会引入「刚搜完立刻点走 → 快照还没落盘」的窗口，
+   *  正是本缺陷最容易复现的路径。 */
+  React.useEffect(() => {
+    if (phase !== 'done') return
+    saveSearchSnapshot({
+      keyword,
+      searchedFor,
+      source,
+      kind,
+      phase,
+      results,
+      singers,
+      error,
+      hasMore,
+      // 保留既有滚动位置：本 effect 在**每次结果变化**时都会跑，
+      // 若直接写 0 会把用户当前位置清掉（返回后永远从页顶开始）。
+      scrollY: loadSearchSnapshot()?.scrollY ?? 0,
+    })
+  }, [keyword, searchedFor, source, kind, phase, results, singers, error, hasMore])
+
+  /** 恢复滚动位置（只在挂载时跑一次）。
+   *
+   *  【为什么等两帧】列表刚挂载时高度还没铺开，立刻 scrollTo 会被浏览器夹到 0
+   *  （内容高度 < 目标值）。等两帧后 React 已完成提交、浏览器也完成布局。 */
+  React.useEffect(() => {
+    if (!restored || restored.scrollY <= 0) return
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        window.scrollTo(0, restored.scrollY)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+    // 只在挂载时恢复一次：之后用户自己的滚动由浏览器接管
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** 卸载时把当前滚动位置写进快照（组件切走 → 进播放页 → 返回）。
+   *
+   *  【为什么要和上面的恢复 effect 分开】恢复是「挂载时读」，这里是「卸载时写」；
+   *  两者语义相反且生命周期不重叠。合并成一个 effect 会让恢复逻辑在依赖变化时
+   *  重跑，把用户滚动到一半的位置又拽回去。
+   *
+   *  【为什么必须放在最后一个 effect】React 按注册顺序执行清理函数。
+   *  本组件卸载时，先注册的清理先跑 —— 若它排在「保存快照」之后，
+   *  就会把刚写进去的 scrollY 覆盖成 0（复原后永远在页顶）。 */
+  React.useEffect(() => {
+    return () => {
+      saveSearchScrollY(window.scrollY)
+    }
+  }, [])
 
   const playAll = React.useCallback(() => {
     if (!results.length) return
