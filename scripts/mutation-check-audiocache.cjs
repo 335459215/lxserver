@@ -21,11 +21,13 @@ const mutations = [
   },
   {
     name: '命中不续命（用得最多的反而先被淘汰）',
-    from: `    info.lastUsed = this.now()
-    await this.saveMeta()
-    return { blob, tier: info.tier, name: info.name }`,
-    to: `    await this.saveMeta()
-    return { blob, tier: info.tier, name: info.name }`,
+    // 【锚点只用单行（2026-10-29 的教训）】此前这里是三行字面串、含
+    // `return { blob, tier: info.tier, name: info.name }` —— v2.42.0 给 get()
+    // 的返回对象加了 resolvedKey/resolvedSource 两个字段（D-014 缓存护栏），
+    // 多行串立刻匹配不上 → 「变异点已失效」→ CI 假红。锚点锚在语义本体
+    // （续命那一行）上，返回值怎么改都不影响。
+    from: `    info.lastUsed = this.now()`,
+    to: `    void info`,
     expectFail: ['命中会续命：最久没「用」而不是最久没「写」'],
   },
   {
