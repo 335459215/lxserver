@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Heart, ListMusic, Loader2, Plus, RefreshCw, TriangleAlert } from 'lucide-react'
 import {
@@ -14,14 +14,17 @@ import {
   Input,
   useToast,
 } from '@/components/ui'
-import { coverUrl } from '@/lib/music'
-import { createPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, type Playlist } from '@/lib/lists'
+import { createPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, playlistCoverUrl, type Playlist } from '@/lib/lists'
 import { useLists } from '@/lib/useLists'
 import { PlaylistTransferButtons } from '@/components/player/PlaylistTransfer'
 
-/** 歌单卡片：封面取第一首有封面的曲目 */
+/** 歌单卡片：封面随机取一首有封面的曲目；整单都没封面（刚建的空歌单）时
+ *  画渐变占位 + 唱片图标，**不留白**。 */
 function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' | 'list' }) {
-  const cover = playlist.songs.map((s) => coverUrl(s)).find(Boolean)
+  const cover = useMemo(() => playlistCoverUrl(playlist.songs), [playlist.songs])
+  // 记「加载失败的那个地址」而非布尔值：换歌单时自然重置，无需 effect 里 setState
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const shown = cover && cover !== failedSrc ? cover : undefined
   const Icon = icon === 'heart' ? Heart : ListMusic
 
   return (
@@ -29,15 +32,16 @@ function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' |
       to={`/playlist/${encodeURIComponent(playlist.id)}`}
       className="group flex items-center gap-3 rounded-2xl border border-line bg-panel p-3 shadow-card transition-all hover:border-accent/40 hover:shadow-pop"
     >
-      {cover ? (
+      {shown ? (
         <img
-          src={cover}
+          src={shown}
           alt=""
           loading="lazy"
+          onError={() => setFailedSrc(shown)}
           className="size-14 shrink-0 rounded-xl border border-line object-cover"
         />
       ) : (
-        <span className="flex size-14 shrink-0 items-center justify-center rounded-xl border border-line bg-panel2 text-faint">
+        <span className="flex size-14 shrink-0 items-center justify-center rounded-xl border border-line/80 bg-gradient-to-tr from-indigo-50 via-purple-50 to-pink-50 text-accent">
           <Icon className="size-5" />
         </span>
       )}

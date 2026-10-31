@@ -494,3 +494,37 @@ Radix 翻转朝上仍放不下，菜单矩形 `y = -73` —— 标题「播放�
   退出登录时 `clearSearchSnapshot()`（与 `player.clear()` 同一语义）。
 
 **测试**：`test/searchSession.test.ts`（13 项：恢复边界、滚动位置、不恢复 loading 等）。
+
+## D-016「HTTPS 地址栏显示不安全」+「歌单不能编辑/删除」
+
+**报告（2026-10-31）**：`lx.131452188.xyz:51739` 被 Chrome 提示不安全；
+歌单不能编辑、不能删除；歌单没有封面很难看。
+
+**排查路径（先证明不是反代）**
+1. `openssl s_client` → 证书链完整（YE1 → ISRG Root X2），`Verify return code: 0`，
+   SAN = `*.131452188.xyz`，2027-01-28 到期。
+2. NPM API 取 proxy-host id=3 → `ssl_forced: true`、`http2_support: true`、
+   `certificate_id: 1`（letsencrypt 通配符）、`advanced_config` 为空。
+3. 容器直连 `http://127.0.0.1:9528/` 响应头无 CSP/HSTS → 不是容器吐的头。
+   **反代与证书均无问题。**
+4. 真实无头 Chrome 加载线上页 → `securityStateChanged` 无异常，
+   但 console 里出现大片 `Mixed Content: ... requested an insecure element
+   'http://p2.music.126.net/...'`（歌单页 + 首页都有）。
+
+**根因**：wy/mg/kg 的 `picUrl` 是 `http://`，`coverUrl()` 原样塞进 `<img src>`。
+**修法**：`web/src/lib/coverUrl.ts` 的 `secureImageUrl()` 把已知图床升级到 https，
+客户端直连 CDN。实测这些 CDN 同 path 换 https 仍 200 —— 所以**不需要服务端代理**
+（用户明确要求不要吃服务器上行带宽；音频本来就客户端直连，代理只作兜底）。
+未知域名一律原样返回，避免把只支持 http 的图床弄裂。
+**护栏**：`test/coverHttps.test.ts`（9 项）。
+
+**歌单不能编辑**：详情页根本没有改名/删除入口；且全站没有「加到自建歌单」的入口
+（只有写死 love 列表的收藏）。服务端 `/api/data/rename-playlist` /
+`delete-playlist` 是旧管理面板接口，前端主体从未调用，且要求 **admin 鉴权**。
+改用 `POST /api/user/list` 的 restore 通道（读全量→改一项→整份写回），
+用户 token 即可，且不会像旧接口那样每次改名都打快照（`maxSnapshotNum` 默认 10）。
+**封面**：`playlistCoverUrl()` 随机取曲目海报；空歌单画渐变占位；`onError` 退占位。
+
+**踩坑记录**：`G:\project\lxmusic` 与沙箱挂载是**两份不同文件**。改完挂载侧后
+必须 `cp` 到 `/tmp` 工作副本再 build，否则构建产物哈希不变、改动根本没进包
+（本次靠「新代码 grep 不到」发现）。

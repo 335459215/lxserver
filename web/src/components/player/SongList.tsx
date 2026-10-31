@@ -7,6 +7,7 @@ import { usePlayer } from '@/lib/player'
 import { useToast } from '@/components/ui'
 import { downloadSong } from '@/lib/download'
 import { cn } from '@/lib/utils'
+import AddToPlaylistMenu from '@/components/player/AddToPlaylistMenu'
 
 /** 曲目行：点整行即播；歌手名与专辑名可点进对应详情页；提供下载与移除等操作。
  *
@@ -28,6 +29,7 @@ function SongRow({
   allowDownload = true,
   onPlay,
   onRemove,
+  allowAddToPlaylist = true,
 }: {
   song: Song
   index: number
@@ -38,6 +40,8 @@ function SongRow({
   linkSinger: boolean
   linkAlbum: boolean
   allowDownload?: boolean
+  /** 是否显示「加到歌单」按钮（默认 true；本地音乐等无平台 id 的场景可关） */
+  allowAddToPlaylist?: boolean
   onPlay: () => void
   onRemove?: () => void
 }) {
@@ -175,8 +179,10 @@ function SongRow({
         </span>
       </span>
 
-      {/* 独立操作区：下载 / 移除 */}
+      {/* 独立操作区：加歌单 / 下载 / 移除 */}
       <div className="relative z-10 flex shrink-0 items-center gap-1">
+        {allowAddToPlaylist && <AddToPlaylistMenu songs={[song]} />}
+
         {allowDownload && (
           <button
             type="button"
@@ -223,6 +229,8 @@ export interface SongListProps {
   allowDownload?: boolean
   /** 提供则每行显示「移除」按钮 */
   onRemove?: (song: Song, index: number) => void
+  /** 是否显示「加到歌单」按钮（默认 true；本地音乐等无平台 id 的场景可关） */
+  allowAddToPlaylist?: boolean
   /** 歌手名是否可点进歌手页（默认开；在歌手自己的页面上关掉） */
   linkSinger?: boolean
   /** 专辑名是否可点进专辑页（默认开；在专辑自己的页面上关掉） */
@@ -258,6 +266,7 @@ export default function SongList({
   showSource = false,
   allowDownload = true,
   onRemove,
+  allowAddToPlaylist = true,
   linkSinger = true,
   linkAlbum = true,
   className,
@@ -283,6 +292,7 @@ export default function SongList({
             linkSinger={linkSinger}
             linkAlbum={linkAlbum}
             allowDownload={allowDownload}
+            allowAddToPlaylist={allowAddToPlaylist}
             onPlay={() => (onPlay ? onPlay(song, i) : player.playQueue(songs, i))}
             onRemove={onRemove ? () => onRemove(song, i) : undefined}
           />

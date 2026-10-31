@@ -10,7 +10,7 @@
  *  其中 MusicInfo = { id, name, singer, source, interval, meta: { songId, albumName, picUrl, qualitys } }
  */
 import { userAuthHeaders } from '@/lib/auth'
-import type { Song } from '@/lib/music'
+import { coverUrl, type Song } from '@/lib/music'
 
 /** 服务端内置列表 id（src/constants.ts LIST_IDS） */
 export const LIST_DEFAULT_ID = 'default'
@@ -123,6 +123,10 @@ export function findPlaylist(
 }
 
 /** 把若干首歌加入指定列表；location 不传则用账号偏好 */
+/** 把歌曲加到**内置列表**（试听 default / 收藏 love）。
+ *
+ *  已有的增量接口，不做去重（服务端按 id 判重，同 id 再加不会重复）。
+ *  自建歌单请用 addSongsToUserPlaylist —— 那个走 restore 通道并做了去重。 */
 export async function addSongsToPlaylist(
   listId: string,
   musicInfos: Song[],
@@ -200,4 +204,138 @@ export async function createPlaylist(name: string): Promise<string> {
 /** 歌单曲目的稳定 key（id 优先，回落 平台+歌名+歌手） */
 export function songKeyOf(song: Song, index: number): string {
   return String(song.id ?? `${song.source}-${song.name}-${song.singer}-${index}`)
+}
+
+/** 读出当前全量快照（restore 写回前的必读步骤，见 createPlaylist 的长注释）。 */
+async function readRawLists(): Promise<RawListData> {
+  const res = await fetch('/api/user/list', { headers: userAuthHeaders(), cache: 'no-store' })
+  if (res.status === 401) throw new ListsApiError('登录已过期，请重新登录后再操作歌单')
+  if (!res.ok) throw new ListsApiError(`读取歌单失败（HTTP ${res.status}）`)
+  const data = (await res.json().catch(() => null)) as RawListData | null
+  if (!data) throw new ListsApiError('读取歌单失败：返回内容不是 JSON')
+  return data
+}
+
+/** 整份写回（restore 语义）。调用方必须先 readRawLists() 再只改一侧。 */
+async function writeRawLists(next: {
+  defaultList: Song[]
+  loveList: Song[]
+  userList: Array<{ id: string; name: string; list: Song[]; [key: string]: unknown }>
+}): Promise<void> {
+  const auth = userAuthHeaders()
+  if (!auth['x-user-token']) throw new ListsApiError('登录已过期，请重新登录后再操作歌单')
+  const res = await fetch('/api/user/list', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify(next),
+  })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '')
+    throw new ListsApiError(msg || `写回歌单失败（HTTP ${res.status}）`)
+  }
+}
+
+/** 把快照规整成可写回的 wire 形状（userList 每项必须带 `list`）。 */
+function toWire(data: RawListData) {
+  return {
+    defaultList: data.defaultList ?? [],
+    loveList: data.loveList ?? [],
+    userList: (data.userList ?? []).map((l) => ({ ...l, list: l.list ?? [] })),
+  }
+}
+
+/** 重命名自建歌单。
+ *
+ *  服务端确实有 `POST /api/data/rename-playlist`，但那是**旧数据管理面板**的接口：
+ *  它要求 `{ username, playlistId, newName }` 且走 admin-only 鉴权，还会在
+ *  每次改名时打一张快照。前端主体（/api/user/list）从来不调它 —— 这就是
+ *  「歌单不能改名」的直接原因。
+ *
+ *  这里走前端已有的 restore 通道：读全量 → 只改目标歌单的 name → 整份写回。
+ *  好处是鉴权与其它歌单操作完全一致（用户 token 即可，不必是管理员），
+ *  也不会因为多打快照把快照位占满（服务端 maxSnapshotNum 默认 10）。 */
+export async function renamePlaylist(listId: string, newName: string): Promise<void> {
+  const trimmed = newName.trim()
+  if (!trimmed) throw new ListsApiError('歌单名不能为空')
+  const data = await readRawLists()
+  const wire = toWire(data)
+  const target = wire.userList.find((l) => l.id === listId)
+  if (!target) throw new ListsApiError('找不到这个歌单（可能已被删除）')
+  await writeRawLists({
+    ...wire,
+    userList: wire.userList.map((l) => (l.id === listId ? { ...l, name: trimmed } : l)),
+  })
+}
+
+/** 删除整个自建歌单（连同其中的曲目）。
+ *
+ *  同 renamePlaylist：服务端 `/api/data/delete-playlist` 是旧管理面板接口，
+ *  前端从不调用；这里用 restore 通道删掉目标项后整份写回。
+ *
+ *  ⚠️ 内置的「试听列表 / 我的收藏」不允许删 —— 它们的 id 是 default/love，
+ *  服务端 restore 会把它们重建，删了也不会消失，只会让人以为没生效。 */
+export async function deletePlaylist(listId: string): Promise<void> {
+  if (listId === LIST_DEFAULT_ID || listId === LIST_LOVE_ID) {
+    throw new ListsApiError('试听列表与我的收藏是内置列表，不能删除')
+  }
+  const data = await readRawLists()
+  const wire = toWire(data)
+  if (!wire.userList.some((l) => l.id === listId)) {
+    throw new ListsApiError('找不到这个歌单（可能已被删除）')
+  }
+  await writeRawLists({
+    ...wire,
+    userList: wire.userList.filter((l) => l.id !== listId),
+  })
+}
+
+/** 歌单曲目的判重键：平台 + songmid/id。
+ *  加歌前用它过滤，避免同一首歌被重复塞进同一个歌单。 */
+export function playlistSongKey(song: Song): string {
+  const mid = String(song.songmid ?? song.meta?.songId ?? song.id ?? '')
+  return `${song.source}::${mid || `${song.name}::${song.singer}`}`
+}
+
+/** 把歌加到指定歌单（去重，加在顶部）。
+ *
+ *  此前全站只有「收藏到我的收藏」（KeyboardShortcuts 里直接写死 love 列表），
+ *  没有任何入口能把歌放进**自建歌单** —— 建好的歌单永远加不进歌，
+ *  这是「歌单不能编辑」的另一半原因。 */
+export async function addSongsToUserPlaylist(listId: string, songs: Song[]): Promise<number> {
+  if (!songs.length) return 0
+  const data = await readRawLists()
+  const wire = toWire(data)
+  const target = wire.userList.find((l) => l.id === listId)
+  if (!target) throw new ListsApiError('找不到这个歌单（可能已被删除）')
+
+  const seen = new Set(target.list.map((s) => playlistSongKey(s)))
+  const fresh = songs.filter((s) => {
+    const k = playlistSongKey(s)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+  if (!fresh.length) return 0
+
+  // 与账号偏好一致：'top' 时新歌放最前（默认 addMusicLocationType='top'）
+  const merged = [...fresh, ...target.list]
+  await writeRawLists({
+    ...wire,
+    userList: wire.userList.map((l) => (l.id === listId ? { ...l, list: merged } : l)),
+  })
+  return fresh.length
+}
+
+/** 歌单封面：优先**随机**取一首带封面的曲目，其次取第一首有封面的。
+ *
+ *  为什么随机：固定取第一首时，同一个歌单的封面永远是那张，几张歌单看起来
+ *  一模一样；随机取能让每个歌单有辨识度。用 useMemo 在渲染期算一次即可，
+ *  不要在 render 里直接 Math.random()（会导致每次重渲染都换图闪烁）。
+ *
+ *  返回 undefined 表示整个歌单都没有封面 —— 调用方此时必须**画占位图**，
+ *  不能留白（见 PlaylistCard 的渐变兜底）。 */
+export function playlistCoverUrl(songs: Song[]): string | undefined {
+  const withCover = songs.map((s) => coverUrl(s)).filter((u): u is string => !!u)
+  if (!withCover.length) return undefined
+  return withCover[Math.floor(Math.random() * withCover.length)]
 }

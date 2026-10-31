@@ -350,17 +350,13 @@ export function songKey(song: Song | null): string {
  *  本文件顶部已转发 `dedupeSongs`，既有调用方不受影响。 */
 
 
-/** 封面地址：各平台字段名不统一，统一兜底（歌单曲目把封面放在 meta.picUrl） */
-export function coverUrl(song?: Song | null): string | undefined {
-  if (!song) return undefined
-  const candidates = [
-    song.img,
-    song.picUrl,
-    song.meta?.picUrl,
-    (song.album as { cover?: string } | undefined)?.cover,
-  ]
-  return candidates.find((u): u is string => typeof u === 'string' && u.length > 0)
-}
+/** 封面地址归一化：实现在零依赖的 `coverUrl.ts`（便于单测直接跑在 node 上）。
+ *
+ *  【为什么单独拆文件】`test/coverHttps.test.ts` 要 import 它，而 tsx 单测
+ *  解析不到 web 的 `@/` 别名 —— 本文件顶部就有 `@/lib/auth` 之类依赖，
+ *  所以纯函数必须放在一个**零 import** 的模块里（与 songIdentity.ts 同规矩）。
+ *  这里转发出去，`SongList` / `PlayerBar` / 播放内核等既有调用方无需改动。 */
+export { coverUrl, secureImageUrl, type CoverSource } from '@/lib/coverUrl'
 
 /** 平台中文名（未知平台回落原标识） */
 export function sourceLabel(source?: string): string {

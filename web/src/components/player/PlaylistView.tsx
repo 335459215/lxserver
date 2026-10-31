@@ -1,47 +1,79 @@
 import * as React from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowLeft, Download, Loader2, ListMusic, Play, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
-import { Button, useToast } from '@/components/ui'
-import { coverUrl, formatTotalDuration, intervalToSeconds } from '@/lib/music'
+import { Link, useNavigate } from 'react-router-dom'
+import {
+  ArrowLeft,
+  Download,
+  Loader2,
+  ListMusic,
+  Pencil,
+  Play,
+  RefreshCw,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  useToast,
+} from '@/components/ui'
+import { formatTotalDuration, intervalToSeconds } from '@/lib/music'
 import { usePlayer } from '@/lib/player'
 import { downloadSongsQueue } from '@/lib/download'
 import {
+  deletePlaylist,
   findPlaylist,
   LIST_DEFAULT_ID,
   LIST_LOVE_ID,
+  playlistCoverUrl,
   removeSongsFromPlaylist,
+  renamePlaylist,
   type Playlist,
 } from '@/lib/lists'
 import { useLists } from '@/lib/useLists'
 import SongList from '@/components/player/SongList'
 
-/** 歌单封面：取第一首有封面的曲目，带高保真柔和光晕 */
+/** 歌单封面：优先随机取一首带封面的曲目（每次进页面换一张，便于区分歌单），
+ *  带高保真柔和光晕。整个歌单都没封面时画占位图 —— 绝不留白。 */
 function ListCover({ songs, size = 'lg' }: { songs: Playlist['songs']; size?: 'sm' | 'lg' }) {
-  const cover = songs.map((s) => coverUrl(s)).find(Boolean)
+  // 随机封面只在 songs 变化时重算，避免每次渲染都换图闪烁
+  const cover = React.useMemo(() => playlistCoverUrl(songs), [songs])
+  // 记录**加载失败的那个地址**而不是布尔值：换歌单/换封面时自然重置，
+  // 不需要 useEffect 里 setState（本项目 lint 把 set-state-in-effect 设为 error）。
+  const [failedSrc, setFailedSrc] = React.useState<string | null>(null)
+  const shown = cover && cover !== failedSrc ? cover : undefined
   const cls = size === 'lg' ? 'size-32 md:size-44' : 'size-12'
 
   return (
     <div className="relative shrink-0 group">
-      {cover && size === 'lg' && (
+      {shown && size === 'lg' && (
         <div
           aria-hidden
           className="pointer-events-none absolute -inset-3 rounded-3xl opacity-40 blur-xl saturate-200 transition-opacity"
           style={{
-            backgroundImage: `url(${cover})`,
+            backgroundImage: `url(${shown})`,
             backgroundSize: 'cover',
             backgroundPosition: 'center',
           }}
         />
       )}
-      {cover ? (
+      {shown ? (
         <img
-          src={cover}
+          src={shown}
           alt=""
+          // 上游 CDN 偶尔 404 或拒绝 https：退回占位，不留裂图
+          onError={() => setFailedSrc(shown)}
           className={`${cls} relative z-10 shrink-0 rounded-2xl md:rounded-3xl border border-white/80 object-cover shadow-lg transition-transform duration-300 group-hover:scale-102`}
         />
       ) : (
         <div
-          className={`${cls} relative z-10 flex shrink-0 items-center justify-center rounded-2xl md:rounded-3xl border border-line/80 bg-gradient-to-tr from-indigo-50 to-purple-50 text-accent shadow-sm`}
+          className={`${cls} relative z-10 flex shrink-0 items-center justify-center rounded-2xl md:rounded-3xl border border-line/80 bg-gradient-to-tr from-indigo-50 via-purple-50 to-pink-50 text-accent shadow-sm`}
         >
           <ListMusic className={size === 'lg' ? 'size-12' : 'size-5'} />
         </div>
@@ -55,15 +87,66 @@ function ListCover({ songs, size = 'lg' }: { songs: Playlist['songs']; size?: 's
 export default function PlaylistView({ listId, backTo = '/playlist' }: { listId: string; backTo?: string }) {
   const player = usePlayer()
   const { toast } = useToast()
+  const navigate = useNavigate()
   const { snapshot, loading, error, reload } = useLists()
   const [removing, setRemoving] = React.useState<string | null>(null)
   const [batchDownloading, setBatchDownloading] = React.useState(false)
   const [batchProgress, setBatchProgress] = React.useState<{ current: number; total: number } | null>(null)
+  const [renaming, setRenaming] = React.useState(false)
+  const [nameDraft, setNameDraft] = React.useState('')
+  const [renameBusy, setRenameBusy] = React.useState(false)
+  const [deleteOpen, setDeleteOpen] = React.useState(false)
+  const [deleteBusy, setDeleteBusy] = React.useState(false)
 
   const playlist = React.useMemo(() => findPlaylist(snapshot, listId), [snapshot, listId])
 
-  // 试听列表与收藏是内置列表，不能整体删除曲目（收藏另有语义）；用户歌单可移除
+  // 试听列表与收藏是内置列表：既不能整体删除，也不能改名（服务端 restore 会重建它们）。
+  // 只有用户自建歌单才给「重命名 / 删除歌单」入口。
   const canRemove = listId !== LIST_DEFAULT_ID && listId !== LIST_LOVE_ID
+
+  const handleRename = React.useCallback(async () => {
+    const trimmed = nameDraft.trim()
+    if (!playlist || !trimmed || renameBusy) return
+    if (trimmed === playlist.name) {
+      setRenaming(false)
+      return
+    }
+    setRenameBusy(true)
+    try {
+      await renamePlaylist(playlist.id, trimmed)
+      toast({ title: '已重命名', description: `「${playlist.name}」→「${trimmed}」`, variant: 'success' })
+      setRenaming(false)
+      await reload(true)
+    } catch (e) {
+      toast({
+        title: '重命名失败',
+        description: e instanceof Error ? e.message : '未知错误',
+        variant: 'destructive',
+      })
+    } finally {
+      setRenameBusy(false)
+    }
+  }, [playlist, nameDraft, renameBusy, toast, reload])
+
+  const handleDelete = React.useCallback(async () => {
+    if (!playlist || deleteBusy) return
+    setDeleteBusy(true)
+    try {
+      await deletePlaylist(playlist.id)
+      toast({ title: '歌单已删除', description: playlist.name, variant: 'success' })
+      setDeleteOpen(false)
+      // 歌单没了，详情页会变成「找不到这个歌单」，直接回歌单库更顺
+      navigate(backTo)
+    } catch (e) {
+      toast({
+        title: '删除失败',
+        description: e instanceof Error ? e.message : '未知错误',
+        variant: 'destructive',
+      })
+    } finally {
+      setDeleteBusy(false)
+    }
+  }, [playlist, deleteBusy, toast, navigate, backTo])
 
   const totalSeconds = React.useMemo(
     () => (playlist?.songs ?? []).reduce((acc, s) => acc + intervalToSeconds(s.interval), 0),
@@ -234,14 +317,63 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
                 </>
               )}
             </Button>
+
+            {/* 自建歌单才给「重命名 / 删除」——内置的试听列表、我的收藏由服务端重建，
+                改了也存不住，放出来只会让人困惑。 */}
+            {canRemove && (
+              <div className="mt-1 flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setNameDraft(playlist.name)
+                    setRenaming(true)
+                  }}
+                  className="flex-1 justify-center rounded-full text-dim hover:text-accent"
+                >
+                  <Pencil className="size-3.5 mr-1.5" /> 重命名
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeleteOpen(true)}
+                  className="flex-1 justify-center rounded-full text-dim hover:text-danger"
+                >
+                  <Trash2 className="size-3.5 mr-1.5" /> 删除歌单
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 
         {/* 封面下方：只留歌单名称 + 歌曲数量 + 总时长 */}
         <div className="mt-4 min-w-0">
-          <h1 className="truncate text-2xl md:text-3xl font-extrabold tracking-tight text-ink">
-            {playlist.name}
-          </h1>
+          {renaming ? (
+            <div className="flex items-center gap-2">
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                autoFocus
+                maxLength={60}
+                placeholder="歌单名"
+                className="max-w-md text-lg font-semibold"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleRename()
+                  if (e.key === 'Escape') setRenaming(false)
+                }}
+              />
+              <Button size="sm" onClick={() => void handleRename()} disabled={renameBusy || !nameDraft.trim()}>
+                {renameBusy ? '保存中…' : '保存'}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setRenaming(false)} disabled={renameBusy}>
+                取消
+              </Button>
+            </div>
+          ) : (
+            <h1 className="truncate text-2xl md:text-3xl font-extrabold tracking-tight text-ink">
+              {playlist.name}
+            </h1>
+          )}
           <p className="mt-2 text-sm text-dim flex items-center gap-2">
             <span className="font-semibold text-ink">{playlist.songs.length} 首歌曲</span>
             {totalSeconds > 0 && (
@@ -253,6 +385,34 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
           </p>
         </div>
       </header>
+
+      {/* 删除歌单二次确认：歌单连同曲目一起删除，且服务端只保 10 张快照，
+          误删后不一定还能恢复 —— 必须让人看清楚再点。 */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除歌单「{playlist.name}」？</DialogTitle>
+            <DialogDescription>
+              将连同其中 {playlist.songs.length} 首歌曲一起删除，此操作不可撤销。
+              歌单只是收藏关系的集合，**不会删掉你本地的音乐文件**。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost" type="button" disabled={deleteBusy}>
+                取消
+              </Button>
+            </DialogClose>
+            <Button
+              onClick={() => void handleDelete()}
+              disabled={deleteBusy}
+              className="bg-danger text-white hover:bg-danger/90"
+            >
+              {deleteBusy ? '删除中…' : '确认删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 批量下载进度条通知 */}
       {batchDownloading && batchProgress && (
