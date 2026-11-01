@@ -113,11 +113,28 @@ declare namespace LX {
       list: LX.Music.MusicInfo[]
     }
 
+    /** v2.44.0：内置列表（试听列表 / 我的收藏）的可编辑元信息。
+     *
+     *  【为什么必须进同步快照】此前内置列表的名字是前端写死的、删除标记也不存在，
+     *  `restore()` 每次都按固定 key 重建它们 —— 于是「改不了名、删不掉」。
+     *  现在 name/deleted 跟曲目一起存进快照；**旧快照没有这两个字段**，
+     *  读到时按「默认名 + 未删除」处理，不能因为缺字段就把老用户的数据弄丢。 */
+    interface BuiltinListMeta {
+      /** 用户改过的名字；空/缺省 = 用默认名（试听列表 / 我的收藏） */
+      name?: string
+      /** 用户删除了这个内置列表（持久化；不会被 restore 重建） */
+      deleted?: boolean
+    }
+
     interface ListDataFull {
       defaultList: LX.Music.MusicInfo[]
       loveList: LX.Music.MusicInfo[]
       userList: UserListInfoFull[]
       tempList: LX.Music.MusicInfo[]
+      /** 试听列表的元信息（可选，兼容 v2.43 及更早的快照） */
+      defaultMeta?: BuiltinListMeta
+      /** 我的收藏的元信息（可选，同上） */
+      loveMeta?: BuiltinListMeta
     }
 
     type ListMusics = LX.Music.MusicInfo[]

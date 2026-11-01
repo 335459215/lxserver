@@ -98,7 +98,10 @@ function SongRow({
   return (
     <div
       className={cn(
-        'group relative flex w-full items-center gap-3.5 rounded-2xl border px-3.5 py-2.5 transition-all duration-200',
+        // 移动端（<640px）收紧横向占位：整行铺满屏宽后，歌名才有地方显示。
+        // 手机上一行要同时容纳「序号+封面+歌名/歌手+加歌单+下载」，
+        // 原来的 gap-3.5/px-3.5/size-11 把标题挤到只剩 ~54px（歌名被截成「周杰…」）。
+        'group relative flex w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 transition-all duration-200 sm:gap-3.5 sm:px-3.5',
         active
           ? 'border-accent/40 bg-accent/8 shadow-xs'
           : 'border-transparent hover:border-line/80 hover:bg-panel-2/70 hover:shadow-2xs',
@@ -111,8 +114,8 @@ function SongRow({
         className="absolute inset-0 rounded-2xl focus:outline-none"
       />
 
-      <span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-3.5">
-        <span className="w-6 shrink-0 text-center font-mono text-xs text-faint">
+      <span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3.5">
+        <span className="w-5 shrink-0 text-center font-mono text-xs text-faint sm:w-6">
           {active && loading ? (
             <Loader2 className="mx-auto size-3.5 animate-spin text-accent" />
           ) : active && playing ? (
@@ -134,10 +137,10 @@ function SongRow({
             src={cover}
             alt=""
             loading="lazy"
-            className="size-11 shrink-0 rounded-xl border border-line/70 object-cover shadow-2xs transition-transform duration-300 group-hover:scale-105"
+            className="size-10 shrink-0 rounded-xl border border-line/70 object-cover shadow-2xs transition-transform duration-300 group-hover:scale-105 sm:size-11"
           />
         ) : (
-          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-line/70 bg-panel-2 text-faint shadow-2xs">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-line/70 bg-panel-2 text-faint shadow-2xs sm:size-11">
             <Disc3 className="size-5" />
           </span>
         )}
@@ -174,7 +177,8 @@ function SongRow({
             {sourceLabel(song.source)}
           </span>
         )}
-        <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-faint">
+        {/* 时长在手机上让位给歌名（48px + gap 是标题区最大的一块固定占位），桌面端照旧显示 */}
+        <span className="hidden w-12 shrink-0 text-right font-mono text-xs tabular-nums text-faint sm:block">
           {duration > 0 ? formatTime(duration) : '--:--'}
         </span>
       </span>

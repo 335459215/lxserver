@@ -1316,6 +1316,64 @@
     - 单一源失败时自动重试 3 次。
     - 多源支持时自动轮询尝试不同源。
 
+## v2.44.0 (2026-11-01) — 六项体验修复
+
+### ① 所有歌单都能改名、都能删除（含「试听列表」「我的收藏」）
+
+根因是三层叠加：`ListDataManage.restore()` 每次按固定 key 强制重建 default/love；
+内置列表的名字只活在前端 `findPlaylist()` 的写死字符串里；`PlaylistView` 的
+`canRemove` 与 `lib/lists.ts` 的 `deletePlaylist()` 又主动拒绝内置 id。
+
+修复：
+- 快照 payload 新增 `defaultMeta` / `loveMeta`（`{ name?, deleted? }`），
+  `restore()` 与 `getListData()` 尊重它们；**旧快照缺字段时回落默认名、未删除**。
+- 删除内置列表 = 写 `deleted: true` + 清空曲目，不再被重建；
+  之后若又往该列表加歌（L 键收藏 / 加到「我的收藏」），服务端自动清掉删除标记让它复活。
+- 前端去掉写死名字与 `canRemove` 限制；歌单总览/详情页的名字都来自快照 meta，
+  已删除的内置列表不再渲染。
+
+### ② 「今日甄选」6 张卡有真封面
+
+首页加载时为 6 张卡各搜一首（只查网易云），取 `coverUrl()` 作封面：
+2 路并发 + 错峰、localStorage 缓存（带版本前缀与 7 天 TTL）、失败静默回落渐变，
+不阻塞首屏、不裂图（明文 http 封面一律拒绝）。
+
+### ③ 移动端搜索结果行占满宽度
+
+390px 视口下结果行只有 316px（歌名被截成「周杰…」）：结果卡 `p-5` + `<main>` 的 `p-4`
+把宽度吃掉两层。手机端改为通栏（`-mx-4` 抵消 p-4、去圆角与左右内边距，行宽 378px），
+并收紧行内 gap/封面尺寸、手机端隐藏时长列。桌面端样式不变。
+
+### ④ 从播放页返回保留搜索结果
+
+`runSearch()` 从不写 URL，而恢复判据要求 URL 带 `q` —— 这套机制**从未生效过**。
+现在搜索会把 `q/source/type` 以 `replace` 写进 URL（不新增历史项），返回时
+history 回到带 q 的地址、恢复分支命中；同时用「搜索身份键」跳过 URL 变化引发的重复搜索
+（返回后 **0 个**新搜索请求），刷新/分享也能复现同一次搜索。
+
+### ⑤ PWA 缓存：封面 + 排行榜
+
+- `sw.js`：新增**白名单图床**封面缓存（`music.126.net` / `musicapp.migu.cn` /
+  `kugou.com` / `kuwo.cn` / `gtimg.cn` / `y.qq.com`）与排行榜 `list/boards` 的
+  stale-while-revalidate；音频 Range 与登录态接口仍然绝不碰。`VERSION` 提到 `v3`，
+  activate 清理旧缓存。
+- 服务端：`/api/music/leaderboard/list` 补 `Cache-Control: public, max-age=300`
+  并加内存短缓存（LRU 300 条 / TTL 5 分钟 / 同 key 并发合并）。
+
+### ⑥ 自定义音源：链接 + 文件 + 「使用代理」
+
+导入对话框改成一行：链接输入框 + 右侧「使用代理」勾选 + 「+」调起本地文件选择器；
+粘贴脚本内容折叠保留。
+服务端新增「按链接抓取」的完整护栏：仅 http/https、拦截回环与云元数据地址、
+逐跳校验重定向、2MB 流式上限、20s 整体超时、HTML/空内容识别；**默认强制直连**，
+只有勾选才走 `proxy.customSource`（NAS 上代理拉自定义源会 ECONNRESET）。
+
+### 验证
+
+- 单测 **274/274**（新增 `curatedCovers` 7 项、`leaderboardCache` 5 项、`customSourceUrl` 7 项）
+- 类型检查：根 `tsc` 与 `web` 的 `tsc --noEmit` 全绿，`vite build` 通过
+- 线上 390×844 无头 Chrome 逐项断言（截图见 `docs/v244/`）
+
 ## v2.43.0 (2026-10-31) — 歌单可编辑（改名/删除/加歌）+ 修复 HTTPS「不安全」
 
 ### 修复：HTTPS「不安全」警告 —— 是本容器的封面地址，不是反代

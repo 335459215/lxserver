@@ -14,7 +14,7 @@ import {
   Input,
   useToast,
 } from '@/components/ui'
-import { createPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, playlistCoverUrl, type Playlist } from '@/lib/lists'
+import { createPlaylist, findPlaylist, LIST_DEFAULT_ID, LIST_LOVE_ID, playlistCoverUrl, type Playlist } from '@/lib/lists'
 import { useLists } from '@/lib/useLists'
 import { PlaylistTransferButtons } from '@/components/player/PlaylistTransfer'
 
@@ -126,6 +126,9 @@ function CreatePlaylistDialog({ onDone }: { onDone: (id: string) => void }) {
 export default function PlaylistPage() {
   const { snapshot, loading, error, reload } = useLists()
   const navigate = useNavigate()
+  // 内置列表：名字/是否存在都来自快照 meta（v2.44.0 起可改名、可删除）
+  const defaultPlaylist = findPlaylist(snapshot, LIST_DEFAULT_ID)
+  const lovePlaylist = findPlaylist(snapshot, LIST_LOVE_ID)
 
   return (
     <div className="w-full rise">
@@ -160,14 +163,9 @@ export default function PlaylistPage() {
         <>
           <section className="mt-6">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <PlaylistCard
-                playlist={{ id: LIST_DEFAULT_ID, name: '试听列表', songs: snapshot.defaultList }}
-                icon="list"
-              />
-              <PlaylistCard
-                playlist={{ id: LIST_LOVE_ID, name: '我的收藏', songs: snapshot.loveList }}
-                icon="heart"
-              />
+              {/* v2.44.0：内置列表的名字取快照里的 meta（用户可改），已删除的不再显示 */}
+              {defaultPlaylist && <PlaylistCard playlist={defaultPlaylist} icon="list" />}
+              {lovePlaylist && <PlaylistCard playlist={lovePlaylist} icon="heart" />}
             </div>
           </section>
 

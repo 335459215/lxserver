@@ -31,6 +31,19 @@ export interface Playlist extends PlaylistInfo {
   songs: Song[]
 }
 
+/** 内置列表元信息（v2.44.0）：名字可改、可删除，都随服务端快照持久化。
+ *  旧快照没有这两个字段 → 名字回落默认、未删除。 */
+export interface BuiltinMetaInfo {
+  name?: string
+  deleted?: boolean
+}
+
+/** 内置列表的默认名（服务端没存过自定义名字时用它） */
+export const BUILTIN_LIST_NAMES = {
+  [LIST_DEFAULT_ID]: '试听列表',
+  [LIST_LOVE_ID]: '我的收藏',
+} as const
+
 export interface ListsSnapshot {
   /** 试听列表（旧版播放器的默认列表） */
   defaultList: Song[]
@@ -38,6 +51,10 @@ export interface ListsSnapshot {
   loveList: Song[]
   /** 用户自建 / 导入的歌单 */
   userList: Playlist[]
+  /** 试听列表元信息（可能缺省：旧服务端 / 旧快照） */
+  defaultMeta?: BuiltinMetaInfo
+  /** 我的收藏元信息 */
+  loveMeta?: BuiltinMetaInfo
 }
 
 export class ListsApiError extends Error {
@@ -55,6 +72,8 @@ interface RawListData {
   defaultList?: Song[]
   loveList?: Song[]
   userList?: RawUserList[]
+  defaultMeta?: BuiltinMetaInfo
+  loveMeta?: BuiltinMetaInfo
 }
 
 /** 拉取当前用户的全部列表（试听/收藏/自建歌单） */
@@ -81,6 +100,8 @@ export async function fetchLists(signal?: AbortSignal): Promise<ListsSnapshot> {
       const { list, ...info } = l
       return { ...info, songs: list ?? [] }
     }),
+    defaultMeta: data.defaultMeta ?? {},
+    loveMeta: data.loveMeta ?? {},
   }
 }
 
@@ -93,6 +114,8 @@ export async function restoreLists(raw: {
   defaultList: Song[]
   loveList: Song[]
   userList: Array<{ id: string; name: string; list: Song[]; [key: string]: unknown }>
+  defaultMeta?: BuiltinMetaInfo
+  loveMeta?: BuiltinMetaInfo
 }): Promise<void> {
   const auth = userAuthHeaders()
   if (!auth['x-user-token']) throw new ListsApiError('登录已过期，请重新登录后再导入')
@@ -107,17 +130,30 @@ export async function restoreLists(raw: {
   }
 }
 
-/** 从快照里按 id 找列表（'default' / 'love' / 用户歌单 id） */
+/** 从快照里按 id 找列表（'default' / 'love' / 用户歌单 id）。
+ *
+ *  v2.44.0：内置列表的名字来自快照里的 meta（可被用户改过），
+ *  且 `deleted: true` 时返回 null —— 已删除的内置列表不应该还能被打开。 */
 export function findPlaylist(
   snapshot: ListsSnapshot | null,
   id: string | undefined,
 ): Playlist | null {
   if (!snapshot || !id) return null
   if (id === LIST_DEFAULT_ID) {
-    return { id: LIST_DEFAULT_ID, name: '试听列表', songs: snapshot.defaultList }
+    if (snapshot.defaultMeta?.deleted) return null
+    return {
+      id: LIST_DEFAULT_ID,
+      name: snapshot.defaultMeta?.name?.trim() || BUILTIN_LIST_NAMES[LIST_DEFAULT_ID],
+      songs: snapshot.defaultList,
+    }
   }
   if (id === LIST_LOVE_ID) {
-    return { id: LIST_LOVE_ID, name: '我的收藏', songs: snapshot.loveList }
+    if (snapshot.loveMeta?.deleted) return null
+    return {
+      id: LIST_LOVE_ID,
+      name: snapshot.loveMeta?.name?.trim() || BUILTIN_LIST_NAMES[LIST_LOVE_ID],
+      songs: snapshot.loveList,
+    }
   }
   return snapshot.userList.find((l) => l.id === id) ?? null
 }
@@ -187,6 +223,9 @@ export async function createPlaylist(name: string): Promise<string> {
       ...(data.userList ?? []).map((l) => ({ ...l, list: l.list ?? [] })),
       { id, name: trimmed, list: [] as Song[] },
     ],
+    // 新建歌单也是「读-改-写」：必须把内置列表的 meta 原样带回去，否则改名/删除标记会被抹掉
+    defaultMeta: data.defaultMeta ?? {},
+    loveMeta: data.loveMeta ?? {},
   }
 
   const put = await fetch('/api/user/list', {
@@ -221,6 +260,8 @@ async function writeRawLists(next: {
   defaultList: Song[]
   loveList: Song[]
   userList: Array<{ id: string; name: string; list: Song[]; [key: string]: unknown }>
+  defaultMeta?: BuiltinMetaInfo
+  loveMeta?: BuiltinMetaInfo
 }): Promise<void> {
   const auth = userAuthHeaders()
   if (!auth['x-user-token']) throw new ListsApiError('登录已过期，请重新登录后再操作歌单')
@@ -235,12 +276,15 @@ async function writeRawLists(next: {
   }
 }
 
-/** 把快照规整成可写回的 wire 形状（userList 每项必须带 `list`）。 */
+/** 把快照规整成可写回的 wire 形状（userList 每项必须带 `list`）。
+ *  内置列表的 meta 一并带上 —— 否则每次「读-改-写」都会把用户改过的名字/删除标记抹掉。 */
 function toWire(data: RawListData) {
   return {
     defaultList: data.defaultList ?? [],
     loveList: data.loveList ?? [],
     userList: (data.userList ?? []).map((l) => ({ ...l, list: l.list ?? [] })),
+    defaultMeta: data.defaultMeta ?? {},
+    loveMeta: data.loveMeta ?? {},
   }
 }
 
@@ -259,6 +303,15 @@ export async function renamePlaylist(listId: string, newName: string): Promise<v
   if (!trimmed) throw new ListsApiError('歌单名不能为空')
   const data = await readRawLists()
   const wire = toWire(data)
+  // v2.44.0：内置列表也走同一条 restore 通道，只是名字存在 meta 里（不是 userList 项）
+  if (listId === LIST_DEFAULT_ID) {
+    await writeRawLists({ ...wire, defaultMeta: { ...wire.defaultMeta, name: trimmed } })
+    return
+  }
+  if (listId === LIST_LOVE_ID) {
+    await writeRawLists({ ...wire, loveMeta: { ...wire.loveMeta, name: trimmed } })
+    return
+  }
   const target = wire.userList.find((l) => l.id === listId)
   if (!target) throw new ListsApiError('找不到这个歌单（可能已被删除）')
   await writeRawLists({
@@ -267,19 +320,33 @@ export async function renamePlaylist(listId: string, newName: string): Promise<v
   })
 }
 
-/** 删除整个自建歌单（连同其中的曲目）。
+/** 删除整个歌单（连同其中的曲目）。
  *
- *  同 renamePlaylist：服务端 `/api/data/delete-playlist` 是旧管理面板接口，
- *  前端从不调用；这里用 restore 通道删掉目标项后整份写回。
- *
- *  ⚠️ 内置的「试听列表 / 我的收藏」不允许删 —— 它们的 id 是 default/love，
- *  服务端 restore 会把它们重建，删了也不会消失，只会让人以为没生效。 */
+ *  自建歌单：从 userList 里删掉后整份写回（restore 通道）。
+ *  v2.44.0 起内置的「试听列表 / 我的收藏」也**可以删**：写 `deleted: true` 并清空曲目，
+ *  服务端 restore() 会尊重这个标记、不再重建它们（此前正是「删了立刻回来」的根因）。
+ *  之后若用户又往这个列表加歌（L 键收藏 / 加到「我的收藏」），服务端会自动清掉标记让它复活。 */
 export async function deletePlaylist(listId: string): Promise<void> {
-  if (listId === LIST_DEFAULT_ID || listId === LIST_LOVE_ID) {
-    throw new ListsApiError('试听列表与我的收藏是内置列表，不能删除')
-  }
   const data = await readRawLists()
   const wire = toWire(data)
+
+  if (listId === LIST_DEFAULT_ID) {
+    await writeRawLists({
+      ...wire,
+      defaultList: [],
+      defaultMeta: { ...wire.defaultMeta, deleted: true },
+    })
+    return
+  }
+  if (listId === LIST_LOVE_ID) {
+    await writeRawLists({
+      ...wire,
+      loveList: [],
+      loveMeta: { ...wire.loveMeta, deleted: true },
+    })
+    return
+  }
+
   if (!wire.userList.some((l) => l.id === listId)) {
     throw new ListsApiError('找不到这个歌单（可能已被删除）')
   }

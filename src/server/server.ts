@@ -40,6 +40,7 @@ import { setSongResolver, getSyncDownloadData, saveSyncDownloadData, getUserSync
 import { getDownloadQualityCandidates } from './downloadQuality'
 import { isAdminRequest, isAdminUser, hasExplicitAdmin, adminExistsAfterChange, registerUserTokenVerifier, extractTokens } from './adminAuth'
 import { staticCache } from './staticCache'
+import { createLeaderboardCache, leaderboardCacheKey } from './leaderboardCache'
 import crypto from 'node:crypto'
 import needle from 'needle'
 import { getProxyAgent, resolveProxyAddress } from '../modules/utils/proxy.js'
@@ -103,6 +104,10 @@ const serializeDislikeRules = (rules: string, username?: string) => {
 // 收藏歌手列表头像补全：内存缓存（避免每次刷新重复请求音源）
 const artistPicCache = new Map<string, string>()
 const artistPicInFlight = new Map<string, Promise<string | null>>()
+/** 排行榜列表的服务端内存短缓存（v2.44.0 ⑤）。
+ *  反代不开缓存是用户要求；没有它，每次切榜单都要原样重打上游（实测 1-3 秒）。
+ *  TTL 5 分钟与响应头 Cache-Control 的 max-age 对齐；LRU 上限 300 条。 */
+const leaderboardListCache = createLeaderboardCache<any>({ ttlMs: 5 * 60 * 1000, maxEntries: 300 })
 function extractArtistPic(d: any): string | null {
   if (!d || typeof d !== 'object') return null
   return d.avatar || d.img || d.pic || d.picUrl || d.picture || d.image || d.cover || null
@@ -6561,11 +6566,23 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           if (!musicSdk[source] || !musicSdk[source].leaderboard) {
             throw new Error(`Source ${source} does not support leaderboard`)
           }
-          const result = await musicSdk[source].leaderboard.getList(bangid, page)
-          if (result && result.list) {
-            result.list = result.list.map(normalizeSongInfo)
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json' })
+          // ⑤ 服务端内存短缓存：同一 (source, bangid, page) 5 分钟内只打一次上游。
+          // 命中即返回（切榜单不再等 1-3 秒）；并发请求由 getOrLoad 合并成一次。
+          // 注意：normalizeSongInfo 放在 loader 里做 —— 缓存的是「已归一化」的结果，
+          // 避免每次命中都对同一个共享对象重新 map 一遍。
+          const cacheKey = leaderboardCacheKey(source, String(bangid), page)
+          const result = await leaderboardListCache.getOrLoad(cacheKey, async () => {
+            const raw = await musicSdk[source].leaderboard.getList(bangid, page)
+            if (raw && raw.list) {
+              raw.list = raw.list.map(normalizeSongInfo)
+            }
+            return raw
+          })
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            // 与 boards 接口（public, max-age=600）同口径；list 数据更新更频繁，取 300s
+            'Cache-Control': 'public, max-age=300',
+          })
           res.end(JSON.stringify(result))
         } catch (err: any) {
           console.error(`[排行榜] 获取排行榜歌曲失败:`, err)

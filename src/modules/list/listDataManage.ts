@@ -6,6 +6,10 @@ export class ListDataManage {
   snapshotDataManage: SnapshotDataManage
   userLists: LX.List.UserListInfo[] = []
   allMusicList = new Map<string, LX.Music.MusicInfo[]>()
+  /** v2.44.0 内置列表元信息（名字 / 是否已删除）。
+   *  旧快照没有这两个字段 → 默认 `{}`，即「用默认名、未删除」，老数据不受影响。 */
+  defaultMeta: LX.List.BuiltinListMeta = {}
+  loveMeta: LX.List.BuiltinListMeta = {}
   initPromise: Promise<void>
 
   constructor(snapshotDataManage: SnapshotDataManage) {
@@ -17,6 +21,8 @@ export class ListDataManage {
       if (!listData) listData = { defaultList: [], loveList: [], userList: [] }
       this.allMusicList.set(LIST_IDS.DEFAULT, listData.defaultList)
       this.allMusicList.set(LIST_IDS.LOVE, listData.loveList)
+      this.defaultMeta = { ...(listData.defaultMeta ?? {}) }
+      this.loveMeta = { ...(listData.loveMeta ?? {}) }
       this.userLists.push(...listData.userList.map(({ list, ...l }) => {
         this.allMusicList.set(l.id, list)
         return l
@@ -29,6 +35,9 @@ export class ListDataManage {
 
     this.allMusicList.set(LIST_IDS.DEFAULT, listData.defaultList)
     this.allMusicList.set(LIST_IDS.LOVE, listData.loveList)
+    // 内置列表的「名字 / 已删除」随快照持久化：缺字段 = 默认名、未删除（兼容旧快照）
+    this.defaultMeta = { ...(listData.defaultMeta ?? {}) }
+    this.loveMeta = { ...(listData.loveMeta ?? {}) }
     this.userLists.push(...listData.userList.map(({ list, ...l }) => {
       this.allMusicList.set(l.id, list)
       return l
@@ -40,6 +49,8 @@ export class ListDataManage {
       defaultList: this.allMusicList.get(LIST_IDS.DEFAULT) ?? [],
       loveList: this.allMusicList.get(LIST_IDS.LOVE) ?? [],
       userList: this.userLists.map(l => ({ ...l, list: this.allMusicList.get(l.id) ?? [] })),
+      defaultMeta: { ...this.defaultMeta },
+      loveMeta: { ...this.loveMeta },
     }
   }
 
@@ -56,6 +67,13 @@ export class ListDataManage {
 
   private readonly removeMusicList = (id: string) => {
     this.allMusicList.delete(id)
+  }
+
+  /** 往内置列表里写歌 = 用户要继续用它：清掉 deleted 标记，让它重新出现。
+   *  （典型场景：删掉「我的收藏」后又按了 L 键收藏 —— 收藏应该成功，列表也该回来。） */
+  private readonly markBuiltinVisible = (id: string) => {
+    const meta = id === LIST_IDS.DEFAULT ? this.defaultMeta : id === LIST_IDS.LOVE ? this.loveMeta : null
+    if (meta && meta.deleted) meta.deleted = false
   }
 
   private readonly createUserList = ({
@@ -95,7 +113,11 @@ export class ListDataManage {
     let targetList
     switch (id) {
       case LIST_IDS.DEFAULT:
+        // 内置列表也能改名：名字写进 meta，随快照持久化
+        this.defaultMeta.name = name
+        break
       case LIST_IDS.LOVE:
+        this.loveMeta.name = name
         break
       case LIST_IDS.TEMP:
       //   tempList.meta = meta ?? {}
@@ -128,7 +150,7 @@ export class ListDataManage {
   // }
 
 
-  listDataOverwrite = async ({ defaultList, loveList, userList, tempList }: MakeOptional<LX.List.ListDataFull, 'tempList'>): Promise<string[]> => {
+  listDataOverwrite = async ({ defaultList, loveList, userList, tempList, defaultMeta, loveMeta }: MakeOptional<LX.List.ListDataFull, 'tempList'>): Promise<string[]> => {
     const updatedListIds: string[] = []
     const newUserIds: string[] = []
     const newUserListInfos = userList.map(({ list, ...listInfo }) => {
@@ -147,6 +169,8 @@ export class ListDataManage {
     if (this.allMusicList.has(LIST_IDS.DEFAULT)) updatedListIds.push(LIST_IDS.DEFAULT)
     this.setMusicList(LIST_IDS.DEFAULT, defaultList)
     this.setMusicList(LIST_IDS.LOVE, loveList)
+    if (defaultMeta) this.defaultMeta = { ...defaultMeta }
+    if (loveMeta) this.loveMeta = { ...loveMeta }
     updatedListIds.push(LIST_IDS.LOVE)
 
     if (tempList && this.allMusicList.has(LIST_IDS.TEMP)) {
@@ -182,6 +206,15 @@ export class ListDataManage {
   userListsRemove = async (ids: string[]) => {
     const changedIds = []
     for (const id of ids) {
+      if (id === LIST_IDS.DEFAULT || id === LIST_IDS.LOVE) {
+        // 内置列表也允许删除：只删 Map 不行 —— getListData() 会把缺失的 key 回落成 []，
+        // 前端看到的是「还在、只是空的」。必须打 deleted 标记并清空曲目。
+        const meta = id === LIST_IDS.DEFAULT ? this.defaultMeta : this.loveMeta
+        meta.deleted = true
+        this.setMusicList(id, [])
+        changedIds.push(id)
+        continue
+      }
       this.removeUserList(id)
       // removeListPosition(id)
       // removeListUpdateInfo(id)
@@ -232,11 +265,13 @@ export class ListDataManage {
   }
 
   listMusicOverwrite = async (listId: string, musicInfos: LX.Music.MusicInfo[]): Promise<string[]> => {
+    if (musicInfos.length > 0) this.markBuiltinVisible(listId)
     this.setMusicList(listId, musicInfos)
     return [listId]
   }
 
   listMusicAdd = async (id: string, musicInfos: LX.Music.MusicInfo[], addMusicLocationType: LX.AddMusicLocationType): Promise<string[]> => {
+    if (musicInfos.length > 0) this.markBuiltinVisible(id)
     const targetList = await this.getListMusics(id)
 
     const listSet = new Set<string>()

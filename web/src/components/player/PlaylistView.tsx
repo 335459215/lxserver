@@ -29,8 +29,6 @@ import { downloadSongsQueue } from '@/lib/download'
 import {
   deletePlaylist,
   findPlaylist,
-  LIST_DEFAULT_ID,
-  LIST_LOVE_ID,
   playlistCoverUrl,
   removeSongsFromPlaylist,
   renamePlaylist,
@@ -100,9 +98,10 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
 
   const playlist = React.useMemo(() => findPlaylist(snapshot, listId), [snapshot, listId])
 
-  // 试听列表与收藏是内置列表：既不能整体删除，也不能改名（服务端 restore 会重建它们）。
-  // 只有用户自建歌单才给「重命名 / 删除歌单」入口。
-  const canRemove = listId !== LIST_DEFAULT_ID && listId !== LIST_LOVE_ID
+  // v2.44.0：所有歌单（含内置的试听列表 / 我的收藏）都能改名、都能删除。
+  // 此前这里排除了 default/love，理由是「服务端 restore 会重建它们」——
+  // 现在服务端把 name/deleted 存进快照并尊重它，这条限制就没有依据了。
+  const canRemove = !!playlist
 
   const handleRename = React.useCallback(async () => {
     const trimmed = nameDraft.trim()
@@ -318,8 +317,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
               )}
             </Button>
 
-            {/* 自建歌单才给「重命名 / 删除」——内置的试听列表、我的收藏由服务端重建，
-                改了也存不住，放出来只会让人困惑。 */}
+            {/* v2.44.0：所有歌单都可改名/删除（内置列表的名字与删除标记已随快照持久化） */}
             {canRemove && (
               <div className="mt-1 flex items-center gap-2">
                 <Button

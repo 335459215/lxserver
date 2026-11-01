@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Download, Plus, Trash2, Zap } from 'lucide-react'
 import { api, isAdmin, useAuth } from '@/lib/auth'
 import { useConfigForm } from '@/lib/useConfig'
@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  Input,
   Stack,
   Switch,
   SwitchField,
@@ -74,56 +75,133 @@ function SpeedBadge({ ms }: { ms?: number }) {
   )
 }
 
-/** 导入音源 Dialog：粘贴脚本 → 验证 → 展示元数据 → 确认导入 */
+/** 导入音源 Dialog（v2.44.0 ⑥）。
+ *
+ *  【为什么改成一行的布局】
+ *  原来只有一个 `h-48` 的 textarea，用户必须先拿到脚本文本才能导入 ——
+ *  而绝大多数音源就是一个**链接**。现在：
+ *    链接输入框（一行） + 右侧「使用代理」勾选 + 「+」调起本地文件选择器；
+ *  粘贴脚本仍保留（折叠在 details 里），不破坏老用法。
+ *
+ *  【为什么「使用代理」默认不勾】
+ *  NAS 上 customSource 经代理会 ECONNRESET（needle + tunnel 的 TLS-over-CONNECT 不兼容），
+ *  现网直连是可用的。只有用户明确勾选，服务端才挂代理 agent。 */
 function ImportSourceDialog({ onDone }: { onDone: () => void }) {
   const { toast } = useToast()
+  const [url, setUrl] = useState('')
+  const [useProxy, setUseProxy] = useState(false)
   const [script, setScript] = useState('')
+  const [fileName, setFileName] = useState('')
   const [allowUnsafeVM, setAllowUnsafeVM] = useState(false)
   const [metadata, setMetadata] = useState<{ name?: string; version?: string; platforms?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [step, setStep] = useState<'paste' | 'validated'>('paste')
+  const [step, setStep] = useState<'input' | 'validated'>('input')
+  const fileRef = useRef<HTMLInputElement>(null)
 
-  const validate = async () => {
+  /** 把服务端返回的错误文案读出来（统一是 { success:false, error }） */
+  const readError = async (res: Response, fallback: string) => {
+    try {
+      const data = await res.json()
+      return data?.error || data?.message || fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  /** 链接导入：由服务端抓取（协议白名单 / 逐跳重定向校验 / 2MB 上限 / 20s 超时） */
+  const importFromUrl = async () => {
+    const target = url.trim()
+    if (!target) return
     setBusy(true)
     try {
-      const res = await api.sources.validate(script, allowUnsafeVM)
+      const res = await api.sources.importUrl(target, useProxy, allowUnsafeVM)
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}))
+        toast({
+          title: '音源已导入',
+          description: data?.metadata?.name || target,
+          variant: 'success',
+        })
+        reset()
+        onDone()
+      } else {
+        toast({ title: '导入失败', description: await readError(res, '链接抓取失败'), variant: 'destructive' })
+      }
+    } catch (e) {
+      toast({ title: '导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 验证脚本内容（粘贴或文件） */
+  const validate = async (content: string) => {
+    if (!content.trim()) return
+    setBusy(true)
+    try {
+      const res = await api.sources.validate(content, allowUnsafeVM)
       if (res.ok) {
         const data = await res.json()
+        if (data.valid === false) {
+          toast({ title: '验证未通过', description: data.error || '脚本无法加载', variant: 'destructive' })
+          return
+        }
         setMetadata(data.metadata || data)
         setStep('validated')
         toast({ title: '验证通过', variant: 'success' })
       } else {
-        const text = await res.text()
-        toast({ title: '验证失败', description: text.slice(0, 120), variant: 'destructive' })
+        toast({ title: '验证失败', description: await readError(res, '验证失败'), variant: 'destructive' })
       }
     } finally {
       setBusy(false)
     }
   }
 
-  const importSource = async () => {
+  /** 文件 / 粘贴内容导入：走 upload（收的是脚本正文，不是 URL） */
+  const importContent = async () => {
     setBusy(true)
     try {
-      const res = await api.sources.import(script, allowUnsafeVM)
+      const res = await api.sources.upload(fileName || 'pasted-source.js', script, allowUnsafeVM)
       if (res.ok) {
-        toast({ title: '音源已导入', variant: 'success' })
-        setScript('')
-        setMetadata(null)
-        setStep('paste')
+        toast({ title: '音源已导入', description: fileName || undefined, variant: 'success' })
+        reset()
         onDone()
       } else {
-        const text = await res.text()
-        toast({ title: '导入失败', description: text.slice(0, 120), variant: 'destructive' })
+        toast({ title: '导入失败', description: await readError(res, '导入失败'), variant: 'destructive' })
       }
     } finally {
       setBusy(false)
+    }
+  }
+
+  /** 「+」选文件：读成文本后立刻验证，用户只需再点一次「确认导入」 */
+  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // 清空 value：否则连续选同一个文件不会再触发 change
+    e.target.value = ''
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      toast({ title: '文件过大', description: '音源脚本不应超过 2 MB', variant: 'destructive' })
+      return
+    }
+    try {
+      const text = await file.text()
+      setScript(text)
+      setFileName(file.name)
+      setMetadata(null)
+      setStep('input')
+      void validate(text)
+    } catch {
+      toast({ title: '读取文件失败', description: '请确认选的是文本脚本文件', variant: 'destructive' })
     }
   }
 
   const reset = () => {
+    setUrl('')
     setScript('')
+    setFileName('')
     setMetadata(null)
-    setStep('paste')
+    setStep('input')
   }
 
   return (
@@ -133,24 +211,80 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
           <Plus className="size-4" /> 导入源
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>导入自定义音源</DialogTitle>
           <DialogDescription>
-            粘贴自定义音源脚本内容（JS），先验证再导入。导入后可启用/禁用/排序。
+            填音源脚本链接，或点「+」选本地脚本文件；也可以展开粘贴脚本内容。
           </DialogDescription>
         </DialogHeader>
+
         <div className="mt-2 space-y-3">
-          <textarea
-            className="h-48 w-full rounded-lg border border-line bg-panel2 p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
-            placeholder="// 粘贴音源脚本..."
-            value={script}
-            onChange={(e) => {
-              setScript(e.target.value)
-              if (step === 'validated') setStep('paste')
-            }}
-            autoFocus
-          />
+          {/* 一行：链接 + 使用代理 + 选择文件 */}
+          <div className="flex items-center gap-2">
+            <Input
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-10 min-w-0 flex-1 font-mono text-xs"
+              placeholder="https://example.com/source.js"
+              aria-label="音源脚本链接"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <label
+              className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-dim"
+              title="勾选后由服务端经代理拉取；默认直连（NAS 上代理拉自定义源会 ECONNRESET）"
+            >
+              <input
+                type="checkbox"
+                className="size-4 accent-accent"
+                checked={useProxy}
+                onChange={(e) => setUseProxy(e.target.checked)}
+              />
+              使用代理
+            </label>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".js,.mjs,.cjs,.json,text/javascript,application/javascript"
+              className="hidden"
+              onChange={onPickFile}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              aria-label="选择本地脚本文件"
+              title="选择本地脚本文件"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Plus className="size-4" />
+            </Button>
+          </div>
+
+          {fileName && (
+            <p className="text-xs text-dim">
+              已选择文件：<span className="text-ink">{fileName}</span>
+              {script && <span className="text-faint">（{(script.length / 1024).toFixed(1)} KB）</span>}
+            </p>
+          )}
+
+          <details className="rounded-lg border border-line bg-panel2/50 px-3 py-2">
+            <summary className="cursor-pointer select-none text-xs text-dim">或粘贴脚本内容</summary>
+            <textarea
+              className="mt-2 h-40 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
+              placeholder="// 粘贴音源脚本..."
+              value={script}
+              onChange={(e) => {
+                setScript(e.target.value)
+                setFileName('')
+                if (step === 'validated') setStep('input')
+              }}
+            />
+          </details>
+
           <label className="flex items-center gap-2 text-xs text-dim">
             <Switch checked={allowUnsafeVM} onCheckedChange={setAllowUnsafeVM} />
             允许不安全 VM（仅可信源）
@@ -158,27 +292,40 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
 
           {step === 'validated' && metadata && (
             <div className="rounded-lg border border-ok/30 bg-ok/5 p-3">
-              <div className="text-sm font-medium text-ink">{metadata.name ?? '未知名称'} {metadata.version && <span className="text-dim">v{metadata.version}</span>}</div>
+              <div className="text-sm font-medium text-ink">
+                {metadata.name ?? '未知名称'}{' '}
+                {metadata.version && <span className="text-dim">v{metadata.version}</span>}
+              </div>
               {metadata.platforms && metadata.platforms.length > 0 && (
                 <div className="mt-1 flex gap-1.5">
-                  {metadata.platforms.map((p) => <Badge key={p}>{p}</Badge>)}
+                  {metadata.platforms.map((p) => (
+                    <Badge key={p}>{p}</Badge>
+                  ))}
                 </div>
               )}
             </div>
           )}
         </div>
+
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="ghost" type="button">取消</Button>
           </DialogClose>
-          {step === 'paste' ? (
-            <Button onClick={validate} disabled={busy || !script.trim()}>
-              {busy ? '验证中…' : '验证'}
-            </Button>
-          ) : (
-            <Button onClick={importSource} disabled={busy}>
+          {step === 'validated' ? (
+            <Button onClick={importContent} disabled={busy}>
               {busy ? '导入中…' : '确认导入'}
             </Button>
+          ) : (
+            <>
+              {script.trim() && (
+                <Button variant="outline" onClick={() => void validate(script)} disabled={busy}>
+                  {busy ? '处理中…' : '验证脚本'}
+                </Button>
+              )}
+              <Button onClick={importFromUrl} disabled={busy || !url.trim()}>
+                {busy ? '导入中…' : '从链接导入'}
+              </Button>
+            </>
           )}
         </DialogFooter>
       </DialogContent>

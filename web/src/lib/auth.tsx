@@ -288,6 +288,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ script, username: sourceOwner(), allowUnsafeVM }),
       }),
+    /** ⑥ 按链接导入：服务端负责抓取（默认直连；勾选「使用代理」才走 proxy.customSource）。 */
+    importUrl: (url: string, useProxy = false, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/import', {
+        method: 'POST',
+        body: JSON.stringify({ url, useProxy, username: sourceOwner(), allowUnsafeVM }),
+      }),
+    /** ⑥ 按文件/粘贴内容导入：content 是脚本正文（不是 URL）。 */
+    upload: (filename: string, content: string, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/upload', {
+        method: 'POST',
+        body: JSON.stringify({ filename, content, username: sourceOwner(), allowUnsafeVM }),
+      }),
     toggle: (id: string, enabled: boolean) =>
       adminFetch('/api/custom-source/toggle', {
         method: 'POST',

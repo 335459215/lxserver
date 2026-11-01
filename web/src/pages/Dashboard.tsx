@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -31,7 +31,13 @@ import {
   useAggregatedLeaderboardBoards,
   useAggregatedLeaderboardSongs,
 } from '@/lib/discover'
-import { searchMusicAggregate } from '@/lib/music'
+import { searchMusic, searchMusicAggregate } from '@/lib/music'
+import {
+  fetchCuratedCovers,
+  forgetCuratedCover,
+  getBrowserStorage,
+  readCuratedCovers,
+} from '@/lib/curatedCovers'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
 import { downloadSong } from '@/lib/download'
@@ -265,6 +271,34 @@ export default function Dashboard() {
   /** 正在解析的甄选卡片 id（用于卡上转圈）。同一时刻只允许点一张，避免并发搜五路。 */
   const [mixingId, setMixingId] = useState<string | null>(null)
 
+  /** ② 今日甄选卡的真封面：id → 封面地址。
+   *
+   *  初值直接读 localStorage，首帧就能把上次取到的封面画出来；
+   *  缺的卡在挂载后各搜一首补齐（只查网易云 wy，省流量），
+   *  搜不到的卡保持 undefined → 回落原来的渐变 + 黑胶图标，绝不裂图。 */
+  const [mixCovers, setMixCovers] = useState<Record<string, string>>(() =>
+    readCuratedCovers(getBrowserStorage(), CURATED_MIXES),
+  )
+  useEffect(() => {
+    const store = getBrowserStorage()
+    const missing = CURATED_MIXES.filter((mix) => !mixCovers[mix.id])
+    if (missing.length === 0) return
+    const ac = new AbortController()
+    void fetchCuratedCovers(missing, {
+      store,
+      signal: ac.signal,
+      // 6 张卡不抢首屏带宽：2 路并发、每路错峰 120ms
+      concurrency: 2,
+      staggerMs: 120,
+      search: (query, signal) => searchMusic({ name: query, source: 'wy', page: 1, pages: 1, signal }),
+      onCover: (id, url) =>
+        setMixCovers((prev) => (prev[id] === url ? prev : { ...prev, [id]: url })),
+    })
+    return () => ac.abort()
+    // 只在挂载时补齐一次：mixCovers 是初值，之后由 onCover 增量更新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const greeting = useMemo(() => getGreeting(), [])
   const username = auth.user.username || '听众'
 
@@ -431,8 +465,34 @@ export default function Dashboard() {
                     mix.gradient,
                   )}
                 >
-                  {/* 装饰黑胶唱纹与微光 */}
-                  <Disc3 className="size-12 opacity-40 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-45" />
+                  {/* ② 真封面：该卡关键词搜到的第一首歌的海报；没有就回落渐变+黑胶装饰 */}
+                  {mixCovers[mix.id] ? (
+                    <>
+                      <img
+                        src={mixCovers[mix.id]}
+                        alt=""
+                        loading="lazy"
+                        onError={() => {
+                          // 图床挂了 / 地址失效：丢掉缓存并回落渐变，下次进首页重取
+                          forgetCuratedCover(getBrowserStorage(), mix.id)
+                          setMixCovers((prev) => {
+                            if (!prev[mix.id]) return prev
+                            const next = { ...prev }
+                            delete next[mix.id]
+                            return next
+                          })
+                        }}
+                        className="absolute inset-0 size-full object-cover transition-transform duration-700 group-hover:scale-105"
+                      />
+                      {/* 压暗一层：浅色封面上徽标与播放钮也要看得清 */}
+                      <span
+                        aria-hidden
+                        className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/10 to-black/20"
+                      />
+                    </>
+                  ) : (
+                    <Disc3 className="size-12 opacity-40 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-45" />
+                  )}
                   <span
                     className={cn(
                       'absolute left-2.5 top-2.5 rounded-full px-2 py-0.5 text-[10px] font-bold backdrop-blur-md',

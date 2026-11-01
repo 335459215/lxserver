@@ -48,6 +48,18 @@ type Kind = 'song' | 'singer'
  *  返回条数 < 该值即说明已经到最后一页。 */
 const PAGE_SIZE = 20
 
+/** 搜索参数的身份键：`关键词|音源|类型`。
+ *
+ *  【为什么不用 URL 原始串比对】同一个搜索可能被写成不同的参数顺序、
+ *  也可能带上无关参数（`from=hot`）。用规范化键比对，才不会因为
+ *  `?q=A&type=song` 与 `?type=song&q=A` 被判成「两次不同的搜索」而重复打上游。 */
+function searchKeyOf(p: URLSearchParams): string {
+  const q = p.get('q') ?? ''
+  const source = p.get('source') ?? 'all'
+  const kind = p.get('type') === 'singer' ? 'singer' : 'song'
+  return `${q}|${source}|${kind}`
+}
+
 export default function SearchPage() {
   const player = usePlayer()
   const { toast } = useToast()
@@ -133,11 +145,35 @@ export default function SearchPage() {
     setLoadingMore(s.loadingMore)
   }, [])
 
+  /** 当前 URL 上的搜索参数。写入一律用 replace（不新增历史项）。 */
+  const [params, setParams] = useSearchParams()
+  const search = params.toString()
+  /** 当前屏幕上这屏结果对应的搜索身份键；null = 空态（还没搜过）。
+   *
+   *  【为什么要这个 ref】`runSearch` 会把搜索写进 URL，而 URL 变化又会触发下面的
+   *  effect —— 若不记住「这屏结果已经对应哪组参数」，一次搜索会立刻被自己的
+   *  URL 变化再触发一次，白打两遍上游。
+   *  恢复会话时初值取挂载时的参数：那屏结果本来就已在屏幕上。 */
+  const searchedKeyRef = React.useRef<string | null>(restored ? searchKeyOf(params) : null)
+
   const runSearch = React.useCallback(async (name: string, src: string, k: Kind) => {
     const q = name.trim()
     if (!q) return
     // 记录最近搜索：提交即记（失败也留痕 —— 用户想搜的词本身就有复用价值）
     setHistory(pushSearchHistory(q))
+
+    // ④ 把本次搜索写进 URL（replace，不新增历史项）。
+    // 【为什么】此前 runSearch 从不写 URL，而「从播放页返回保留结果」的恢复判据
+    // 要求 URL 带 q —— 于是那套机制**从未生效过**。写入后：
+    //   点歌 → 播放页 → 返回，history 回到的正是这条带 q 的地址，恢复分支才会命中；
+    //   刷新 / 分享链接也能复现同一次搜索。
+    // 同时把身份键记进 searchedKeyRef，避免 URL 变化再触发一次重复搜索。
+    const nextParams = new URLSearchParams()
+    nextParams.set('q', q)
+    if (src !== 'all') nextParams.set('source', src)
+    nextParams.set('type', k)
+    searchedKeyRef.current = searchKeyOf(nextParams)
+    if (nextParams.toString() !== search) setParams(nextParams, { replace: true })
 
     abortRef.current?.abort()
     // 新查询作废一切在途翻页：控制器内部代次 +1，旧翻页的回写会被丢弃
@@ -195,7 +231,7 @@ export default function SearchPage() {
       setPhase('error')
     }
     // syncFromPager 是稳定引用（useCallback([])），列进依赖不会导致重建
-  }, [syncFromPager])
+  }, [syncFromPager, search, setParams])
 
   /** 支持 /search?q=xxx&source=yy&type=singer —— 首页搜索框、热搜标签、列表里的歌手/专辑链接
    *  都会带参数跳过来，不用再手输一次。参数变化（含从首页再点一个热搜）都会重新搜。
@@ -203,20 +239,13 @@ export default function SearchPage() {
    *  【返回时不重搜】从结果点歌 → 播放页 → 返回，URL 仍是 `/search?q=xxx`
    *  （当初就是这么进来的）。若这里照常跑搜索，恢复出来的结果会被骨架屏冲掉、
    *  还白打一遍上游。这里只跳过**恢复时那一组参数**（记在
-   *  restoredSearchRef 里），之后用户换成别的关键词（`?q=王菲`）仍会正常重搜。 */
-  const [params] = useSearchParams()
-  const search = params.toString()
-  /** 本次恢复所对应的那组 URL 参数；只跳过它一次，不影响后续任何导航。 */
-  const restoredSearchRef = React.useRef<string | null>(restored ? search : null)
+   *  searchedKeyRef 里），之后用户换成别的关键词（`?q=王菲`）仍会正常重搜。 */
   React.useEffect(() => {
     const p = new URLSearchParams(search)
     const q = p.get('q')
     if (!q) return
-    // 这一组参数正是本次挂载恢复出来的那组：结果已在屏幕上，不重复搜
-    if (restoredSearchRef.current === search) {
-      restoredSearchRef.current = null
-      return
-    }
+    // 这组参数对应的结果已经在屏幕上（恢复出来的，或刚由 runSearch 写入）：不重复搜
+    if (searchedKeyRef.current === searchKeyOf(p)) return
     const k: Kind = p.get('type') === 'singer' ? 'singer' : 'song'
     const src = p.get('source') ?? 'all'
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -695,9 +724,12 @@ export default function SearchPage() {
         </section>
       )}
 
+      {/* ③ 移动端：结果卡「通栏」显示 —— 原来 p-5 的圆角卡在 390px 屏上把行宽压到 316px
+          （歌名只剩 ~54px，被截成「周杰…」）。手机上去掉左右内边距与圆角、用 -mx-4 抵掉
+          <main> 的 p-4，行宽回到 378px；桌面端（md:）保持原样。 */}
       {phase === 'done' && kind === 'song' && results.length > 0 && (
-        <section className="rounded-3xl border border-line/80 bg-panel p-5 md:p-6 shadow-card">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-line/60">
+        <section className="-mx-4 rounded-none border-y border-line/80 bg-panel px-1.5 py-4 shadow-none md:mx-0 md:rounded-3xl md:border md:p-6 md:shadow-card">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-2 pb-3 md:px-0">
             <div className="flex items-center gap-2 text-xs font-semibold text-dim">
               <span className="rounded-md bg-accent/10 px-2 py-0.5 text-accent font-bold">
                 {sourceLabel(source)}

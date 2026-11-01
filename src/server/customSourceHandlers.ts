@@ -2,9 +2,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { extractMetadata, loadUserApi, initUserApis, getApiStatus, getSourceSpeed } from './userApi'
 import type { IncomingMessage, ServerResponse } from 'http'
-import needle from 'needle'
 import { getProxyAgent } from '../modules/utils/proxy.js'
 import { isAdminRequest } from './adminAuth'
+import { buildFetchPlan, SourceImportError } from './customSourceUrl'
+import { fetchSourceScript } from './customSourceFetch'
 
 // 读取请求体
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -260,61 +261,19 @@ export async function handleUpload(req: IncomingMessage, res: ServerResponse) {
 export async function handleImport(req: IncomingMessage, res: ServerResponse) {
     try {
         const body = await readBody(req)
-        const { url, filename, username, allowUnsafeVM } = JSON.parse(body)
+        const { url, filename, username, allowUnsafeVM, useProxy } = JSON.parse(body)
 
         if (!url) {
             throw new Error('Missing URL')
         }
 
-        // 辅助函数：支持重定向的下载
-        const download = async (targetUrl: string, depth = 0): Promise<string> => {
-            if (depth > 5) throw new Error('Too many redirects')
-
-            // 远程导入音源脚本属于应用类出站请求：开启 app 代理时走 needle
-            // （原生 https.get 无法直接使用 tunnel agent）
-            const agent = await getProxyAgent(targetUrl, 'app')
-            if (agent) {
-                const resp: any = await needle('get', targetUrl, null, {
-                    agent,
-                    follow_max: 5,
-                    response_timeout: 30000,
-                })
-                if (resp.statusCode !== 200) throw new Error(`Failed to download: status code ${resp.statusCode}`)
-                return Buffer.isBuffer(resp.body) ? resp.body.toString('utf-8') : String(resp.body || '')
-            }
-
-            const protocol = targetUrl.startsWith('https') ? require('https') : require('http')
-
-            return new Promise((resolve, reject) => {
-                protocol.get(targetUrl, (response: any) => {
-                    const { statusCode } = response
-
-                    // 处理重定向
-                    if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
-                        let redirectUrl = response.headers.location
-                        if (!redirectUrl.startsWith('http')) {
-                            const parsedUrl = new URL(targetUrl)
-                            redirectUrl = `${parsedUrl.protocol}//${parsedUrl.host}${redirectUrl}`
-                        }
-                        return resolve(download(redirectUrl, depth + 1))
-                    }
-
-                    if (statusCode !== 200) {
-                        return reject(new Error(`Failed to download: status code ${statusCode}`))
-                    }
-
-                    const chunks: any[] = []
-                    response.on('data', (chunk: any) => chunks.push(chunk))
-                    response.on('end', () => {
-                        const buffer = Buffer.concat(chunks)
-                        resolve(buffer.toString('utf-8'))
-                    })
-                    response.on('error', reject)
-                }).on('error', reject)
-            })
-        }
-
-        const content = await download(url)
+        // ⑥ 链接导入：统一走「默认直连、勾选才走代理」的抓取计划（见 customSourceUrl.ts）。
+        // 以前只要全局 app 代理开着就强制走代理 —— NAS 上 customSource 经代理会 ECONNRESET。
+        // 现在：协议白名单 + 回环/元数据地址拦截 + 逐跳重定向校验 + 2MB 流式上限 + 20s 整体超时。
+        const plan = buildFetchPlan({ url, useProxy: !!useProxy })
+        const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
+        const fetched = await fetchSourceScript(plan, { agent })
+        const content = fetched.content
 
         // 获取脚本信息
         const { metadata, supportedSources, requireUnsafe } = await getScriptInfo(content, allowUnsafeVM)
@@ -398,7 +357,7 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
             supportedSources, // 保存支持的源
             enabled: false,
             uploadTime: new Date().toISOString(),
-            sourceUrl: url,
+            sourceUrl: fetched.finalUrl,
             allowUnsafeVM: !!requireUnsafe || !!allowUnsafeVM,
             requireUnsafe: !!requireUnsafe
         })
@@ -412,7 +371,10 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
         res.end(JSON.stringify({ success: true, filename: displayName, id, metadata, supportedSources, owner: targetOwner, allowUnsafeVM: !!requireUnsafe || !!allowUnsafeVM }))
     } catch (err: any) {
         console.error('[自定义源] 导入失败:', err)
-        res.writeHead(500, { 'Content-Type': 'application/json' })
+        // 用户可修正的错误（链接非法/超限/拿到 HTML）回 400，前端能直接把文案显示出来；
+        // 其它（磁盘、VM 初始化等）才算 500。
+        const status = err instanceof SourceImportError ? err.status : 500
+        res.writeHead(status, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: false, error: err.message }))
     }
 }
