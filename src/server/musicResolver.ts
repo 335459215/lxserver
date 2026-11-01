@@ -309,6 +309,8 @@ export const resolveAndValidateUrl = async (
 export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<ResolveMusicUrlResult> => {
     const cfg = global.lx.config
     const song = normalizeSongInfo({ ...opts.songInfo })
+    /** 本次调用是否已经因为「错歌」重试过一次（只重试一次，避免死循环） */
+    let collisionRetried = Boolean((opts as { __collisionRetried?: boolean }).__collisionRetried)
     if (!song?.source) throw new Error('Invalid songInfo: missing source')
     const requestedSource = song.source
     const username = opts.username
@@ -908,6 +910,18 @@ const runCandidate = async (index: number, quality: string) => {
             if (badSource) {
                 addSongBlacklist(songKey, [badSource])
                 if (!isPlaybackTripped(badSource)) recordPlaybackFailure(badSource, songKey)
+            }
+            // 自动换源重试一次：这个源对这首歌的映射是错的，但别的源可能是对的。
+            // 直接把错误抛给用户，等于「能播的歌也放不了」；重试一次既保持正确性，
+            // 又尽量不让用户感知到（黑名单已记下 badSource，重试不会再命中它）。
+            if (!collisionRetried && badSource) {
+                collisionRetried = true
+                console.warn(`[音源解析] 换源重试（已排除 ${badSource}）: ${song.name} - ${song.singer}`)
+                return resolveMusicUrl({
+                    ...opts,
+                    excludeApiSources: Array.from(new Set([...(opts.excludeApiSources ?? []), badSource])),
+                    __collisionRetried: true,
+                } as ResolveMusicUrlOptions & { __collisionRetried: boolean })
             }
             const err: any = new Error(collisionHit.reason || '解析结果不是这首歌')
             err.songMismatch = true
