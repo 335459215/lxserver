@@ -24,6 +24,17 @@ export const normalizeSongNameText = (value: unknown) => String(value || '')
   .toLowerCase()
   .replace(/[\s\p{P}\p{S}]/gu, '')
 
+/** 去掉 feat./ft. 合作署名后再比歌名。
+ *
+ *  【为什么单独做而不是直接放宽成包含匹配】
+ *  feat 只说明「多了一个合作者」，录音本体不变；但它不能成为放宽到
+ *  `includes` 的理由 —— 那样 `吻别` 会匹配 `吻别(伴奏)` / `相思吻别`，
+ * 正是 v2.44.0 修掉的错歌来源。
+ *  `normalizeSongNameText` 已去掉括号与标点，这里只处理**已归一化**串中
+ *  残留的 `featXXX` / `ftXXX` 尾部（括号内容已被整段删除，故只在结尾出现）。 */
+const stripFeatForCompare = (name: string) =>
+  name.replace(/(?:feat|ft).*$/i, '') || name
+
 /** 从歌名里抽出**版本词**集合（live / 伴奏 / remix / 纯音乐 …），用于判定
  *  「候选与目标是不是同一个录音」。见 getSongMatchScore 里的详细说明。
  *
@@ -119,7 +130,21 @@ export const getSongMatchScore = (candidate: any, target: any) => {
   const candidateName = normalizeSongNameText(candidate?.name)
   const targetName = normalizeSongNameText(target?.name)
   if (!candidateName || !targetName) return -1
-  if (!candidateName.includes(targetName) && !targetName.includes(candidateName)) return -1
+  // ===== 歌名必须相等，不能是「父串/子串」（v2.44.0 ⑦）=====
+  //
+  // 【线上复现（2026-11-01）】用户：「今日甄选点歌，实际播的和显示的不是一首」。
+  // 实测 `/api/music/url`：`吻别/张学友(kw:157908)` 与 `时光/许巍(kw:27811583)`
+  // 解析成了**同一条** kuwo 直链。往下追，替身候选就是这样混进来的：
+  // 旧判据 `candidateName.includes(targetName) || targetName.includes(candidateName)`
+  // 是**包含匹配** —— 目标 `吻别` 能匹配 `吻别(伴奏)`、`吻别live`、乃至 `相思吻别`；
+  // 只要歌手判定也放行（跨平台合唱者写法差异极大），别的录音就直接顶替上去，
+  // 服务端还以为「换源成功」。
+  //
+  // 现在要求归一化后**完全相等**；唯一例外是 `feat./ft.` 合作署名
+  // （不改变录音本体，见下方 stripFeatForCompare）。`normalizeSongNameText`
+  // 已去掉括号内容与标点，所以 `晴天`/`晴天 (Live)` 会归一到同形，
+  // 再由 versionTags 护栏分开 —— 收紧不会误杀正常替身。
+  if (stripFeatForCompare(candidateName) !== stripFeatForCompare(targetName)) return -1
   if (!isSingerMatch(candidate?.singer, target?.singer)) return -1
 
   // ===== 版本后缀护栏（2026-10-29 用户报告）=====

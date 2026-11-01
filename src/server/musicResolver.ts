@@ -17,6 +17,16 @@ import { probeUrlBounded } from '@/server/probeBounded'
 import { callUserApiGetMusicUrl, isSourceSupported, reportSourceResult, recordSourceSpeed } from '@/server/userApi'
 import { findServerSourceMatches, normalizeSongInfo, AUTO_SOURCE_ORDER } from '@/server/musicMatch'
 import { debugLog } from '@/server/utils/debugLog'
+import {
+    createUrlOwnerRegistry,
+    matchesRequestedSong,
+    songIdentityKey,
+    type CollisionCheck,
+} from '@/server/songIdentityGuard'
+
+/** 「这条 URL 近期属于哪首歌」的登记表 —— 用于拦截「不同歌解析到同一链接」的错映射。
+ *  线上实测过（吻别/时光 → 同一条 kuwo 直链），见 songIdentityGuard.ts 的说明。 */
+const urlOwner = createUrlOwnerRegistry({ ttlMs: 10 * 60 * 1000, maxEntries: 500 })
 
 // UA 与探测头都搬到了 probeBounded.ts —— 探测现在是「只读响应头」的实现，
 // 不再需要在这里持有 needle 与 UA。
@@ -343,9 +353,24 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
                 stickyCache.delete(stickyKey(username, song, q))
                 continue
             }
+            // 【错歌护栏 · 缓存侧（v2.44.0 ⑦）】
+            // 线上实测过：两条不同的歌（吻别 / 时光）都缓存了**同一条** kuwo 直链，
+            // 于是每次点播都直接命中缓存、连解析器都不经过 —— 这正是「换源重试也
+            // 一直是错歌」的原因。命中缓存时同样要过一遍归属校验。
+            const cachedRequestKey = songIdentityKey(song)
+            const cachedCollision = urlOwner.check(hit.url, cachedRequestKey)
+            if (cachedCollision.collision) {
+                console.warn(
+                    `[音源解析] 粘滞缓存里的链接属于另一首歌，丢弃并重新解析：` +
+                    `${song.name} - ${song.singer}（${cachedCollision.reason}）`,
+                )
+                stickyCache.delete(stickyKey(username, song, q))
+                continue
+            }
             const fresh = Date.now() - hit.createdAt < STICKY_TRUST_MS
             if (fresh || !validate) {
                 debugLog(`[音源解析] 命中粘滞缓存: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
+                urlOwner.remember(hit.url, cachedRequestKey)
                 return {
                     url: hit.url,
                     type: hit.type,
@@ -364,6 +389,7 @@ export const resolveMusicUrl = async (opts: ResolveMusicUrlOptions): Promise<Res
             if (v.ok) {
                 hit.url = v.url
                 debugLog(`[音源解析] 粘滞缓存链接仍可用: ${song.name} - ${song.singer} (${hit.platform}/${hit.sourceName})`)
+                urlOwner.remember(hit.url, cachedRequestKey)
                 return {
                     url: hit.url,
                     type: hit.type,
@@ -852,6 +878,43 @@ const runCandidate = async (index: number, quality: string) => {
 
     if (winner) {
         const { result, url, platform, song: usedSong, quality: usedQuality, confirmed } = winner.value
+
+        // 【错歌护栏（v2.44.0）】
+        // 线上实测：`吻别/张学友` 与 `时光/许巍` 被第三方聚合音源解析成了**同一条**
+        // kuwo 直链 —— 界面显示 A、耳朵听到 B。服务端原先完全不知情。
+        // 这里做两道判定：
+        //   1. 结果自带曲目元信息时，歌名/歌手必须与请求对得上；
+        //   2. 这条 URL 近期若已经服务过**另一首歌**，直接判错。
+        // 判定为错歌时**不返回**这条链接（宁可让客户端换源），也不写粘滞缓存 ——
+        // 否则十分钟内每次点这首错歌都会命中同一条坏链接，换源重试全部失效。
+        const requestKey = songIdentityKey(song)
+        const metaCheck = matchesRequestedSong(song, usedSong)
+        const urlCheck = urlOwner.check(url, requestKey)
+        let collisionHit: CollisionCheck | null = null
+        if (!metaCheck.ok) {
+            collisionHit = { collision: true, reason: metaCheck.reason }
+        } else if (urlCheck.collision) {
+            collisionHit = urlCheck
+        }
+
+        if (collisionHit) {
+            console.warn(
+                `[音源解析] ✗ 错歌拦截：${song.name} - ${song.singer} ← ${platform}/${result.sourceName}` +
+                `（${collisionHit.reason}）`,
+            )
+            // 把这个源记进「这首歌播不了」的黑名单：客户端换源重试时会带上
+            // excludeApiSources，若这里不记，重试会被同一条坏链接再次命中。
+            const badSource = String(result.sourceName || result.sourceId || '')
+            if (badSource) {
+                addSongBlacklist(songKey, [badSource])
+                if (!isPlaybackTripped(badSource)) recordPlaybackFailure(badSource, songKey)
+            }
+            const err: any = new Error(collisionHit.reason || '解析结果不是这首歌')
+            err.songMismatch = true
+            err.attempts = attempts
+            throw err
+        }
+
         // 只缓存「探测确认可用」的链接。探测被拒的地址有可能本来就是死链，
         // 缓存它等于把死链钉死十分钟——播放器重试换源也逃不掉。
         if (stickyTtlMs > 0 && confirmed) {
@@ -871,6 +934,8 @@ const runCandidate = async (index: number, quality: string) => {
         debugLog(`[音源解析] ✓ ${song.name} - ${song.singer} (${requestedQualityLabel(opts.quality, usedQuality)}) 命中 ${platform}/${result.sourceName}`)
         // 拿到了确认可用的链接：这首歌之前的失败记录不再有参考价值
         if (confirmed) clearSongBlacklist(username, song)
+        // 登记「这条 URL 属于哪首歌」，供后续请求做错歌判定
+        urlOwner.remember(url, requestKey)
         return {
             url,
             type: result.type || usedQuality,
