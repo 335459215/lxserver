@@ -436,7 +436,10 @@ export default function SearchPage() {
               <button
                 type="button"
                 onClick={() => setKeyword('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-1 text-faint hover:text-ink transition-colors"
+                /* 【触摸目标】原 p-1 + size-3.5 = 22×22，差 2px 不到 WCAG 2.2 AA
+                   的 24×24 —— 手机上清空输入键最容易点偏。补到 26×26，
+                   用 -translate-y-1/2 保持垂直居中，视觉只大一点点。 */
+                className="absolute right-2.5 top-1/2 flex size-[26px] -translate-y-1/2 items-center justify-center rounded-full text-faint transition-colors hover:text-ink"
                 aria-label="清空输入"
               >
                 <X className="size-3.5" />

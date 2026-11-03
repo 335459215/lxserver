@@ -248,3 +248,75 @@ body {
   background: var(--line-strong);
   border-radius: 4px;
 }
+/* ===== 音量滑块（PlayerBar）=====
+   range 输入用 appearance:none 后，Chromium 不再绘制默认滑块头，
+   必须自己补 ::-webkit-slider-thumb，否则就是一个拖不动的色条。
+   轨道用 ::before 画（4px），input 本体保留 24px 高作为触摸热区
+   —— 满足 WCAG 2.2 AA 的 24×24，又不让 UI 变粗。
+   --volume-fill 由组件按当前音量注入（0%~100%）。 */
+.volume-range {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  position: relative;
+}
+.volume-range::-webkit-slider-runnable-track {
+  height: 24px;
+  background: transparent;
+}
+.volume-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  /* 让 12px 的圆在 24px 轨道上垂直居中：-(24-12)/2 */
+  margin-top: 6px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+.volume-range:hover::-webkit-slider-thumb,
+.volume-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / 0.18);
+}
+.volume-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  cursor: pointer;
+}
+.volume-range::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--panel-2);
+}
+.volume-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+/* 4px 轨道：用背景渐变画在 ::before 上（WebKit 无法给 runnable-track 做双色填充） */
+.volume-range::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--volume-fill, 0%),
+    var(--panel-2) var(--volume-fill, 0%)
+  );
+  pointer-events: none;
+}
+.volume-range:focus-visible {
+  outline: none;
+}

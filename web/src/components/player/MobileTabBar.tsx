@@ -155,16 +155,36 @@ export default function MobileTabBar() {
   return (
     <>
       {/* iOS 26 Liquid Glass 的克制版：白底 + 大圆角 + 细边 + 柔阴影。
-          用 right-3（同时避开 Windows 覆盖式滚动条），再用 mx-auto + max-w 在
-          平板/横屏下不让它被拉成一整条通栏。 */}
+          外层用 mx-auto + max-w 在平板/横屏下不让它被拉成一整条通栏。
+
+          【底部那 8px 缝：这是本次修的真问题】
+          浮层卡片用 mb-2（8px）与视口底边留一条"悬浮缝"——浮在**白色**内容上
+          时看不出问题；可首页「今日甄选歌单」的封面是整块渐变，滚动到底时
+          卡片会贴到浮层下沿，于是那 8px 缝里透出封面色，视觉上就是一条
+          橙/绿色杂边（截图里非常显眼，会被当成渲染 bug）。
+          两种改法：给缝加底色（仍有缝）、或让卡片真的贴底。
+          这里选贴底 + 底部安全区 padding：浮层本来就该坐在安全区之上，
+          缝隙交给 shadow-pop 的柔和投影去表达分层，不再靠"露出底色"。
+
+          【定位用 inset-x-0，不是 left:var(--safe-left)】
+          旧写法只给了 left、没给 right，fixed 盒子会收缩成内容宽度而非撑满，
+          横屏/平板上右侧会露出未遮挡的内容。左右都钉 0 才是"整行占位"。
+
+          【宽度用 100% 而不是 100vw】
+          safe-area 非零时（横屏刘海机）`100vw` 是整屏宽度、不扣左右安全区，
+          卡片会被顶出屏幕。父级已用 padding 让出安全区 + 0.75rem 视觉边距，
+          子元素吃 100% 就是"已经扣好的可用宽度"。 */}
       <div
         id="mobile-tabbar"
-        className="fixed bottom-0 z-40 lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-40 lg:hidden"
         role="navigation"
         aria-label="移动端导航"
-        style={{ left: 'var(--safe-left)', paddingRight: 'var(--safe-right)' }}
+        style={{
+          paddingLeft: 'calc(var(--safe-left) + 0.75rem)',
+          paddingRight: 'calc(var(--safe-right) + 0.75rem)',
+        }}
       >
-        <div className="mx-auto mb-2 w-[min(26rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-pop backdrop-blur">
+        <div className="mx-auto w-full max-w-[26rem] overflow-hidden rounded-t-2xl border border-b-0 border-line bg-panel/95 shadow-pop backdrop-blur">
           {!isNowPlaying && <MiniPlayer />}
           <div
             className={cn(

@@ -182,6 +182,28 @@ jobs:
       - name: 音质菜单视口护栏（5 视口 × 7 断言，离线）
         run: node scripts/menu-fit/run.mjs --port 9701 --python python3
 
+      # 全站 UI 可访问性护栏：8 条路由 × 3 视口，量对比度 / 触摸目标 /
+      # 横向溢出 / 元素超出视口 / 控件无障碍名称。
+      #
+      # 【为什么要加这一层（而不是靠人看截图）】
+      # 本次审查发现的 4 类缺陷全都"截图看得见、单测看不见"：
+      #   - 底部浮层留 8px 缝，歌单封面渐变透出来变成彩色杂边
+      #   - text-faint/80 分隔符只有 3.15:1（AA 要 4.5:1）
+      #   - 音量滑块 80×4，远低于 WCAG 2.2 AA 的 24×24
+      #   - 7 个 Switch 无无障碍名称（读屏只念"开关"，不说是哪一个）
+      # 这些都是"渲染出来了但不对"，只有量计算样式与 bounding_box 才抓得到。
+      #
+      # 【误报处理】对比度只认"能算出真实底色"的元素：背景是渐变/图片的一律
+      #  跳过（宁可漏报不误报）。溢出跳过 overflow-x:auto 容器内的元素与
+      #  sr-only —— 它们是设计的一部分，报出来只会让人不再看这份报告。
+      #
+      # 【为什么不在这里写 `cmd &` 起服务】
+      #  GitHub Actions 会等 shell 退出，后台子进程继承 stdout 会让步骤挂到超时
+      #  （本地看不出、CI 必翻车）。统一交给 scripts/ui-audit/run.mjs：
+      #  它 spawn 桩服务、等端口就绪、跑完显式 kill，再把最差退出码透出。
+      - name: 全站 UI 可访问性护栏（8 路由 × 3 视口，离线）
+        run: node scripts/ui-audit/run.mjs --port 9701 --python python3
+
   build:
     needs: [prepare]
     runs-on: ubuntu-latest

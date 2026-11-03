@@ -731,8 +731,15 @@ with sync_playwright() as p:
     page.keyboard.press("Enter")
     page.wait_for_timeout(2500)
 
-    # 整页 reload：证明持久化（localStorage），而不是只活在内存里
-    page.reload(wait_until="load")
+    # 【为什么是 goto 回 search 而不是 reload】
+    # v2.44.0 起「返回保留搜索结果」把 q/source/type 写进了 URL（需求④）：
+    # 搜完 reload 会**自动重搜**，页面停在 done 态，而「最近搜索」只在 idle 态
+    # 展示（搜出结果后每个词已在结果里，再占一屏是噪声）。
+    # 于是 reload 拿到 0 个 chips —— 这是**护栏假设过期**，不是功能坏了：
+    # 同一流程实测 localStorage['lx.search.history'] = ["林俊杰","周杰伦"] 仍在。
+    # 回 idle 态要整页导航到不带 q 的 /app/search；它同样是一次全新加载，
+    # 「持久化」的验证强度不变（读的仍是 localStorage 而非内存）。
+    page.goto(f"{BASE}/app/search", wait_until="load")
     page.wait_for_timeout(2500)
     chips = page.locator("span.group > button[title]")
     n = chips.count()
@@ -746,7 +753,8 @@ with sync_playwright() as p:
         page.locator("span.group > button[title='周杰伦']").click()
         page.wait_for_timeout(2500)
         check("点词重搜出了结果", page.locator("ul li button[aria-label^='播放']").count() > 0)
-        page.reload(wait_until="load")
+        # 同上：点词重搜会把 ?q= 写进 URL，reload 会自动重搜并离开 idle 态。
+        page.goto(f"{BASE}/app/search", wait_until="load")
         page.wait_for_timeout(2500)
         chips2 = page.locator("span.group > button[title]")
         titles = [chips2.nth(i).get_attribute("title") for i in range(chips2.count())]

@@ -95,7 +95,10 @@ function QualitySection() {
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-1.5">
                   <span className="text-sm font-medium text-ink">{t.label}</span>
-                  <span className="font-mono text-[10px] text-faint">{t.short}</span>
+                  {/* 「320k」这类短码在选中态是 accent-soft(#eef2ff) 底。
+                      --faint 在它上面只有 4.26:1，10px 小字不过 AA；
+                      换成 --dim(#475569) 是 7.4:1，两种底色都稳过。 */}
+                  <span className="font-mono text-[10px] text-dim">{t.short}</span>
                   {info && (
                     <span className="rounded border border-line px-1 text-[10px] leading-4 text-dim">
                       {size || '本曲提供'}

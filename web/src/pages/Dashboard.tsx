@@ -90,7 +90,10 @@ function SectionHeader({
         {to && (
           <Link
             to={to}
-            className="group flex items-center gap-1 text-xs font-semibold text-accent transition-colors hover:text-accent/80"
+            /* 【触摸目标】纯文字链接原先只有 66×16，低于 WCAG 2.2 AA（SC 2.5.8）
+               的 24×24。用 py-1.5 -my-1.5 把热区上下各撑 6px、再用负 margin 抵消，
+               **视觉位置与行高完全不变**，可点高度 16 → 28。 */
+            className="group -my-1.5 flex items-center gap-1 py-1.5 text-xs font-semibold text-accent transition-colors hover:text-accent/80"
           >
             <span>查看全部</span>
             <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />

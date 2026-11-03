@@ -614,7 +614,9 @@ const server = http.createServer((req, res) => {
   send(res, 404, MIME['.txt'], 'not found')
 })
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[static-fixture] http://127.0.0.1:${PORT}/  (离线，无外部依赖)`)
+// 【绑定地址】默认只监听回环（安全默认）。设 FX_BIND=0.0.0.0 可让同局域网手机/另一台设备访问。
+const BIND = process.env.FX_BIND || '127.0.0.1'
+server.listen(PORT, BIND, () => {
+  console.log(`[static-fixture] http://${BIND === '127.0.0.1' ? '127.0.0.1' : '<本机IP>'}:${PORT}/  (离线，无外部依赖)`)
   console.log(`[static-fixture] static=${PUBLIC_DIR}`)
 })

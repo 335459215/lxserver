@@ -159,7 +159,12 @@ function SongRow({
             )}
             {album && (
               <>
-                <span className="text-faint/80"> · </span>
+                {/* 分隔点用 text-faint 而不是 text-faint/80：
+                    --faint(#64748b) 在白底是 4.76:1、在 --bg(#f8fafc) 上是 4.63:1，
+                    都刚好过 AA 4.5:1。叠 80% 透明度后降到 3.25:1 / 3.15:1，
+                    12px 的「·」就掉出 AA 了（审查脚本按计算样式算出来的）。
+                    纯装饰不该拖累可读性，去掉透明度即可，视觉几乎无差别。 */}
+                <span className="text-faint"> · </span>
                 {albumHref ? (
                   <Link to={albumHref} className={linkCls} title={`查看专辑 ${album}`}>
                     {album}

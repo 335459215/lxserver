@@ -27,6 +27,18 @@ function VolumeControl() {
       >
         <Icon className="size-4" />
       </button>
+      {/* 【为什么外壳是 h-6、轨道画在伪元素上】
+          原写法把 input 自身做成 h-1（4px）。看起来"细轨道"，实际有两个问题：
+          ① 触摸目标只有 80×4 —— WCAG 2.2 AA 要求 24×24（SC 2.5.8），
+             4px 高在触屏上几乎不可命中；
+          ② `appearance:none` 之后**滑块头（thumb）根本没被渲染**：Chromium 里
+             appearance:none 的 range 不画默认 thumb，本项目又没写
+             ::-webkit-slider-thumb，于是只有一个"填充到 100% 的渐变色条"。
+             截图里那条圆头蓝条其实是渐变 + rounded-full，不是真的滑块头，
+             也拖不动（只能在轨道上点）。
+          改法：input 撑到 24px 高当热区，4px 轨道用 ::before 画（--volume-fill
+          注入填充比例），并显式画出 thumb（白圈 + 边框），与全站发丝线一致。
+          CSS 见 index.css 的 `.volume-range`。 */}
       <input
         type="range"
         min={0}
@@ -35,10 +47,12 @@ function VolumeControl() {
         value={effective}
         aria-label="音量"
         onChange={(e) => setVolume(Number.parseFloat(e.target.value))}
-        className="h-1 w-20 cursor-pointer appearance-none rounded-full"
-        style={{
-          background: `linear-gradient(to right, var(--accent) ${effective * 100}%, var(--panel-2) ${effective * 100}%)`,
-        }}
+        className="volume-range h-6 w-20 cursor-pointer"
+        style={
+          {
+            '--volume-fill': `${effective * 100}%`,
+          } as React.CSSProperties
+        }
       />
     </div>
   )
