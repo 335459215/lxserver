@@ -2,7 +2,9 @@ import * as React from 'react'
 import { Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { REPEAT_LABEL, usePlayer } from '@/lib/player'
-import { formatTime } from '@/lib/music'
+import { formatTime, type Song } from '@/lib/music'
+import { useLists } from '@/lib/useLists'
+import AddToPlaylistMenu from '@/components/player/AddToPlaylistMenu'
 
 /** 可拖动进度条：点击/拖动皆可 seek；直播流（时长非有限）自动禁用 */
 function ProgressBar({
@@ -184,15 +186,34 @@ export function PlayModeControls({ size = 'md' }: { size?: 'md' | 'lg' }) {
 export function TransportControls({
   size = 'md',
   showMode = false,
+  showFavorite = false,
 }: {
   size?: 'md' | 'lg'
   showMode?: boolean
+  /** 在「下一首」右侧显示爱心按钮（收藏 / 加入歌单）。目前只有全屏播放页开。 */
+  showFavorite?: boolean
 }) {
   const { status, toggle, next, prev, queue, current } = usePlayer()
   const playing = status === 'playing'
   const loading = status === 'loading'
   const hasTrack = !!current
   const canSkip = queue.length > 1
+
+  // 【爱心是否实心】按 source+songmid 判「已在收藏」，与 KeyboardShortcuts
+  // 的 toggleLove 同一套判据（收藏里可能混入桌面客户端写的条目，按 id 会漏判）。
+  //
+  // 【为什么必须把 reload 传给菜单】useLists 是**每组件独立**的状态（见其文件头
+  // "各页面独立持有，不引全局 store"），菜单里加完歌单后 reload 的只是菜单自己
+  // 那份快照 —— 不回调的话，这个爱心会一直停在加入之前的样子（实测踩到：
+  // 加进收藏了但心还是空心）。onDone 里刷新本组件自己的快照即可。
+  const { snapshot, reload: reloadLists } = useLists()
+  const favorited = React.useMemo(() => {
+    if (!current) return false
+    const key = (s: Song) =>
+      s.source === current.source &&
+      String(s.songmid ?? s.meta?.songId ?? '') === String(current.songmid ?? current.id ?? '')
+    return (snapshot?.loveList ?? []).some(key)
+  }, [snapshot, current])
 
   const iconBtn = size === 'lg' ? 'size-11' : 'size-9'
   const iconSize = size === 'lg' ? 'size-6' : 'size-5'
@@ -249,6 +270,16 @@ export function TransportControls({
       >
         <SkipForward className={iconSize} />
       </button>
+
+      {showFavorite && (
+        <AddToPlaylistMenu
+          songs={current ? [current] : []}
+          trigger="heart"
+          favorited={favorited}
+          className={iconBtn}
+          onDone={() => void reloadLists(true)}
+        />
+      )}
     </div>
   )
 }

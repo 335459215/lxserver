@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ListPlus, Loader2, Plus } from 'lucide-react'
+import { Heart, ListPlus, Loader2, Plus } from 'lucide-react'
 import {
   Button,
   Dialog,
@@ -42,10 +42,16 @@ function AddToPlaylistMenu({
   songs,
   className,
   onDone,
+  trigger = 'listplus',
+  favorited = false,
 }: {
   songs: Song[]
   className?: string
   onDone?: () => void
+  /** 触发器外观：listplus=曲目行里的「+」；heart=播放详情页的爱心 */
+  trigger?: 'listplus' | 'heart'
+  /** 仅 heart 用：当前曲已在「我的收藏」里时画实心红心 */
+  favorited?: boolean
 }) {
   const { toast } = useToast()
   const { snapshot, reload } = useLists()
@@ -121,19 +127,38 @@ function AddToPlaylistMenu({
     <>
       <Menu>
         <MenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={count > 1 ? `把选中的 ${count} 首加到歌单` : '加到歌单'}
-            title="加到歌单"
-            // pointer-events-auto：SongList 的视觉层整体是 pointer-events-none，
-            // 交互元素必须显式抬起来，否则点击会穿透到整行的播放热区。
-            className={cn(
-              'pointer-events-auto flex size-9 items-center justify-center rounded-xl text-dim opacity-70 transition-all hover:bg-accent-soft hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 active:scale-95',
-              className,
-            )}
-          >
-            <ListPlus className="size-4" />
-          </button>
+          {trigger === 'heart' ? (
+            /* 播放详情页的爱心：点开是「加入哪个歌单」的选择菜单。
+               已在我的收藏里则画实心红心 —— 这样它既表达"收藏状态"，
+               又是加歌单的入口，不必在播放页再挤一个按钮。 */
+            <button
+              type="button"
+              aria-label={favorited ? '已收藏，可加入其它歌单' : '收藏或加入歌单'}
+              aria-pressed={favorited}
+              title={favorited ? '已在我的收藏 · 点此可加入其它歌单' : '收藏 / 加入歌单'}
+              className={cn(
+                'flex items-center justify-center rounded-full transition-colors active:scale-95',
+                favorited ? 'text-danger hover:bg-danger/10' : 'text-dim hover:bg-panel2 hover:text-ink',
+                className,
+              )}
+            >
+              <Heart className={cn('size-5', favorited && 'fill-current')} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label={count > 1 ? `把选中的 ${count} 首加到歌单` : '加到歌单'}
+              title="加到歌单"
+              // pointer-events-auto：SongList 的视觉层整体是 pointer-events-none，
+              // 交互元素必须显式抬起来，否则点击会穿透到整行的播放热区。
+              className={cn(
+                'pointer-events-auto flex size-9 items-center justify-center rounded-xl text-dim opacity-70 transition-all hover:bg-accent-soft hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 active:scale-95',
+                className,
+              )}
+            >
+              <ListPlus className="size-4" />
+            </button>
+          )}
         </MenuTrigger>
         <MenuContent align="end" className="w-56">
           <MenuLabel>加到歌单</MenuLabel>
