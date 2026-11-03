@@ -109,7 +109,9 @@ export function readCuratedCover(
 ): string | undefined {
   if (!store || !id) return undefined
   const key = curatedCoverCacheKey(id)
-  let raw: string | null = null
+  // 不写 `= null` 初值：下面 try 里必然赋值，catch 里直接 return，
+  // 初值永远读不到 —— ESLint no-useless-assignment 会指出来。
+  let raw: string | null
   try {
     raw = store.getItem(key)
   } catch {
@@ -205,14 +207,19 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve()
       return
     }
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const done = () => {
-      if (timer) clearTimeout(timer)
-      signal?.removeEventListener?.('abort', done)
+    // 【为什么用 const + 函数声明】原写法是 `let timer` + 后置赋值，只赋值一次，
+    // ESLint prefer-const 会报；但直接改成 const 又变成 done 里「读在声明前」。
+    // 用函数声明（会提升）+ const 句柄，两边都干净：onAbort 只可能在
+    // setTimeout 之后被调用，那时 timer 一定已初始化。
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort)
+      resolve()
+    }, ms)
+    function onAbort() {
+      clearTimeout(timer)
       resolve()
     }
-    timer = setTimeout(done, ms)
-    signal?.addEventListener?.('abort', done, { once: true })
+    signal?.addEventListener?.('abort', onAbort, { once: true })
   })
 }
 
