@@ -141,9 +141,16 @@ export const getSongMatchScore = (candidate: any, target: any) => {
   // 服务端还以为「换源成功」。
   //
   // 现在要求归一化后**完全相等**；唯一例外是 `feat./ft.` 合作署名
-  // （不改变录音本体，见下方 stripFeatForCompare）。`normalizeSongNameText`
-  // 已去掉括号内容与标点，所以 `晴天`/`晴天 (Live)` 会归一到同形，
-  // 再由 versionTags 护栏分开 —— 收紧不会误杀正常替身。
+  // （不改变录音本体，见下方 stripFeatForCompare）。
+  //
+  // 【更正（2026-11-03）】这里原注释写「normalizeSongNameText 已去掉括号内容与
+  // 标点，所以 晴天/晴天 (Live) 会归一到同形」—— **与实现不符**：
+  // 它只去 \p{P}\p{S}（括号符号本身），括号**里的文字仍留着**，
+  // 归一结果是 `晴天` vs `晴天live`，在下一行就被拒。因此：
+  //   · `晴天` vs `晴天 (Live)` 由**歌名全等**这道拦住，不靠 versionTags；
+  //   · versionTags 护栏唯一可达的路径是版本词排在 feat 之后、被
+  //     stripFeatForCompare 一并截掉的情形（见 test 的
+  //     「feat 之后的版本词」用例）。
   if (stripFeatForCompare(candidateName) !== stripFeatForCompare(targetName)) return -1
   if (!isSingerMatch(candidate?.singer, target?.singer)) return -1
 

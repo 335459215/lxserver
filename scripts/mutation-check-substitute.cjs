@@ -22,7 +22,13 @@ const mutations = [
     file: 'src/server/musicMatch.ts',
     from: "  if (candidateVersion !== targetVersion) return -1",
     to: '  void candidateVersion; void targetVersion',
-    expectFail: ['同名同歌手，但候选是 Live 版 → 必须拒绝'],
+    // 【为什么不再指向「候选是 Live 版」那条（2026-11-03）】
+    // v2.44.0 把歌名判据收紧成「去 feat 后全等」后，`晴天` vs `晴天 (Live)`
+    // 在**歌名那一道就被拒**，版本词护栏不参与判定 —— 于是删掉护栏时那条
+    // 用例依旧绿，本变异恒红（CI 从 v2.42.0 起连红三个版本）。
+    // 版本词护栏唯一可达的路径是：版本词排在 feat 之后被 stripFeatForCompare
+    // 一起截掉，两侧歌名归一后相同，此时只有它能拦。所以钉这一条。
+    expectFail: ['feat 之后的版本词：歌名归一后相同，仍须靠版本词护栏拒绝'],
   },
   {
     group: 'substitute',
