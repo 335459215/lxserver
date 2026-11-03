@@ -6,12 +6,48 @@
 做法：逐次按 Tab，量当前焦点元素在聚焦前后的样式差异（outline / box-shadow /
 border-color 是否真的变了）。只认"有可见变化"，不认"写了类名"。
 """
+import json
+import os
 import sys
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:9701"
-ROUTES = [("dashboard", "/app/"), ("search", "/app/search"), ("settings", "/app/settings")]
+# 【为什么 BASE 要能从命令行传】第一版把它写死成 127.0.0.1:9701，
+# 于是对线上跑时直接 ERR_CONNECTION_REFUSED —— 而 run.mjs 也一直是
+# 「桩服务地址」跑它的，看不出问题。审计线上必须能指定目标。
+BASE = (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--")
+        else "http://127.0.0.1:9701").rstrip("/")
+
+APP = os.environ.get("AUDIT_APP_PREFIX", "/app").rstrip("/")
+ROUTES = [("dashboard", f"{APP}/"), ("search", f"{APP}/search"), ("settings", f"{APP}/settings")]
+
+
+def inject_login(ctx):
+    """与 audit-ui.py 同一套：线上用真 token（环境变量），离线桩用假 token。
+
+    线上若没登录会被弹回登录门，Tab 顺序量到的是登录页 —— 报告会"全绿"，
+    但验的根本不是目标页面。
+    """
+    user = os.environ.get("AUDIT_USER")
+    pwd = os.environ.get("AUDIT_PASS")
+    token = "stub-token"
+    if user and pwd:
+        origin = "/".join(BASE.split("/")[:3])
+        try:
+            r = ctx.request.post(f"{origin}/api/login",
+                                 data={"username": user, "password": pwd}, timeout=20000)
+            j = r.json() if r.ok else {}
+            if j.get("token"):
+                token = j["token"]
+            else:
+                print(f"[login] FAILED status={r.status}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[login] ERROR {e}")
+    ctx.add_init_script(
+        "localStorage.setItem('lx.user.token', %s);"
+        "localStorage.setItem('lx.user.name', %s);"
+        % (json.dumps(token), json.dumps(user or "tester"))
+    )
 
 SNAP = r"""
 () => {
@@ -33,10 +69,7 @@ SNAP = r"""
 with sync_playwright() as pw:
     b = pw.chromium.launch()
     ctx = b.new_context(viewport={"width": 1440, "height": 900})
-    ctx.add_init_script(
-        "localStorage.setItem('lx.user.token','stub-token');"
-        "localStorage.setItem('lx.user.name','tester');"
-    )
+    inject_login(ctx)
     page = ctx.new_page()
 
     total_bad = 0

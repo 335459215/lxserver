@@ -32,12 +32,34 @@ from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:9701"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots")
-for i, a in enumerate(sys.argv[1:], 1):
-    if a == "--out" and len(sys.argv) > i + 1:
-        OUT = sys.argv[i + 1]
-    elif not a.startswith("--"):
+# 路由前缀：离线桩与线上都用 /app/，但保留成参数，便于审计其它部署路径。
+APP = os.environ.get("AUDIT_APP_PREFIX", "/app")
+
+# 【为什么手写解析而不是 `elif not a.startswith("--")`】
+# 第一版就是那个写法，于是 `--out G:\...\audit-live` 里的值被当成 BASE，
+# 变成 BASE="G:\projects\..."①之后 playwright 报
+# `Protocol "g:" not supported`，24 条路由全部渲染失败；②汇总里只有
+# 「渲染报错 24」，对比度/触摸目标都是 0 —— 一份**看起来全绿但毫无意义**的
+# 报告。选项值必须整体消费掉，不能漏给位置参数。
+_i = 1
+while _i < len(sys.argv):
+    a = sys.argv[_i]
+    if a == "--out" and _i + 1 < len(sys.argv):
+        OUT = sys.argv[_i + 1]
+        _i += 2
+        continue
+    if a == "--app" and _i + 1 < len(sys.argv):
+        APP = sys.argv[_i + 1]
+        _i += 2
+        continue
+    if not a.startswith("--"):
         BASE = a
+    _i += 1
+
 BASE = BASE.rstrip("/")
+APP = APP.rstrip("/")
+if not BASE.startswith("http"):
+    raise SystemExit(f"[ui-audit] BASE 不合法: {BASE!r}（应为 http(s)://host:port）")
 os.makedirs(OUT, exist_ok=True)
 
 # 桌面 / 平板 / 手机三档。768 是仓库 tailwind 的 md 断点，1024 是 lg，
@@ -49,14 +71,14 @@ VIEWPORTS = [
 ]
 
 ROUTES = [
-    ("dashboard", "/app/"),
-    ("search", "/app/search?q=%E5%91%A8%E6%9D%B0%E4%BC%A6"),
-    ("playlist", "/app/playlist"),
-    ("leaderboard", "/app/leaderboard"),
-    ("history", "/app/history"),
-    ("local", "/app/local"),
-    ("settings", "/app/settings"),
-    ("nowplaying", "/app/now-playing"),
+    ("dashboard", f"{APP}/"),
+    ("search", f"{APP}/search?q=%E5%91%A8%E6%9D%B0%E4%BC%A6"),
+    ("playlist", f"{APP}/playlist"),
+    ("leaderboard", f"{APP}/leaderboard"),
+    ("history", f"{APP}/history"),
+    ("local", f"{APP}/local"),
+    ("settings", f"{APP}/settings"),
+    ("nowplaying", f"{APP}/now-playing"),
 ]
 
 # ===== 页面内执行的审计脚本 =====
@@ -315,11 +337,34 @@ report = {"base": BASE, "routes": [], "consoleErrors": [], "failedRequests": []}
 
 
 def inject_login(ctx):
+    """注入登录态。
+
+    【两种模式】
+    - 离线桩（默认）：桩服务不校验 token，直接塞一个假的即可。
+    - 线上（AUDIT_USER / AUDIT_PASS 环境变量）：必须走真实 /api/login 换真
+      token —— 线上 401 会把页面弹回登录门，量到的全是登录页，报告看着
+      "全绿"其实毫无意义。真 token 还让「设置」等管理员页面真的渲染出来。
+    """
+    user = os.environ.get("AUDIT_USER")
+    pwd = os.environ.get("AUDIT_PASS")
+    token = "stub-token"
+    if user and pwd:
+        origin = "/".join(BASE.split("/")[:3])
+        try:
+            r = ctx.request.post(f"{origin}/api/login",
+                                 data={"username": user, "password": pwd}, timeout=20000)
+            j = r.json() if r.ok else {}
+            if j.get("token"):
+                token = j["token"]
+                print(f"[login] ok user={user} admin={j.get('isAdmin')}")
+            else:
+                print(f"[login] FAILED status={r.status} — 后续结果不可信")
+        except Exception as e:  # noqa: BLE001
+            print(f"[login] ERROR {e} — 后续结果不可信")
     ctx.add_init_script(
-        """
-        localStorage.setItem('lx.user.token', 'stub-token');
-        localStorage.setItem('lx.user.name', 'tester');
-        """
+        "localStorage.setItem('lx.user.token', %s);"
+        "localStorage.setItem('lx.user.name', %s);"
+        % (json.dumps(token), json.dumps(user or "tester"))
     )
 
 

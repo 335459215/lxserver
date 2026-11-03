@@ -556,15 +556,24 @@ const musicProgressClients = new Map<string, http.ServerResponse>()
  * （compose 里配了 user: "1026:100" 时 /server 属 root，写不进去）。
  * 原来这里是裸的 appendFileSync，一旦抛错就会跳过 res.end，
  * 表现为搜索接口永远不返回、客户端一直等到超时——一条调试日志把搜索整个打挂。
+ *
+ * 【2026-11-03 补：先落到 DATA_PATH，别动不动就"停用"】
+ * 只做「写失败就停用」的话，容器里每次启动都会打一条
+ * `写入 /server/debug.txt 失败(EACCES)，本次运行起停用该调试日志`。
+ * 功能没事，但这行日志会让人误以为服务出问题（本次排查时就先怀疑了它）。
+ * 实测：/server 属 root、容器进程是 uid 1026；而 DATA_PATH(/server/data)
+ * 是 777，也是 users/、runtime/ 等持久化文件统一落盘的地方，放这里最一致。
  */
 let searchDebugDisabled = false
+const searchDebugFile = (): string =>
+  path.join(process.env.DATA_PATH || path.join(process.cwd(), 'data'), 'debug.txt')
 const appendSearchDebug = (line: string): void => {
   if (searchDebugDisabled) return
   try {
-    fs.appendFileSync(path.join(process.cwd(), 'debug.txt'), `${line}\n`)
+    fs.appendFileSync(searchDebugFile(), `${line}\n`)
   } catch (e: any) {
     searchDebugDisabled = true
-    console.warn(`[搜索调试日志] 写入 ${path.join(process.cwd(), 'debug.txt')} 失败(${e.code || e.message})，本次运行起停用该调试日志`)
+    console.warn(`[搜索调试日志] 写入 ${searchDebugFile()} 失败(${e.code || e.message})，本次运行起停用该调试日志`)
   }
 }
 
