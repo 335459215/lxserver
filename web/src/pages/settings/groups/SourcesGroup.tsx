@@ -443,7 +443,7 @@ export default function SourcesGroup() {
     if (!platform) return
     setProbingId(s.id)
     try {
-      const r = await api.sources.probe(s.id, platform)
+      const r = await api.sources.probe(s.id, s.name, platform)
       setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error } }))
     } catch (e) {
       setProbes((prev) => ({

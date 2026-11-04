@@ -283,12 +283,12 @@ export const api = {
      * platform 取自该源 supportedSources[0] —— 后端要靠它在内置库里找样本歌，
      * 并据此把「同平台的其它源」排除掉，确保测的是这一个源本身。
      */
-    probe: (id: string, platform: string) =>
+    probe: (id: string, name: string, platform: string) =>
       adminFetchJson<{ success: boolean; ok: boolean; ms: number; error?: string; sample?: string }>(
         '/api/custom-source/probe',
         {
           method: 'POST',
-          body: JSON.stringify({ id, platform, username: sourceOwner() }),
+          body: JSON.stringify({ id, name, platform, username: sourceOwner() }),
         },
       ),
     validate: (script: string, allowUnsafeVM = false) =>

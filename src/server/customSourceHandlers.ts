@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { extractMetadata, loadUserApi, initUserApis, getApiStatus, getSourceSpeed, callUserApiGetMusicUrl, recordSourceSpeed } from './userApi'
+import { extractMetadata, loadUserApi, initUserApis, getApiStatus, getSourceSpeed, getLoadedApi, recordSourceSpeed } from './userApi'
 import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getProxyAgent } from '../modules/utils/proxy.js'
@@ -975,35 +975,46 @@ export async function handleProbe(req: IncomingMessage, res: ServerResponse) {
             return
         }
 
-        // 2) 排除同平台的其它自定义源，确保测的是它自己
-        const excludeList = await (async () => {
-            try {
-                const dir = getSourceDir(owner)
-                const metaPath = path.join(dir, 'sources.json')
-                if (!fs.existsSync(metaPath)) return [] as string[]
-                const all: any[] = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
-                return all
-                    .map((s: any) => String(s.id || ''))
-                    .filter((sid: string) => sid && sid !== id)
-            } catch {
-                return [] as string[]
-            }
-        })()
+        // 2) 直接拿这一个源的实例来调用
+        //
+        // 【为什么不用 callUserApiGetMusicUrl + excludeApiSources】
+        // 第一版就是那么写的，实测排除没生效（日志「已尝试 13 个音源」），
+        // 测出来的是整个平台竞速的结果，不是这一个源 —— 正是要避免的张冠李戴。
+        // 根因是两边的标识格式不一致：sources.json 的 id 是文件名（带 `.js`），
+        // 运行时 api.info.id 不带。与其继续猜标识怎么对齐，不如直接取实例调用
+        // `musicUrl`：请求发给谁，结果就是谁的，不存在歧义。
+        const api: any = getLoadedApi(owner, id)
+        if (!api) {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+                success: true, ok: false, ms: 0,
+                error: '该源未加载（启动时加载失败，或已停用）',
+                sample: sample?.name || '',
+            }))
+            return
+        }
 
         // 3) 真实解析 + 计时
         const started = Date.now()
         let ok = false
         let error = ''
         try {
-            const r = await Promise.race([
-                callUserApiGetMusicUrl(platform, sample, '320k', owner, undefined, false, excludeList),
+            const r: any = await Promise.race([
+                api.callRequest('musicUrl', platform, {
+                    musicInfo: sample,
+                    quality: '320k',
+                    type: '320k',
+                }, { requestTimeoutMs: 15000 }),
                 new Promise((_, reject) => {
                     const t = setTimeout(() => reject(new Error('检测超时（20 秒）')), 20000)
                     // 别让这个定时器把进程吊着
                     if (typeof (t as any).unref === 'function') (t as any).unref()
                 }),
-            ]) as any
-            ok = !!r?.url
+            ])
+            // 与真实取链同一判据：必须是字符串且是 http(s)，否则视为无效
+            const url = typeof r === 'string' ? r.trim() : ''
+            ok = /^https?:\/\//i.test(url)
+            if (!ok) error = '源没有返回可用的 http(s) 链接'
         } catch (e: any) {
             error = e?.message || String(e)
         }

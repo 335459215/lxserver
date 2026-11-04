@@ -98,6 +98,16 @@ const loadedApis = new Map<string, any>()
 const apiStatus = new Map<string, ApiStatusInfo>()
 
 /** 返回已成功加载的 API 源数量，用于状态展示与健康检查。 */
+/**
+ * 取某个已加载的自定义源实例。
+ *
+ * 【为什么需要它】音源「检测」必须测的是**这一个源**。走 callUserApiGetMusicUrl
+ * 会在同平台的多个源之间竞速，即使传 excludeApiSources 也只是筛候选，实测因
+ * 标识格式不一致（sources.json 的 id 带 .js、运行时不带）而没筛干净，日志显示
+ * 「已尝试 13 个音源」—— 测出来的是整个平台的结果。直接拿实例调用 musicUrl
+ * 就不存在这个问题：请求发给谁，结果就是谁的。
+ */
+export const getLoadedApi = (owner: string, id: string) => loadedApis.get(owner + '_' + id) ?? null
 export function getLoadedApisCount() {
     return loadedApis.size
 }
