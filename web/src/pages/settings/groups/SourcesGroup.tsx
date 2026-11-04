@@ -431,6 +431,11 @@ export default function SourcesGroup() {
   /** 每源最近一次的检测结果（只存内存：这是「此刻测的」，不该当成持久事实） */
   const [probes, setProbes] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
+  /** 全量检测进度。null = 没在跑；{done,total} = 正在跑 */
+  const [probeAll, setProbeAll] = useState<{ done: number; total: number } | null>(null)
+  // 用 ref 而不是 state 表示「要不要停」：循环里读的是最新值，
+  // 而 setState 的更新要下一轮渲染才可见，拿它当循环条件会停不下来。
+  const stopAllRef = useRef(false)
 
   /** 对一个源做真实性检测。
    *
@@ -453,6 +458,51 @@ export default function SourcesGroup() {
     } finally {
       setProbingId(null)
     }
+  }
+
+  /** 一键全测：**串行**跑完所有源，边跑边出结果。
+   *
+   *  【为什么是串行而不是并发】
+   *  每个检测都是一次真实解析（含对上游平台的请求）。并发 14 个会把上游
+   *  打到限流，结果反而全是失败——测出来的「不可用」是假的。串行虽然慢
+   *  （非可用源通常几秒内返回失败，可用源 1 秒左右），但结果可信。
+   *
+   *  【为什么要有停止】
+   *  最坏情况 14 个源 × 20s 超时 = 几分钟。用户随时想中断必须能中断，
+   *  否则只能刷页面。
+   */
+  const runProbeAll = async (list: SourceRow[]) => {
+    const targets = list.filter((s) => (s.supportedSources ?? s.platforms ?? []).length > 0)
+    if (!targets.length) return
+    stopAllRef.current = false
+    setProbeAll({ done: 0, total: targets.length })
+    let okCount = 0
+    let done = 0
+    for (const s of targets) {
+      if (stopAllRef.current) break
+      const platform = (s.supportedSources ?? s.platforms ?? [])[0]
+      setProbingId(s.id)
+      try {
+        const r = await api.sources.probe(s.id, s.name, platform)
+        if (r.ok) okCount++
+        setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error } }))
+      } catch (e) {
+        setProbes((prev) => ({
+          ...prev,
+          [s.id]: { ok: false, ms: 0, error: e instanceof Error ? e.message : '检测失败' },
+        }))
+      }
+      done++
+      setProbeAll({ done, total: targets.length })
+    }
+    setProbingId(null)
+    setProbeAll(null)
+    const stopped = done < targets.length
+    toast({
+      title: stopped ? `已停止（测完 ${done}/${targets.length}）` : '全部检测完成',
+      description: `可用 ${okCount} 个 · 不可用 ${done - okCount} 个`,
+      variant: okCount === done ? 'success' : undefined,
+    })
   }
   const [error, setError] = useState('')
 
@@ -502,12 +552,39 @@ export default function SourcesGroup() {
     <Stack gap={3}>
       <ScriptSafetySection />
 
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
           <h3 className="text-sm font-medium text-ink">自定义音源</h3>
           <p className="mt-0.5 text-xs text-dim">共 {sources.length} 个源；增删改会作废解析器粘滞缓存与熔断状态。</p>
         </div>
-        <ImportSourceDialog onDone={load} />
+        <div className="flex shrink-0 items-center gap-2">
+          {/* 全部检测：串行跑，边跑边出结果；跑的时候按钮变成「停止」 */}
+          <Button
+            variant="outline" size="sm"
+            onClick={() => {
+              if (probeAll) {
+                stopAllRef.current = true
+              } else {
+                void runProbeAll(sources)
+              }
+            }}
+            disabled={probingId !== null && !probeAll}
+            title="逐个检测所有音源（串行，避免把上游打到限流）"
+          >
+            {probeAll ? (
+              <>
+                <Loader2 className="mr-1 size-3.5 animate-spin" />
+                停止（{probeAll.done}/{probeAll.total}）
+              </>
+            ) : (
+              <>
+                <Activity className="mr-1 size-3.5" />
+                全部检测
+              </>
+            )}
+          </Button>
+          <ImportSourceDialog onDone={load} />
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-line bg-panel shadow-card">
