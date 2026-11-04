@@ -616,12 +616,18 @@ export default function SourcesGroup() {
                       }`}
                       title={
                         probes[s.id].ok
-                          ? `检测通过：真实解析成功，耗时 ${probes[s.id].ms}ms`
+                          ? probes[s.id].ms < 10
+                            ? '检测通过：几乎瞬时返回 —— 极可能是源内部缓存命中了，这个耗时不能代表真实取链速度'
+                            : `检测通过：真实解析成功，耗时 ${probes[s.id].ms}ms`
                           : `检测失败：${probes[s.id].error || '未知原因'}`
                       }
                     >
+                      {/* <10ms 就别报毫秒数了：实测「长青SVIP音源」连续两次都是 1ms，
+                          那是源内部缓存直接返回，写成「可用 · 1ms」会让人以为它最快。 */}
                       {probes[s.id].ok
-                        ? `可用 · ${probes[s.id].ms < 1000 ? `${probes[s.id].ms}ms` : `${(probes[s.id].ms / 1000).toFixed(1)}s`}`
+                        ? probes[s.id].ms < 10
+                          ? '可用 · 缓存'
+                          : `可用 · ${probes[s.id].ms < 1000 ? `${probes[s.id].ms}ms` : `${(probes[s.id].ms / 1000).toFixed(1)}s`}`
                         : '不可用'}
                     </span>
                   )}
