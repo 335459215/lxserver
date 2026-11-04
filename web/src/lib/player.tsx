@@ -14,6 +14,7 @@ import { reportHistory } from '@/lib/history'
 import { userAuthHeaders } from '@/lib/auth'
 import { applySleepAction, SLEEP_OFF, type SleepMode, type SleepTimerState } from '@/lib/sleepTimer'
 import { AudioCache, cacheKey, createBrowserAudioCache } from '@/lib/audioCache'
+import { secureAudioUrl } from '@/lib/audioUrl'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
@@ -624,7 +625,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // 封面/时长等元信息由 lib/localMusic.ts 在构造 Song 时补好。
       if (song.url) {
         patch({ resolvedQuality: null, sourceName: '本地音乐', attempts: [] })
-        el.src = song.url
+        el.src = secureAudioUrl(song.url) ?? song.url
         el.load()
         applyPlaybackRate(stateRef.current.rate)
         try {
@@ -655,7 +656,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             URL.revokeObjectURL(blobUrlRef.current)
             blobUrlRef.current = null
           }
-          el.src = result.url
+          // 已知 CDN 主机的 http 直链升级成 https（Mixed Content 修复，见 lib/audioUrl.ts）。
+          // 服务端代理兜底刻意不做 —— 那会让音频全量走 NAS 上行，外网远程听会吃掉上传带宽。
+          el.src = secureAudioUrl(result.url) ?? result.url
           el.load()
           applyPlaybackRate(stateRef.current.rate)
           // 设置 src 后立即起表，而不是等 `waiting` 事件。
@@ -676,8 +679,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           const resolvedKey = result.resolvedSong
             ? songKey(result.resolvedSong as unknown as Song)
             : key
+          // 缓存下载同样走升级后的地址：服务端代理不区分 scheme，但缓存键/日志
+          // 里留明文 http 会让「明明升级过了」的排查多绕一圈。
+          const cacheSrcUrl = secureAudioUrl(result.url) ?? result.url
           scheduleCacheWrite(
-            seq, key, result.url, String(result.quality ?? quality), song,
+            seq, key, cacheSrcUrl, String(result.quality ?? quality), song,
             resolvedKey, result.resolvedSource,
           )
           return
