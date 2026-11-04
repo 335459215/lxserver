@@ -17,26 +17,12 @@ name: build-image-ghcr
 #   并行的 matrix job 各自覆盖（最终指向哪个架构取决于谁后完成，曾长期
 #   指向 arm64），仓库里也从来没有任何版本号，检测镜像更新的工具只能
 #   看到一个没有语义的 tag。
+# 构建触发器（2026-11-04 调整）：镜像改为在 NAS 本地构建，GitHub Actions
+# 不再随 push 自动编译。只保留手动触发（workflow_dispatch）作为应急兜底 ——
+# NAS 不可用或需要给 CI/外部环境出一版时，到 Actions 页面点「Run workflow」。
+# 改回自动：把下面 on.push 段恢复即可（git log 里有历史版本）。
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'web/**' # 新前端（阶段A）：源码或构建配置变更也触发镜像发布
-      - 'public/**'
-      - 'Dockerfile'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'version' # 只改版本文件（cut 一个里程碑）也要触发发布
-      - '.github/workflows/build-image-ghcr.yml'
-      # 测试与构建脚本：它们决定 test job 跑什么、怎么跑。
-      # 漏掉这一条会有一个危险的盲区 —— 只改 scripts/ 时 CI 不触发，
-      # 于是"把变异测试改坏""把断言删掉"这类改动可以在无人验证的情况下进 main。
-      # （实测踩到：修 mutation-check-bindip.cjs 后 push 完全没有 run。）
-      - 'scripts/**'
-      - 'test/**'
 
 # 串行化同一仓库的所有构建（排队,不取消）。版本号的 bump 判据是"GHCR 上是否
 # 已存在该 tag",而 merge-manifest 要到构建末尾才把版本 tag 推上去——两个构建
