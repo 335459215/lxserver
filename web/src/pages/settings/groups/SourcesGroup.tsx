@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Download, Plus, Trash2, Zap } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Download, Loader2, Plus, Trash2, Zap } from 'lucide-react'
 import { api, isAdmin, useAuth } from '@/lib/auth'
 import { useConfigForm } from '@/lib/useConfig'
 import {
@@ -428,6 +428,32 @@ export default function SourcesGroup() {
   const { auth } = useAuth()
   const { toast } = useToast()
   const [sources, setSources] = useState<SourceRow[] | null>(null)
+  /** 每源最近一次的检测结果（只存内存：这是「此刻测的」，不该当成持久事实） */
+  const [probes, setProbes] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
+  const [probingId, setProbingId] = useState<string | null>(null)
+
+  /** 对一个源做真实性检测。
+   *
+   *  【为什么要用户手动点、不自动全测】
+   *  每个源都要真跑一次解析（含上游请求），十几个源全测要几十秒且会给
+   *  上游平台施加无谓压力。用户关心的是「某个源现在还能不能用」，
+   *  按需点一个最省钱也最快。 */
+  const runProbe = async (s: SourceRow) => {
+    const platform = (s.supportedSources ?? s.platforms ?? [])[0]
+    if (!platform) return
+    setProbingId(s.id)
+    try {
+      const r = await api.sources.probe(s.id, platform)
+      setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error } }))
+    } catch (e) {
+      setProbes((prev) => ({
+        ...prev,
+        [s.id]: { ok: false, ms: 0, error: e instanceof Error ? e.message : '检测失败' },
+      }))
+    } finally {
+      setProbingId(null)
+    }
+  }
   const [error, setError] = useState('')
 
   const load = () =>
@@ -503,6 +529,25 @@ export default function SourcesGroup() {
                   <span className="shrink-0">
                     <SpeedBadge ms={s.speedMs} />
                   </span>
+                  {/* 检测结果：可用=绿、失败=红、未检测时不渲染（不占位）。
+                      和 SpeedBadge 的区别要说清楚：SpeedBadge 是「播放时顺带测到的耗时」，
+                      这个是「你刚点检测、它真的解析成功了/失败了」，两者含义不同，故并列。 */}
+                  {probes[s.id] && (
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
+                        probes[s.id].ok ? 'bg-ok/10 text-ok' : 'bg-danger/10 text-danger'
+                      }`}
+                      title={
+                        probes[s.id].ok
+                          ? `检测通过：真实解析成功，耗时 ${probes[s.id].ms}ms`
+                          : `检测失败：${probes[s.id].error || '未知原因'}`
+                      }
+                    >
+                      {probes[s.id].ok
+                        ? `可用 · ${probes[s.id].ms < 1000 ? `${probes[s.id].ms}ms` : `${(probes[s.id].ms / 1000).toFixed(1)}s`}`
+                        : '不可用'}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                   {s.version && <Badge>v{s.version}</Badge>}
@@ -516,6 +561,20 @@ export default function SourcesGroup() {
                *  排序在手机上极少用（且可用导入顺序表达），隐藏它换取源名完整显示。
                *  md 及以上恢复显示，桌面端操作不变。 */}
               <div className="flex shrink-0 items-center gap-1">
+                {/* 检测：真跑一次解析，测出「这个源现在还能不能用、要多久」。
+                    手机上也保留 —— 它正是这一页最常用的动作。 */}
+                <Button
+                  variant="ghost" size="icon" aria-label={`检测音源 ${s.name}`}
+                  title="检测：真实解析一次，测可用性与延迟"
+                  onClick={() => void runProbe(s)}
+                  disabled={probingId !== null || !(s.supportedSources ?? s.platforms ?? []).length}
+                >
+                  {probingId === s.id ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Activity className="size-4" />
+                  )}
+                </Button>
                 <Button
                   variant="ghost" size="icon" aria-label="上移"
                   className="hidden md:inline-flex"

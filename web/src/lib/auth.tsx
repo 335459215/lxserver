@@ -278,6 +278,19 @@ export const api = {
           speedMs?: number
         }>
       >(`/api/custom-source/list?username=${encodeURIComponent(sourceOwner())}`),
+    /**
+     * 音源有效性探测：对该源做一次真实解析，返回 { ok, ms, error }。
+     * platform 取自该源 supportedSources[0] —— 后端要靠它在内置库里找样本歌，
+     * 并据此把「同平台的其它源」排除掉，确保测的是这一个源本身。
+     */
+    probe: (id: string, platform: string) =>
+      adminFetchJson<{ success: boolean; ok: boolean; ms: number; error?: string; sample?: string }>(
+        '/api/custom-source/probe',
+        {
+          method: 'POST',
+          body: JSON.stringify({ id, platform, username: sourceOwner() }),
+        },
+      ),
     validate: (script: string, allowUnsafeVM = false) =>
       adminFetch('/api/custom-source/validate', {
         method: 'POST',

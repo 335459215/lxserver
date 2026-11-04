@@ -6849,6 +6849,11 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         clearStickyCache()
         return customSourceHandlers.handleUpdatePlatforms(req, res)
       }
+      // 音源有效性探测：对单个自定义源做一次真实解析并计时。
+      // 不改任何配置，只读运行时状态，所以不需要清粘滞缓存。
+      if (pathname === '/api/custom-source/probe' && req.method === 'POST') {
+        return customSourceHandlers.handleProbe(req, res)
+      }
 
       // elFinder 文件管理器连接器
       if (pathname === '/api/elfinder/connector') {

@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { extractMetadata, loadUserApi, initUserApis, getApiStatus, getSourceSpeed } from './userApi'
+import { extractMetadata, loadUserApi, initUserApis, getApiStatus, getSourceSpeed, callUserApiGetMusicUrl, recordSourceSpeed } from './userApi'
+import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getProxyAgent } from '../modules/utils/proxy.js'
 import { isAdminRequest } from './adminAuth'
@@ -917,6 +918,102 @@ export async function handleUpdatePlatforms(req: IncomingMessage, res: ServerRes
             id: matchedKey,
             disabledSources: states[matchedKey].disabledSources
         }))
+    } catch (error: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: error.message }))
+    }
+}
+
+/**
+ * 音源有效性探测：对一个自定义源做一次**真实解析**，返回成功/失败与耗时。
+ *
+ * 【为什么不是「脚本加载成功」就算有效】
+ * 加载成功只说明脚本能跑起来，不代表它现在还能拿到链接 —— 上游接口挂掉、
+ * 版本过期（如「独家音源 v6 需 v7」）时脚本照样加载成功。用户要判断的是
+ * 「这个源今天还能不能用」，只有走一次 getMusicUrl 才算数。
+ *
+ * 【为什么要把其它源排除掉】
+ * callUserApiGetMusicUrl 会在「同一平台的多个自定义源」之间竞速，不排除的话
+ * 测出来可能是**别人**源的耗时与成功率，张冠李戴 —— 那样这个检测就没意义了。
+ *
+ * 【为什么要先搜一首样本歌】
+ * getMusicUrl 需要 songmid 这类平台内标识，不能凭空构造。先用内置平台搜一首
+ * 固定样本（周杰伦《晴天》优先，拿不到就取第一条），再拿它去解析。
+ */
+export async function handleProbe(req: IncomingMessage, res: ServerResponse) {
+    const auth = req.headers['x-user-token']
+    if (!isAdminRequest(req, auth)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: '权限不足：音源检测需要管理员身份。' }))
+        return
+    }
+
+    try {
+        const body = JSON.parse((await readBody(req)) || '{}')
+        const id = String(body.id || '')
+        const platform = String(body.platform || '')
+        const owner = String(body.username || 'open')
+        if (!id || !platform) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, error: 'Missing id/platform' }))
+            return
+        }
+
+        const sdk: any = musicSdkRaw
+        if (!sdk[platform]?.musicSearch?.search) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, error: `平台 ${platform} 不支持搜索` }))
+            return
+        }
+
+        // 1) 取样本歌
+        const searchData = await sdk[platform].musicSearch.search('晴天 周杰伦', 1, 5)
+        const list: any[] = searchData?.list || []
+        const sample = list[0]
+        if (!sample) {
+            res.end(JSON.stringify({ success: true, ok: false, ms: 0, error: '该平台搜不到样本歌，无法检测' }))
+            return
+        }
+
+        // 2) 排除同平台的其它自定义源，确保测的是它自己
+        const excludeList = await (async () => {
+            try {
+                const dir = getSourceDir(owner)
+                const metaPath = path.join(dir, 'sources.json')
+                if (!fs.existsSync(metaPath)) return [] as string[]
+                const all: any[] = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+                return all
+                    .map((s: any) => String(s.id || ''))
+                    .filter((sid: string) => sid && sid !== id)
+            } catch {
+                return [] as string[]
+            }
+        })()
+
+        // 3) 真实解析 + 计时
+        const started = Date.now()
+        let ok = false
+        let error = ''
+        try {
+            const r = await Promise.race([
+                callUserApiGetMusicUrl(platform, sample, '320k', owner, undefined, false, excludeList),
+                new Promise((_, reject) => {
+                    const t = setTimeout(() => reject(new Error('检测超时（20 秒）')), 20000)
+                    // 别让这个定时器把进程吊着
+                    if (typeof (t as any).unref === 'function') (t as any).unref()
+                }),
+            ]) as any
+            ok = !!r?.url
+        } catch (e: any) {
+            error = e?.message || String(e)
+        }
+        const ms = Date.now() - started
+
+        // 4) 记进测速表 —— 检测结果同时刷新列表里的「延迟」徽章
+        if (ok) recordSourceSpeed(id, ms, owner)
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true, ok, ms, error, sample: sample?.name || '' }))
     } catch (error: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: false, error: error.message }))
