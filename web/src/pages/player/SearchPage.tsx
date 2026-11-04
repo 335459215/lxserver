@@ -13,6 +13,7 @@ import {
   searchMusic,
   searchMusicAggregatePage,
   sourceLabel,
+  secureImageUrl,
   type Song,
 } from '@/lib/music'
 import {
@@ -699,9 +700,9 @@ export default function SearchPage() {
                   className="group block rounded-2xl p-3 text-center transition-colors hover:bg-panel2"
                 >
                   <span className="mx-auto block size-20 overflow-hidden rounded-full border border-line bg-panel2 sm:size-24">
-                    {s.picUrl ? (
+                    {secureImageUrl(s.picUrl) ? (
                       <img
-                        src={s.picUrl}
+                        src={secureImageUrl(s.picUrl)}
                         alt=""
                         loading="lazy"
                         className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"

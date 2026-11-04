@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Disc3, Play, TriangleAlert, UserRound } from 'lucide-react'
 import { Button, Stack, useToast } from '@/components/ui'
-import { sourceLabel } from '@/lib/music'
+import { secureImageUrl, sourceLabel } from '@/lib/music'
 import {
   ARTIST_SOURCES,
   supportsArtistPages,
@@ -242,9 +242,9 @@ export default function ArtistPage() {
                   className="group block rounded-2xl p-2 transition-colors hover:bg-panel2"
                 >
                   <span className="relative block aspect-square overflow-hidden rounded-xl border border-line bg-panel2">
-                    {a.img ? (
+                    {secureImageUrl(a.img) ? (
                       <img
-                        src={a.img}
+                        src={secureImageUrl(a.img)}
                         alt=""
                         loading="lazy"
                         className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"

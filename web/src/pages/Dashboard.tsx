@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import { Button, useToast } from '@/components/ui'
 import { useAuth } from '@/lib/auth'
+import { coverUrl } from '@/lib/music'
 import {
   useAggregatedLeaderboardBoards,
   useAggregatedLeaderboardSongs,
@@ -667,9 +668,9 @@ export default function Dashboard() {
                 <div className="flex items-center gap-3 min-w-0 pr-2">
                   {/* 封面 + 播放悬浮态 */}
                   <div className="relative size-12 shrink-0 overflow-hidden rounded-xl bg-panel2 shadow-xs">
-                    {song.img ? (
+                    {coverUrl(song) ? (
                       <img
-                        src={song.img}
+                        src={coverUrl(song)}
                         alt={song.name}
                         loading="lazy"
                         className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
