@@ -1,0 +1,85 @@
+# 本地/NAS 构建用的 Dockerfile：只换国内源，其余与官方 Dockerfile 完全一致。
+#
+# 【为什么需要这个文件】
+# 本机没有 Docker，镜像在 NAS 上构建。NAS 到官方源的链路被代理挡死
+# （192.168.1.4:7890 拉 alpine CDN 60 秒零字节），给 docker build 传
+# --build-arg HTTPS_PROXY 会让构建假死（实测 40 分钟只走到 apk 第 17 步）。
+# 正解是不传代理 + 换国内源：阿里云 apk 镜像实测 2.3MB/s（官方源 11KB/s），
+# npmmirror 实测 14MB/s，整次构建约 6.5 分钟。
+#
+# 用法（NAS 上）：
+#   /usr/local/bin/docker build --network=host \
+#     -t ghcr.io/335459215/lxserver:<版本> -f Dockerfile.local .
+#
+# 官方 Dockerfile 保持不变：CI（.github/workflows/build-image-ghcr.yml）
+# 跑在 GitHub runner 上，到官方源通畅，不需要这个文件。
+
+FROM alpine AS base
+
+# 阿里云 Alpine 镜像源（含 community 仓库，chromaprint 在 community）
+RUN sed -i 's|https\?://dl-cdn.alpinelinux.org|https://mirrors.aliyun.com|g' /etc/apk/repositories \
+    && echo "https://mirrors.aliyun.com/alpine/latest-stable/community" >> /etc/apk/repositories
+
+FROM base AS builder
+
+# npm 走淘宝镜像（两个 npm install 都受益）
+ENV npm_config_registry=https://registry.npmmirror.com
+
+WORKDIR /source-code
+COPY . .
+
+RUN apk add --update \
+   g++ \
+   make \
+   py3-pip \
+   nodejs \
+   npm \
+   && (apk add --no-cache chromaprint || true) \
+   && npm install --ignore-scripts --no-audit --no-fund && npm run build \
+   && cd web && npm install --no-audit --no-fund && npm run build && cd .. \
+   && rm -rf node_modules && npm install --omit=dev --no-audit --no-fund \
+   && mkdir -p build-output \
+   && mv server node_modules config.js index.js package.json public version -t build-output
+
+
+FROM base AS final
+WORKDIR /server
+
+RUN apk add --update --no-cache nodejs \
+   && (apk add --no-cache chromaprint || echo "chromaprint apk not found, will use bundled binary")
+
+COPY --from=builder ./source-code/build-output ./
+
+VOLUME /server/data
+ENV DATA_PATH='/server/data'
+ENV LOG_PATH='/server/data/logs'
+
+EXPOSE 9527
+ENV NODE_ENV='production'
+ENV PORT=9527
+# 【不要在这里硬编码 BIND_IP】环境变量的优先级**高于** config.js
+# （index.ts 里 envParams.BIND_IP 会覆盖配置文件）。此前这里写着
+# `ENV BIND_IP='0.0.0.0'`，导致用户在 config.js 里设 bindIP 永远无效 ——
+# 实测把 config.js 改成 127.0.0.1 后，容器仍监听 0.0.0.0，且日志/接口
+# 都显示 0.0.0.0，极难定位。需要固定监听地址时由使用者在 compose.yaml
+# 的 environment 里显式给 BIND_IP（那是用户的明确意图），镜像不替他决定。
+# ENV BIND_IP='0.0.0.0'
+# ENV PROXY_HEADER 'x-real-ip'
+# ENV SERVER_NAME 'My Sync Server'
+# ENV MAX_SNAPSHOT_NUM '10'
+# ENV LIST_ADD_MUSIC_LOCATION_TYPE 'top'
+# ENV LX_USER_user1 '123.123'
+# ENV LX_USER_user2 '{ "password": "123.456", "maxSnapshotNum": 10, "list.addMusicLocationType": "top" }'
+# ENV CONFIG_PATH '/server/data/config.js'
+# ENV WEBDAV_URL ''
+# ENV WEBDAV_USERNAME ''
+# ENV WEBDAV_PASSWORD ''
+# ENV SYNC_INTERVAL '60'
+# ENV ENABLE_WEBPLAYER_AUTH 'false'
+# ENV WEBPLAYER_PASSWORD '123456'
+# ENV LOG_PATH '/server/logs'
+# ENV DATA_PATH '/server/data'
+# ENV PLAYER_ENABLE_AUTH 'true'
+# ENV PLAYER_PASSWORD '123.456'
+
+CMD [ "node", "index.js" ]

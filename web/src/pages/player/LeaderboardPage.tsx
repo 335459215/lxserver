@@ -86,7 +86,7 @@ export default function LeaderboardPage() {
                 <TriangleAlert className="size-3.5 text-danger" /> 榜单加载失败
               </p>
               <p className="mt-1 break-words">{boardsRes.error}</p>
-              <Button variant="outline" size="sm" className="mt-2" onClick={boardsRes.reload}>
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => boardsRes.reload()}>
                 <RefreshCw className="size-3" /> 重试
               </Button>
             </div>
@@ -156,7 +156,7 @@ export default function LeaderboardPage() {
               </span>
               <p className="mt-3 text-sm font-medium text-ink">榜单曲目加载失败</p>
               <p className="mx-auto mt-1 max-w-md break-words text-xs text-dim">{songsRes.error}</p>
-              <Button variant="outline" size="sm" className="mt-4" onClick={songsRes.reload}>
+              <Button variant="outline" size="sm" className="mt-4" onClick={() => songsRes.reload()}>
                 <RefreshCw className="size-3.5" /> 重试
               </Button>
             </div>

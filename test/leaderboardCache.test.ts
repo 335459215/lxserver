@@ -79,3 +79,34 @@ test('加载失败不写缓存：下一次仍会重试', async () => {
   }), 7)
   assert.equal(calls, 2)
 })
+
+test('refresh 无视 TTL 强制打上游，并用新值替换缓存（force=1 专用）', async () => {
+  let now = 1000
+  const cache = createLeaderboardCache<{ n: number }>({ ttlMs: 100, now: () => now })
+  let loads = 0
+  const load = async () => ({ n: ++loads })
+
+  assert.deepEqual(await cache.getOrLoad('k', load), { n: 1 })
+  // TTL 内的普通请求仍走缓存
+  assert.deepEqual(await cache.getOrLoad('k', load), { n: 1 })
+  // 强刷：即使没过期也打上游，且新值写回缓存
+  assert.deepEqual(await cache.refresh('k', load), { n: 2 })
+  assert.deepEqual(await cache.getOrLoad('k', load), { n: 2 })
+  assert.equal(loads, 2)
+})
+
+test('refresh 失败时不污染缓存：旧值仍在，下次普通请求还能命中', async () => {
+  let now = 1000
+  const cache = createLeaderboardCache<{ n: number }>({ ttlMs: 100, now: () => now })
+  let loads = 0
+  const load = async () => ({ n: ++loads })
+
+  assert.deepEqual(await cache.getOrLoad('k', load), { n: 1 })
+  await assert.rejects(
+    cache.refresh('k', async () => {
+      throw new Error('upstream 500')
+    }),
+  )
+  // 强刷失败不能把旧条目删掉 —— 否则用户连旧榜都没得看
+  assert.deepEqual(await cache.getOrLoad('k', load), { n: 1 })
+})

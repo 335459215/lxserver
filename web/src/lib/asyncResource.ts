@@ -16,12 +16,13 @@ export interface AsyncResource<T> {
   status: AsyncStatus
   data: T | null
   error: string | null
-  reload: () => void
+  /** 重新请求。`force=true` 时绕过 SW / HTTP 缓存（见下方 load 的 opts 说明）。 */
+  reload: (force?: boolean) => void
 }
 
 export function useAsyncResource<T>(
   key: string,
-  load: (signal: AbortSignal) => Promise<T>,
+  load: (signal: AbortSignal, opts?: { force?: boolean }) => Promise<T>,
 ): AsyncResource<T> {
   // 结果连同「产生它的 key#nonce」一起存：key 或重试次数一变，返回值立刻变成
   // loading，不需要在 effect 里同步 setState 去清空（那会触发级联渲染）。
@@ -32,6 +33,9 @@ export function useAsyncResource<T>(
     error: string | null
   }>({ stamp: '', status: 'ready', data: null, error: null })
   const [nonce, setNonce] = React.useState(0)
+  // 「强刷」与 nonce 一起进 effect 依赖：只有 reload(true) 才会带上它，
+  // 普通重试（reload()）保持 false，行为与以前完全一致。
+  const [force, setForce] = React.useState(false)
 
   // load 只作为「最新值」读取，避免每次渲染生成的新函数触发重请求
   const loadRef = React.useRef(load)
@@ -45,7 +49,7 @@ export function useAsyncResource<T>(
     const ac = new AbortController()
     let alive = true
 
-    loadRef.current(ac.signal)
+    loadRef.current(ac.signal, { force })
       .then((data) => {
         if (alive) setState({ stamp, status: 'ready', data, error: null })
       })
@@ -64,9 +68,14 @@ export function useAsyncResource<T>(
       alive = false
       ac.abort()
     }
-  }, [key, nonce])
+  }, [key, nonce, force])
 
-  const reload = React.useCallback(() => setNonce((n) => n + 1), [])
+  // 只认布尔 true：调用方直接把 reload 当事件处理器用时（onClick={res.reload}），
+  // 第一个参数会是事件对象，不能因此误判成「强刷」。
+  const reload = React.useCallback((forceNext?: boolean) => {
+    setForce(forceNext === true)
+    setNonce((n) => n + 1)
+  }, [])
 
   // key 为空（例如条件不满足）→ idle；结果不属于本次 key/重试 → 仍在加载
   if (!key) return { status: 'idle', data: null, error: null, reload }
@@ -76,9 +85,13 @@ export function useAsyncResource<T>(
   return { status: state.status, data: state.data, error: state.error, reload }
 }
 
-/** 统一解包：非 2xx 或结构异常都抛 MusicApiError */
-export async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal })
+/** 统一解包：非 2xx 或结构异常都抛 MusicApiError。
+ *
+ *  `init` 透传给 fetch：强刷场景传 `{ cache: 'reload' }` 绕过 Service Worker 的
+ *  stale-while-revalidate 与 HTTP 缓存 —— 否则 30 分钟窗口内 SW 直接返回旧数据，
+ *  用户点了「刷新」却看不到新内容。 */
+export async function getJson<T>(url: string, signal?: AbortSignal, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, { signal, ...init })
   const data: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const msg = (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`

@@ -104,7 +104,7 @@ export default function LocalMusicPage() {
           </span>
           <p className="mt-3 text-sm font-medium text-ink">读取本地曲库失败</p>
           <p className="mx-auto mt-1 max-w-md break-words text-xs leading-relaxed text-dim">{res.error}</p>
-          <Button variant="outline" size="sm" className="mt-4" onClick={res.reload}>
+          <Button variant="outline" size="sm" className="mt-4" onClick={() => res.reload()}>
             重试
           </Button>
         </div>

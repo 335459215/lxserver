@@ -6568,6 +6568,8 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         const source = urlObj.searchParams.get('source') || 'kg'
         const bangid = urlObj.searchParams.get('bangid')
         const page = parseInt(urlObj.searchParams.get('page') || '1')
+        // 强制刷新标记：见下方 getOrLoad/refresh 的分支说明
+        const force = urlObj.searchParams.get('force') === '1'
         if (!bangid) {
           res.writeHead(400); res.end('Missing bangid'); return
         }
@@ -6579,14 +6581,20 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
           // 命中即返回（切榜单不再等 1-3 秒）；并发请求由 getOrLoad 合并成一次。
           // 注意：normalizeSongInfo 放在 loader 里做 —— 缓存的是「已归一化」的结果，
           // 避免每次命中都对同一个共享对象重新 map 一遍。
+          //
+          // force=1：首页「刷新」按钮 / 陈旧度刷新专用 —— 绕过 TTL 直接打上游，
+          // 不绕过的话用户点了刷新拿到的还是 5 分钟内的旧榜（「刷新怎么没用」的由来）。
           const cacheKey = leaderboardCacheKey(source, String(bangid), page)
-          const result = await leaderboardListCache.getOrLoad(cacheKey, async () => {
+          const loader = async () => {
             const raw = await musicSdk[source].leaderboard.getList(bangid, page)
             if (raw && raw.list) {
               raw.list = raw.list.map(normalizeSongInfo)
             }
             return raw
-          })
+          }
+          const result = force
+            ? await leaderboardListCache.refresh(cacheKey, loader)
+            : await leaderboardListCache.getOrLoad(cacheKey, loader)
           res.writeHead(200, {
             'Content-Type': 'application/json',
             // 与 boards 接口（public, max-age=600）同口径；list 数据更新更频繁，取 300s

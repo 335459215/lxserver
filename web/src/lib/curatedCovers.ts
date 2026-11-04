@@ -28,8 +28,18 @@ import { coverUrl, type CoverSource } from './coverUrl'
 export const CURATED_COVER_CACHE_PREFIX = 'lxserver:curatedCovers'
 /** 缓存版本：换封面来源/归一化规则时 +1 即可让所有客户端重新取图 */
 export const CURATED_COVER_CACHE_VERSION = 'v1'
-/** 缓存有效期：7 天。封面是「某首歌的海报」，不会天天变；过期后下次进首页重取。 */
+/** 缓存有效期：7 天。封面是「某首歌的海报」，不会天天变；过期后下次进首页重取。
+ *
+ *  【为什么 TTL 之外还要有「按天刷新」】甄选卡卖的就是「今日」两个字 ——
+ *  网易云的「每日推荐」每天重置一次（官方 FAQ 原话），用户对「每日」类内容的
+ *  心理预期就是跨天要换。7 天 TTL 只是兜底（图床挂了/脏数据），真正决定
+ *  「今天该不该换一批封面」的是下面的 CURATED_REFRESH_HOUR 按天判定。 */
 export const CURATED_COVER_TTL_MS = 7 * 24 * 60 * 60 * 1000
+/** 每日刷新的时刻（小时，0-23）。对齐音乐大厂「每日推荐」凌晨 6 点更新的惯例：
+ *  6 点前仍算前一天的内容，6 点后跨入新的一天。改这一个值就能整体调整。 */
+export const CURATED_REFRESH_HOUR = 6
+/** 「上次刷新日」的存储键（与封面缓存同前缀，整体失效时一起清） */
+export const CURATED_REFRESH_DAY_STORAGE_KEY = `${CURATED_COVER_CACHE_PREFIX}:refreshDay`
 /** 允许的时钟偏差：条目时间戳比本机时间还晚这么多以上，视为脏数据丢弃（改过系统时间） */
 const CLOCK_SKEW_MS = 5 * 60 * 1000
 
@@ -163,6 +173,71 @@ export function writeCuratedCover(
 export function forgetCuratedCover(store: StorageLike | null | undefined, id: string): void {
   if (!store || !id) return
   removeQuietly(store, curatedCoverCacheKey(id))
+}
+
+/** 丢弃一批卡的缓存（跨天刷新时整批作废，让首页重新搜图）。返回实际丢弃的张数。 */
+export function forgetAllCuratedCovers(
+  store: StorageLike | null | undefined,
+  targets: readonly CuratedCoverTarget[],
+): number {
+  if (!store || !Array.isArray(targets)) return 0
+  let count = 0
+  for (const target of targets) {
+    if (!target?.id) continue
+    forgetCuratedCover(store, target.id)
+    count++
+  }
+  return count
+}
+
+/** 当前时刻所属的「刷新日」键（YYYY-MM-DD）。
+ *  以 CURATED_REFRESH_HOUR 为界：凌晨 6 点前算前一天，6 点后算当天 ——
+ *  深夜刷首页的人看到的仍是「今天」那一批，不会被凌晨悄悄换掉。 */
+export function curatedRefreshDayKey(
+  now: number,
+  refreshHour: number = CURATED_REFRESH_HOUR,
+): string {
+  const d = new Date(now)
+  if (d.getHours() < refreshHour) d.setDate(d.getDate() - 1)
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** 该不该按天刷新：上次刷新日 != 当前刷新日 → 该刷。
+ *  从未记录过（null）也返回 true：宁可多刷一次，也不能让「今日」名不副实。 */
+export function shouldRefreshDailyCovers(
+  lastDay: string | null | undefined,
+  now: number,
+  refreshHour: number = CURATED_REFRESH_HOUR,
+): boolean {
+  if (!lastDay) return true
+  return lastDay !== curatedRefreshDayKey(now, refreshHour)
+}
+
+export function readCuratedRefreshDay(store: StorageLike | null | undefined): string | null {
+  if (!store) return null
+  try {
+    const raw = store.getItem(CURATED_REFRESH_DAY_STORAGE_KEY)
+    return raw && raw.trim() ? raw : null
+  } catch {
+    return null
+  }
+}
+
+/** 写入「今天已刷新」。任何写入失败都静默 —— 最坏后果是下次进首页多刷一次封面。 */
+export function writeCuratedRefreshDay(
+  store: StorageLike | null | undefined,
+  now: number,
+  refreshHour: number = CURATED_REFRESH_HOUR,
+): void {
+  if (!store) return
+  try {
+    store.setItem(CURATED_REFRESH_DAY_STORAGE_KEY, curatedRefreshDayKey(now, refreshHour))
+  } catch {
+    /* 隐私模式/配额满：不影响功能本身 */
+  }
 }
 
 /** 同步读出所有已缓存的封面（用于首帧直接渲染，避免等网络）。 */

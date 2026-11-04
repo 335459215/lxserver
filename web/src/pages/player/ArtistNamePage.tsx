@@ -88,7 +88,7 @@ export default function ArtistNamePage() {
               <Search className="size-3.5" /> 按歌曲搜索
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={res.reload}>
+          <Button variant="outline" size="sm" onClick={() => res.reload()}>
             重试
           </Button>
         </div>

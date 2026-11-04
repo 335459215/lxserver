@@ -182,7 +182,7 @@ export default function AlbumPage() {
           </span>
           <p className="mt-2 text-sm font-medium text-ink">专辑加载失败</p>
           <p className="mx-auto mt-1 max-w-md break-words text-xs text-dim">{album.error}</p>
-          <Button variant="outline" size="sm" className="mt-3" onClick={album.reload}>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => album.reload()}>
             重试
           </Button>
         </div>

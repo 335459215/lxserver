@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -22,6 +22,7 @@ import {
   Music2,
   Play,
   Radio,
+  RotateCw,
   Sparkles,
   Trophy,
 } from 'lucide-react'
@@ -34,10 +35,20 @@ import {
 import { searchMusic, searchMusicAggregate } from '@/lib/music'
 import {
   fetchCuratedCovers,
+  forgetAllCuratedCovers,
   forgetCuratedCover,
   getBrowserStorage,
   readCuratedCovers,
+  readCuratedRefreshDay,
+  shouldRefreshDailyCovers,
+  writeCuratedRefreshDay,
 } from '@/lib/curatedCovers'
+import {
+  isStale,
+  readTimestamp,
+  writeTimestamp,
+  LEADERBOARD_FETCHED_AT_KEY,
+} from '@/lib/freshness'
 import { useLists } from '@/lib/useLists'
 import { usePlayer } from '@/lib/player'
 import { downloadSong } from '@/lib/download'
@@ -278,10 +289,23 @@ export default function Dashboard() {
    *
    *  初值直接读 localStorage，首帧就能把上次取到的封面画出来；
    *  缺的卡在挂载后各搜一首补齐（只查网易云 wy，省流量），
-   *  搜不到的卡保持 undefined → 回落原来的渐变 + 黑胶图标，绝不裂图。 */
-  const [mixCovers, setMixCovers] = useState<Record<string, string>>(() =>
-    readCuratedCovers(getBrowserStorage(), CURATED_MIXES),
-  )
+   *  搜不到的卡保持 undefined → 回落原来的渐变 + 黑胶图标，绝不裂图。
+   *
+   *  【按天刷新为什么放在初始化器里】effect 里同步 setMixCovers({}) 会触发
+   *  级联渲染（react-hooks/set-state-in-effect）；初始化器每个挂载只跑一次，
+   *  「读缓存 + 跨天作废 + 记下今天已刷新」三步都幂等，放这里最干净。 */
+  const [mixCovers, setMixCovers] = useState<Record<string, string>>(() => {
+    const store = getBrowserStorage()
+    // 按天刷新（v2.45）：跨过刷新点（默认凌晨 6:00，见 CURATED_REFRESH_HOUR）后
+    // 首次进首页，整批作废封面缓存重新搜图 —— 「今日」甄选跨天要换一批，
+    // 对齐网易云「每日推荐每天重置一次」的产品预期。同一天内再进只补缺失的卡。
+    if (shouldRefreshDailyCovers(readCuratedRefreshDay(store), Date.now())) {
+      writeCuratedRefreshDay(store, Date.now())
+      forgetAllCuratedCovers(store, CURATED_MIXES)
+      return {}
+    }
+    return readCuratedCovers(store, CURATED_MIXES)
+  })
   useEffect(() => {
     const store = getBrowserStorage()
     const missing = CURATED_MIXES.filter((mix) => !mixCovers[mix.id])
@@ -317,6 +341,51 @@ export default function Dashboard() {
 
   // 今日热播精选曲目（取前 6 首）
   const hotHits = useMemo(() => topSongs.slice(0, 6), [topSongs])
+
+  // ===== 排行榜 / 今日热播的陈旧度刷新（v2.45 新增）=====
+  // 半实时数据，机制是「不轮询、按需刷」：
+  //   1. 任何一次加载完成（首屏 / 陈旧度刷新 / 手动强刷）都记下时间戳；
+  //   2. 页面重新可见（切标签页回来、PWA 从后台回前台）时，数据超过 5 分钟
+  //      （与服务端缓存 TTL 对齐：短于它的请求就算发了也只会拿回旧数据）
+  //      才静默强刷一次；
+  //   3. 区块标题栏的「刷新」按钮随时强刷。
+  // 强刷一律走 force：普通请求在 SW 的 30 分钟 stale-while-revalidate 窗口内
+  // 只会拿回旧数据，用户点了刷新却看不到变化（大厂用户吐槽「刷新没用」的同一个坑）。
+  // 刷新期间保留旧内容静默替换，不闪骨架、不清空正在看的列表。
+  const boardsLoading = boardsRes.status === 'loading'
+  const songsLoading = topSongsRes.status === 'loading'
+  // reload 由 useAsyncResource 内部用 useCallback([]) 创建，引用恒稳 ——
+  // 依赖整个 res 对象反而每次渲染都是新引用，会把下面的 visibility 监听器
+  // 反复解绑重绑。这里只依赖 reload 本身是有意为之。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const refreshBoards = useCallback(() => boardsRes.reload(true), [boardsRes.reload])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const refreshSongs = useCallback(() => topSongsRes.reload(true), [topSongsRes.reload])
+
+  // 数据就绪 → 记下「最近一次新鲜」的时刻（首屏加载与两种刷新都会走到这）
+  useEffect(() => {
+    if (boardsRes.status !== 'ready') return
+    writeTimestamp(getBrowserStorage(), LEADERBOARD_FETCHED_AT_KEY, Date.now())
+  }, [boardsRes.status])
+
+  useEffect(() => {
+    if (topSongsRes.status !== 'ready') return
+    writeTimestamp(getBrowserStorage(), LEADERBOARD_FETCHED_AT_KEY, Date.now())
+  }, [topSongsRes.status])
+
+  // 回前台时按陈旧度决定是否静默强刷。挂载时不查：挂载本身就会拉一次，
+  // 再查一遍等于每次进首页都发双倍请求。
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      const last = readTimestamp(getBrowserStorage(), LEADERBOARD_FETCHED_AT_KEY)
+      if (!isStale(last, Date.now())) return
+      refreshBoards()
+      refreshSongs()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [refreshBoards, refreshSongs])
 
   // 我的资料库计数
   const loveCount = snapshot?.loveList.length ?? 0
@@ -544,17 +613,32 @@ export default function Dashboard() {
           subtitle="全网多平台热度极速飙升的热门单曲，点击即播"
           icon={Flame}
           extra={
-            topSongs.length > 0 && (
+            <div className="flex items-center gap-2">
+              {topSongs.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePlayHits}
+                  className="rounded-full border-line font-medium hover:border-accent/40 hover:bg-accent-soft hover:text-accent shadow-xs"
+                >
+                  <Play className="size-3.5 fill-current mr-1 text-accent" />
+                  <span>播放全部 ({topSongs.length})</span>
+                </Button>
+              )}
+              {/* 手动强刷：绕过 SW 30 分钟 stale-while-revalidate + 服务端 5 分钟缓存，
+                  点了就一定是上游最新数据。转圈期间保留旧列表，不闪骨架。 */}
               <Button
                 variant="outline"
-                size="sm"
-                onClick={handlePlayHits}
-                className="rounded-full border-line font-medium hover:border-accent/40 hover:bg-accent-soft hover:text-accent shadow-xs"
+                size="icon"
+                onClick={refreshSongs}
+                disabled={songsLoading}
+                aria-label="刷新今日热播"
+                title="刷新"
+                className="rounded-full border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent shadow-xs"
               >
-                <Play className="size-3.5 fill-current mr-1 text-accent" />
-                <span>播放全部 ({topSongs.length})</span>
+                <RotateCw className={cn('size-3.5 text-accent', songsLoading && 'animate-spin')} />
               </Button>
-            )
+            </div>
           }
         />
 
@@ -664,6 +748,19 @@ export default function Dashboard() {
           subtitle="汇聚全网多平台权威热度，不分平台直接畅听"
           to="/leaderboard"
           icon={Trophy}
+          extra={
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={refreshBoards}
+              disabled={boardsLoading}
+              aria-label="刷新排行榜"
+              title="刷新"
+              className="rounded-full border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent shadow-xs"
+            >
+              <RotateCw className={cn('size-3.5 text-accent', boardsLoading && 'animate-spin')} />
+            </Button>
+          }
         />
         {boardsRes.status === 'loading' && (
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">

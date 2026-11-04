@@ -102,6 +102,17 @@ export class LeaderboardCache<T = unknown> {
     return task
   }
 
+  /** 强制刷新：无视 TTL 直接打 loader，并用新值替换缓存条目。
+   *
+   *  【用在哪】首页「刷新」按钮 / 数据陈旧度刷新带了 `force=1` 过来 ——
+   *  不绕过的话，5 分钟内的重复刷新拿到的还是旧数据，用户会以为刷新坏了。
+   *  刷新成功后顺手 `set`，让后续普通请求立刻吃到新值（TTL 窗口重新计）。 */
+  async refresh(key: string, loader: () => Promise<T>): Promise<T> {
+    const value = await loader()
+    this.set(key, value)
+    return value
+  }
+
   clear(): void {
     this.map.clear()
     this.inflight.clear()

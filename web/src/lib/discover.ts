@@ -126,15 +126,20 @@ const PROMINENT_BOARD_ORDER = [
   '说唱先锋榜',
 ]
 
-/** 全网多平台聚合榜单列表：并发拉取酷我、网易、QQ、酷狗、咪咕，清洗平台名前缀并按纯榜单名聚合 */
+/** 全网多平台聚合榜单列表：并发拉取酷我、网易、QQ、酷狗、咪咕，清洗平台名前缀并按纯榜单名聚合
+ *
+ *  `reload(true)`（首页「刷新」按钮）时走强刷：请求带 `force=1` + `cache:'reload'`，
+ *  同时穿透 SW 的 30 分钟 stale-while-revalidate 和服务端 5 分钟内存缓存。 */
 export function useAggregatedLeaderboardBoards(): AsyncResource<AggregatedLeaderboardBoard[]> {
-  return useAsyncResource('aggregated_boards', async (signal) => {
+  return useAsyncResource('aggregated_boards', async (signal, opts) => {
+    const force = opts?.force === true
     const sources = ['kw', 'wy', 'tx', 'kg', 'mg']
     const results = await Promise.allSettled(
       sources.map((src) =>
         getJson<{ list?: LeaderboardBoard[] }>(
-          `/api/music/leaderboard/boards?source=${encodeURIComponent(src)}`,
+          `/api/music/leaderboard/boards?source=${encodeURIComponent(src)}${force ? '&force=1' : ''}`,
           signal,
+          force ? { cache: 'reload' } : undefined,
         ),
       ),
     )
@@ -179,7 +184,10 @@ export function useAggregatedLeaderboardBoards(): AsyncResource<AggregatedLeader
   })
 }
 
-/** 聚合榜单曲目：若属于多个平台则并发拉取、智能去重交织合并 */
+/** 聚合榜单曲目：若属于多个平台则并发拉取、智能去重交织合并
+ *
+ *  `reload(true)` 时同样走强刷（`force=1` + `cache:'reload'`），保证首页
+ *  「刷新」按钮点下去拿到的是上游最新数据，而不是缓存里的旧榜。 */
 export function useAggregatedLeaderboardSongs(
   targets: AggregatedBoardTarget[] | null | undefined,
 ): AsyncResource<LeaderboardPageResult> {
@@ -188,33 +196,28 @@ export function useAggregatedLeaderboardSongs(
       ? `agg_board:${targets.map((t) => `${t.source}_${t.bangid}`).sort().join(',')}`
       : ''
 
-  return useAsyncResource(cacheKey, async (signal) => {
+  return useAsyncResource(cacheKey, async (signal, opts) => {
     if (!targets || targets.length === 0) {
       return { total: 0, list: [] }
     }
 
-    if (targets.length === 1) {
-      const { source, bangid } = targets[0]
-      const data = await getJson<{ total?: number; list?: Song[] }>(
-        `/api/music/leaderboard/list?source=${encodeURIComponent(source)}&bangid=${encodeURIComponent(
-          bangid,
-        )}&page=1`,
+    const force = opts?.force === true
+    const fetchOne = (t: AggregatedBoardTarget) =>
+      getJson<{ total?: number; list?: Song[] }>(
+        `/api/music/leaderboard/list?source=${encodeURIComponent(t.source)}&bangid=${encodeURIComponent(
+          t.bangid,
+        )}&page=1${force ? '&force=1' : ''}`,
         signal,
+        force ? { cache: 'reload' } : undefined,
       )
+
+    if (targets.length === 1) {
+      const data = await fetchOne(targets[0])
       return { total: data.total ?? 0, list: Array.isArray(data.list) ? data.list : [] }
     }
 
     // 多个平台：并发请求
-    const results = await Promise.allSettled(
-      targets.map((t) =>
-        getJson<{ total?: number; list?: Song[] }>(
-          `/api/music/leaderboard/list?source=${encodeURIComponent(t.source)}&bangid=${encodeURIComponent(
-            t.bangid,
-          )}&page=1`,
-          signal,
-        ),
-      ),
-    )
+    const results = await Promise.allSettled(targets.map(fetchOne))
 
     const lists: Song[][] = []
     let totalCount = 0
