@@ -6,7 +6,12 @@ const musicSdk = musicSdkRaw as any
 // 每日推荐歌曲缓存：按「自然日」刷新一次，当天内稳定（同一天多次请求共享结果），
 // 次日自动换一批。QQ 抓取失败时回退到上次成功结果（即便已跨天），避免每日推荐空白。
 const recommendSongsCache = new Map<string, { date: string, songs: any[] }>()
-const ALBUM_POOL = 8 // 每天从推荐专辑里取前 N 张，汇聚其歌曲
+/** 每天从推荐专辑里取多少张来汇聚。
+ *
+ * 【v2.48.2 上调 8 → 24】原先只取 8 张，聚合去重后约 20 首 —— 太少，
+ * 推荐算法（今日甄选）需要几十上百首候选才能按主题切出六张卡。
+ * 实测 24 张能稳定拿到 100+ 首（多在古典/白噪音，由推荐层再过滤）。 */
+const ALBUM_POOL = 24
 
 /**
  * 获取每日推荐歌曲（歌曲级，区别于 recommendAlbums 的专辑级）。
@@ -16,7 +21,9 @@ const ALBUM_POOL = 8 // 每天从推荐专辑里取前 N 张，汇聚其歌曲
  * @param size 返回数量，默认 20，最大 100
  */
 export const fetchRecommendedSongs = async (size = 20): Promise<any[]> => {
-    const safeSize = Math.min(Math.max(parseInt(String(size)) || 20, 1), 100)
+    // 【v2.48.2】上限从 100 提到 400：推荐层要几百首候选才能过滤+切六张卡。
+    // 多取不增加上游请求（仍是 ALBUM_POOL 张专辑），只是少截断。
+    const safeSize = Math.min(Math.max(parseInt(String(size)) || 20, 1), 400)
     const dateKey = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
 
     const cached = recommendSongsCache.get('daily')

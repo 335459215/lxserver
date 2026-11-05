@@ -50,7 +50,27 @@ const CLASSICAL_MARKERS = [
   'nocturne', 'prelude in', 'fugue', 'requiem', 'orchestra', 'philharmonic',
 ]
 
-/** 判断一首歌是否像「古典/器乐大专辑」曲目。 */
+/** 白噪音/助眠音效的识别特征。
+ *
+ * 【为什么也要过滤｜v2.48.2 线上实测】
+ * 剔掉古典后，QQ 新专辑流里剩下的「长篇内容」变成了白噪音/助眠音效专辑
+ * （实测 radar 卡首三首是「轻柔雨滴 - 528赫兹绿色噪音」「放松海浪」「自然之声- 布朗噪音」）。
+ * 这类内容在音乐推荐位上属于噪音：用户点「每日私享雷达」期待的是歌，不是雨声采样。
+ *
+ * 注意：「助眠」「治愈」这类词本身是**正当主题**（深夜卡需要它们），
+ * 所以只匹配「音效体裁词」，不匹配情绪词。 */
+const SFX_MARKERS = [
+  '白噪音', '白噪声', '布朗噪音', '布朗噪声', '绿色噪音', '粉红噪音', '粉噪声',
+  '赫兹', 'hz噪音', '自然之声', '雨声', '海浪', '溪流', '鸟鸣', '篝火', '炉火',
+  'whitenoise', 'white noise', 'brown noise', 'pink noise', 'rain sound',
+  'ocean sound', 'nature sound', 'asmr', 'binaural', 'sound of ',
+]
+
+/** 判断是否「音效/白噪音」类内容。 */
+export function looksSfx(song: RecommendSong): boolean {
+  const hay = `${song?.name ?? ''} ${song?.albumName ?? ''}`.toLowerCase()
+  return SFX_MARKERS.some((m) => hay.includes(m))
+}
 export function looksClassical(song: RecommendSong): boolean {
   const hay = `${song?.name ?? ''} ${song?.albumName ?? ''} ${song?.singer ?? ''}`.toLowerCase()
   // 作品编号是强特征。
@@ -70,12 +90,14 @@ export function isOverlongTitle(song: RecommendSong, max = 60): boolean {
 /** 过滤候选池的明显劣质内容。
  *
  *  @param song      待判断
- *  @param dropClassical 是否剔除古典（只对平台推荐流为 true；口味源为 false）
+ *  @param dropClassical 是否剔除古典与白噪音（只对平台推荐流为 true；口味源为 false ——
+ *                       用户自己常听古典/助眠音，那是真实偏好，不该被算法歧视）
  */
 export function isLowQuality(song: RecommendSong, dropClassical: boolean): boolean {
   if (!song || typeof song.name !== 'string' || !song.name.trim()) return true
   if (isOverlongTitle(song)) return true
   if (dropClassical && looksClassical(song)) return true
+  if (dropClassical && looksSfx(song)) return true
   return false
 }
 
@@ -146,9 +168,11 @@ export async function buildCandidatePool(options: {
   perSinger?: number
   maxSeeds?: number
 }): Promise<PoolBuildResult> {
-  const discoverSize = options.discoverSize ?? 80
-  const perSinger = options.perSinger ?? 12
-  const maxSeeds = options.maxSeeds ?? 4
+  // 过滤会砍掉大量内容（实测古典+白噪音合计约 70%），所以要多抓一些：
+  // 抓 200 过滤后剩 40-60 首，六张卡才够分。引擎内部按专辑聚合，多抓不会明显变慢。
+  const discoverSize = options.discoverSize ?? 200
+  const perSinger = options.perSinger ?? 15
+  const maxSeeds = options.maxSeeds ?? 5
 
   // 源 A：平台推荐流（失败不影响整体 —— 有 B 也能出推荐）
   let discover: RecommendSong[] = []

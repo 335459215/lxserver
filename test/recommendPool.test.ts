@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import {
   buildCandidatePool,
   isLowQuality,
+  looksSfx,
   isOverlongTitle,
   looksClassical,
   mergePools,
@@ -249,3 +250,24 @@ test('双源池在国产流行画像下不产出古典（回归 v2.48.1 的质�
   // 只剩口味源可能带古典，这里口味源是流行，所以应为 0
   assert.equal(classical.length, 0, `仍有古典: ${classical.map((s) => s.name).join(' / ')}`)
 })
+
+test('looksSfx：识别白噪音/音效类内容', () => {
+  for (const n of [
+    '轻柔雨滴 - 528赫兹绿色噪音',
+    '自然之声- 布朗噪音',
+    '放松海浪',
+    'White Noise for Sleep',
+    'Rain Sound 8 Hours',
+  ]) {
+    assert.equal(looksSfx({ name: n, singer: 'x' }), true, n)
+  }
+  assert.equal(looksSfx({ name: '晴天', singer: '周杰伦' }), false)
+  assert.equal(looksSfx({ name: '晚安', singer: '某歌手' }), false, '「晚安」是正当主题，不该被过滤')
+})
+
+test('isLowQuality：推荐流里白噪音也被剔除，但口味源保留', () => {
+  const sfx = { name: '放松海浪', singer: '自然音乐' }
+  assert.equal(isLowQuality(sfx, true), true, '推荐流应剔除音效')
+  assert.equal(isLowQuality(sfx, false), false, '口味源不该剔除（用户真实偏好）')
+})
+
