@@ -315,12 +315,32 @@ export default function Dashboard() {
     [rec],
   )
 
-  /** 今天这批卡的封面目标：优先用推荐结果里首曲的封面（真封面，且与歌单一致） */
+  /** 今日甄选卡的封面：**直接用推荐结果自带的封面**（v2.48.3）。
+   *
+   *  【为什么不再「再搜一次歌名取封面」】旧实现每个缺封面的卡都要多打一次搜索接口，
+   *  又慢又容易失败（实测线上有两张卡因此显示成占位符）。推荐接口返回的歌曲对象
+   *  本身带 `img` 字段（各平台搜索结果都带专辑图），直接用即可：
+   *    - 零额外请求；
+   *    - 封面与「点开会播的那首歌」严格一致（不是同名 другой 歌的图）。
+   *
+   *  只有推荐里首曲没有图时，才退回一次搜索兜底。 */
+  const recCover = useCallback(
+    (mix: CuratedMix): string | undefined => {
+      const songs = mixSongs(mix)
+      for (const s of songs) {
+        const url = coverUrl(s)
+        if (url) return url
+        break // 只看首曲：翻后面的歌会得到与卡片标题不符的图
+      }
+      return undefined
+    },
+    [mixSongs],
+  )
+
+  /** 今天这批卡的封面目标（**只对没有自带封面的卡**做兜底搜索） */
   const coverTargets = useMemo(
     () => CURATED_MIXES.map((mix) => {
       const first = rec?.mixes.find((m) => m.id === mix.id)?.songs?.[0]
-      // 有推荐结果就用首曲名做 query（封面取的是「这首歌的海报」，
-      // 与卡片上真正会播的歌一致）；拿不到推荐时退回卡标题，避免空白。
       return { id: mix.id, query: first?.name ?? mix.title }
     }),
     [rec],
@@ -349,10 +369,14 @@ export default function Dashboard() {
   })
   useEffect(() => {
     const store = getBrowserStorage()
-    const missing = coverTargets.filter((t) => !mixCovers[t.id])
-    if (missing.length === 0) return
+    // v2.48.3：推荐结果自带封面的卡不必再搜 —— 只有「推荐里首曲没图」的卡才兜底搜索。
+    // 这既省掉整轮搜索请求，也避免旧实现「两张卡封面加载失败显示占位」的问题。
+    const needFallback = coverTargets.filter(
+      (t) => !mixCovers[t.id] && !recCover(CURATED_MIXES.find((m) => m.id === t.id)!),
+    )
+    if (needFallback.length === 0) return
     const ac = new AbortController()
-    void fetchCuratedCovers(missing, {
+    void fetchCuratedCovers(needFallback, {
       store,
       signal: ac.signal,
       // 6 张卡不抢首屏带宽：2 路并发、每路错峰 120ms
@@ -604,11 +628,12 @@ export default function Dashboard() {
                     mix.gradient,
                   )}
                 >
-                  {/* ② 真封面：该卡关键词搜到的第一首歌的海报；没有就回落渐变+黑胶装饰 */}
-                  {mixCovers[mix.id] ? (
+                  {/* ② 真封面：优先用推荐结果首曲自带的图（零额外请求、与播放一致）；
+                      没有才用搜索兜底的结果；再没有回落渐变+黑胶装饰 */}
+                  {(recCover(mix) ?? mixCovers[mix.id]) ? (
                     <>
                       <img
-                        src={mixCovers[mix.id]}
+                        src={recCover(mix) ?? mixCovers[mix.id]}
                         alt=""
                         loading="lazy"
                         onError={() => {
@@ -910,4 +935,5 @@ export default function Dashboard() {
     </div>
   )
 }
+
 
