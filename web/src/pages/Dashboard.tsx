@@ -28,7 +28,7 @@ import {
 } from 'lucide-react'
 import { Button, useToast } from '@/components/ui'
 import { useAuth } from '@/lib/auth'
-import { coverUrl } from '@/lib/music'
+import { coverUrl, type Song } from '@/lib/music'
 import {
   useAggregatedLeaderboardBoards,
   useAggregatedLeaderboardSongs,
@@ -39,13 +39,12 @@ import {
   forgetAllCuratedCovers,
   forgetCuratedCover,
   getBrowserStorage,
-  curatedRefreshDayKey,
   readCuratedCovers,
   readCuratedRefreshDay,
   shouldRefreshDailyCovers,
   writeCuratedRefreshDay,
 } from '@/lib/curatedCovers'
-import { pickDailyKeyword } from '@/lib/curatedMixes'
+import { fetchDailyRecommendation, type DailyRecommendation } from '@/lib/recommend'
 import {
   isStale,
   readTimestamp,
@@ -126,18 +125,15 @@ interface CuratedMix {
   desc: string
   gradient: string
   badgeColor: string
-  /** 点这张卡片时真正拿去搜的关键词**池**（每天轮换其中一个，见 lib/curatedMixes.ts）。
+  /** 这张卡的主题特征词（服务端用它做偏好加权，见 src/modules/recommend/service.ts 的 MIX_SPECS）。
    *
-   *  【为什么是词池而不是单个词】
-   *  此前每张卡只有一个固定词（`query: '经典'`）。v2.45 给封面加了「按天作废缓存」，
-   *  但固定词重新搜出来的还是同一批歌、同一张封面 —— 用户反馈「今日甄选一直没变过」，
-   *  属实：机制有了，可变的内容源没有。改成词池后跨天换词，歌单与封面一起变。
+   *  【为什么不再是「关键词」】
+   *  v2.47 曾用「同主题词池按天轮换」冒充推荐 —— 那只是编辑挑词，拿词去搜前 20 首，
+   *  跟你的口味毫无关系。现在候选池是**平台官方推荐流**（QQ 新专辑），
+   *  这里的词只用于给六张卡**打分侧重**，六张卡从同一份推荐流里各取所需。
    *
-   *  【每个词都实测过】
-   *  2026-11-05 用线上账号逐个搜过，**48 个词全部能返回 20 首**（不是拍脑袋凑的）。
-   *  换词前请重跑 `.playwright/_probe_keyword_pools.py`，确认新词不空、且同卡内
-   *  首曲不会全是同一首。 */
-  pool: string[]
+   *  ⚠️ 必须与服务端 `MIX_SPECS` 的 id 与 keywords 保持一致。 */
+  keywords: string[]
 }
 
 const CURATED_MIXES: CuratedMix[] = [
@@ -145,10 +141,10 @@ const CURATED_MIXES: CuratedMix[] = [
     id: 'radar',
     title: '每日私享雷达',
     tag: '私享甄选',
-    desc: '基于全网五大平台热度与声学品味智能聚合',
+    desc: '综合你的听歌画像，从平台新专辑里挑出今天该听的那一批',
     gradient: 'from-indigo-600 via-indigo-700 to-purple-800',
     badgeColor: 'bg-white/95 text-indigo-900',
-    pool: ['经典', '老歌', '怀旧金曲', '华语经典', '岁月', '回忆', '金曲', '传唱'],
+    keywords: [],
   },
   {
     id: 'pop',
@@ -157,7 +153,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '全网华语主流热播与全球流行音乐风向速递',
     gradient: 'from-rose-500 via-pink-600 to-rose-700',
     badgeColor: 'bg-white/95 text-rose-900',
-    pool: ['流行', '热歌', '新歌', '华语流行', '热门', '潮流', '榜单', '情歌'],
+    keywords: ['流行', 'pop', '热歌', '热门', 'hit'],
   },
   {
     id: 'nostalgia',
@@ -166,7 +162,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '回响岁月的港台经典与千禧黄金时代流行记忆',
     gradient: 'from-amber-500 via-amber-600 to-orange-700',
     badgeColor: 'bg-white/95 text-amber-900',
-    pool: ['时光', '千禧', '港台经典', '粤语经典', '老唱片', '怀旧', '八零年代', '九零年代'],
+    keywords: ['经典', '老歌', '怀旧', '千禧', '粤语', '港台'],
   },
   {
     id: 'focus',
@@ -175,7 +171,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '低保真器乐、环境音与纯音，助你深度对焦',
     gradient: 'from-emerald-600 via-teal-700 to-cyan-800',
     badgeColor: 'bg-white/95 text-emerald-900',
-    pool: ['纯音乐', '轻音乐', '钢琴曲', '器乐', '环境音', '吉他', '治愈钢琴', '白噪音'],
+    keywords: ['钢琴', '纯音乐', '器乐', '轻音乐', 'piano', 'instrumental', 'lofi'],
   },
   {
     id: 'night',
@@ -184,7 +180,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '慵懒 R&B、City Pop 与温柔民谣，治愈疲惫心绪',
     gradient: 'from-violet-700 via-purple-800 to-slate-900',
     badgeColor: 'bg-white/95 text-purple-900',
-    pool: ['晚安', '助眠', '治愈', '温柔', '民谣', '慢歌', '夜色', '轻声'],
+    keywords: ['晚安', '治愈', '温柔', '民谣', '慢', '夜'],
   },
   {
     id: 'drive',
@@ -193,7 +189,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '强劲节拍与电子浪潮，释放驾驶与运动活力',
     gradient: 'from-cyan-600 via-blue-600 to-indigo-800',
     badgeColor: 'bg-white/95 text-cyan-900',
-    pool: ['摇滚', '电音', '节奏', '热血', '乐队', '舞曲', '鼓点', '燃'],
+    keywords: ['摇滚', '电音', '节奏', '舞曲', 'rock', 'edm', 'remix'],
   },
 ]
 
@@ -283,23 +279,51 @@ export default function Dashboard() {
   /** 正在解析的甄选卡片 id（用于卡上转圈）。同一时刻只允许点一张，避免并发搜五路。 */
   const [mixingId, setMixingId] = useState<string | null>(null)
 
-  /** 本次挂载的「刷新日」键（凌晨 6:00 为界）。
+  /** 今日推荐流（v2.48.0）：服务端抓平台官方新专辑池 + 按本用户画像重排。
    *
-   *  只取一次、整个会话内不变 —— 关键词轮换与封面缓存必须锚在**同一个日键**上，
-   *  否则会出现「歌单按新词搜、封面还是昨天那张」的错位。
-   *  跨天要生效就重新进首页（与 refreshDay 的判定时机一致）。 */
-  const [dayKey] = useState(() => curatedRefreshDayKey(Date.now()))
+   *  【为什么不再是「拿关键词去搜」】
+   *  v2.47 的做法是拿固定/轮换关键词去打搜索接口取前 20 首 —— 那是检索，不是推荐：
+   *  结果与该用户听过什么无关，同一天所有人看到的一样。现在候选池来自平台官方推荐流，
+   *  再由服务端用播放历史（playCount + 时间衰减）与收藏库算出的歌手亲和度重排。
+   *
+   *  失败时**不阻塞首屏**：卡片回落到渐变 + 黑胶图标，点卡时会走搜索页兜底。 */
+  const [rec, setRec] = useState<DailyRecommendation | null>(null)
+  const [recError, setRecError] = useState<string | null>(null)
+  const [recLoading, setRecLoading] = useState(true)
 
-  /** 某张卡「今天」要搜的关键词 */
-  const mixQuery = useCallback(
-    (mix: CuratedMix) => pickDailyKeyword(mix.pool, dayKey),
-    [dayKey],
+  const loadRecommend = useCallback(async (force = false) => {
+    setRecLoading(true)
+    try {
+      const data = await fetchDailyRecommendation({ limit: 20, force })
+      setRec(data)
+      setRecError(null)
+    } catch (e: unknown) {
+      // 未登录时服务端返回 401：这是正常情况（游客），不弹错、不刷屏
+      setRecError(e instanceof Error ? e.message : '获取推荐失败')
+    } finally {
+      setRecLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadRecommend()
+  }, [loadRecommend])
+
+  /** 某张卡今天推荐的歌（服务端算好的，前端只取用） */
+  const mixSongs = useCallback(
+    (mix: CuratedMix): Song[] => rec?.mixes.find((m) => m.id === mix.id)?.songs ?? [],
+    [rec],
   )
 
-  /** 今天这批卡的封面目标（id + 当天的关键词）——喂给 curatedCovers 的统一形状 */
+  /** 今天这批卡的封面目标：优先用推荐结果里首曲的封面（真封面，且与歌单一致） */
   const coverTargets = useMemo(
-    () => CURATED_MIXES.map((mix) => ({ id: mix.id, query: pickDailyKeyword(mix.pool, dayKey) })),
-    [dayKey],
+    () => CURATED_MIXES.map((mix) => {
+      const first = rec?.mixes.find((m) => m.id === mix.id)?.songs?.[0]
+      // 有推荐结果就用首曲名做 query（封面取的是「这首歌的海报」，
+      // 与卡片上真正会播的歌一致）；拿不到推荐时退回卡标题，避免空白。
+      return { id: mix.id, query: first?.name ?? mix.title }
+    }),
+    [rec],
   )
 
   /** ② 今日甄选卡的真封面：id → 封面地址。
@@ -314,8 +338,8 @@ export default function Dashboard() {
   const [mixCovers, setMixCovers] = useState<Record<string, string>>(() => {
     const store = getBrowserStorage()
     // 按天刷新（v2.45）：跨过刷新点（默认凌晨 6:00，见 CURATED_REFRESH_HOUR）后
-    // 首次进首页，整批作废封面缓存重新搜图 —— 现在配合 lib/curatedMixes.ts 的
-    // 关键词轮换，「今天」这一批才是真的换了一批歌与封面（v2.47）。
+    // 首次进首页，整批作废封面缓存重新搜图。v2.48 起歌单本身由服务端推荐流决定，
+    // 封面也要跟着换成今天这批推荐的首曲封面。
     if (shouldRefreshDailyCovers(readCuratedRefreshDay(store), Date.now())) {
       writeCuratedRefreshDay(store, Date.now())
       forgetAllCuratedCovers(store, coverTargets)
@@ -426,32 +450,46 @@ export default function Dashboard() {
     }
   }
 
-  /** 播放精选歌单：**用这张卡片自己的关键词**去全网搜一批歌再播。
+  /** 播放精选歌单：**直接播服务端算好的推荐队列**（v2.48.0）。
    *
-   *  之前的实现是 `if (topSongs.length > 0) player.playQueue(topSongs, 0)`，
-   *  压根没用上 mix 参数 —— 六张卡点下去听的是同一批「今日热播」，
-   *  卡片上的标题/描述纯属装饰。现在每张卡搜自己的词，内容才真正不同。
+   *  演进史（三代，每代都是上一代的缺陷）：
+   *   1. `player.playQueue(topSongs, 0)` —— 六张卡点下去播的是同一批「今日热播」，纯装饰；
+   *   2. 每卡一个固定词去搜 —— 卡片之间终于不同了，但内容是「该词的前 20 首」，
+   *      与用户口味无关，且同一个词每天返回同一批（用户反馈「一直没变」）；
+   *   3. 现在：服务端推荐流（平台官方新专辑）+ 本人播放画像重排，六张卡靠主题词打分分区。
    *
-   *  搜不到时不静默失败：给一条提示并把人送到搜索页，让他能自己换词。 */
+   *  推荐还没到时点卡：立刻按卡主题词走一次搜索兜底，别让用户点了没反应。 */
   const handlePlayMix = async (mix: CuratedMix) => {
     if (mixingId) return
     setMixingId(mix.id)
-    // 今天用哪个词：与封面、与卡片上显示的完全同源（同一个 dayKey）
-    const keyword = mixQuery(mix)
     try {
-      const songs = await searchMusicAggregate({ name: keyword })
-      if (songs.length === 0) {
+      const songs = mixSongs(mix)
+      if (songs.length > 0) {
+        player.playQueue(songs, 0)
+        const meta = rec?.mixes.find((m) => m.id === mix.id)
         toast({
-          title: `「${mix.title}」没搜到歌`,
-          description: `关键词「${keyword}」在五大平台都没有结果，去搜索页换个词试试`,
+          title: `开始播放「${mix.title}」`,
+          description: `共 ${songs.length} 首 · ${meta?.basis ?? '今日推荐'}`,
+          variant: 'success',
+        })
+        return
+      }
+
+      // 推荐还没好 / 这一卡没货：用主题词兜底搜一次
+      const keyword = mix.keywords[0] ?? mix.title
+      const found = await searchMusicAggregate({ name: keyword })
+      if (found.length === 0) {
+        toast({
+          title: `「${mix.title}」暂无内容`,
+          description: `推荐流还在准备中，去搜索页挑几首吧`,
         })
         navigate(`/search?q=${encodeURIComponent(keyword)}`)
         return
       }
-      player.playQueue(songs, 0)
+      player.playQueue(found, 0)
       toast({
         title: `开始播放「${mix.title}」`,
-        description: `共 ${songs.length} 首 · 今日关键词「${keyword}」`,
+        description: `共 ${found.length} 首 · 关键词「${keyword}」`,
         variant: 'success',
       })
     } catch (e: unknown) {
@@ -532,7 +570,13 @@ export default function Dashboard() {
       <section>
         <SectionHeader
           title="今日甄选歌单"
-          subtitle="根据当下时刻与全网潮流为你量身精选的氛围歌单"
+          subtitle={
+            recError
+              ? `推荐暂不可用：${recError}`
+              : rec?.basis
+                ? `${rec.basis} · ${rec.day}`
+                : '根据你的听歌画像，从平台新专辑里为你精选'
+          }
           icon={Headphones}
         />
         <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
@@ -616,11 +660,18 @@ export default function Dashboard() {
                     {mix.title}
                   </span>
                   <span className="mt-0.5 block line-clamp-2 text-[11px] text-faint leading-snug">
-                    {loading ? `正在全网搜索「${mixQuery(mix)}」…` : mix.desc}
+                    {loading ? '正在准备今日推荐…' : mix.desc}
                   </span>
-                  {/* 今日实际用的关键词：跨天会变，摆出来让「今日」二字有据可查 */}
+                  {/* 今日这卡有多少首 / 命中哪位偏好歌手 —— 让推荐「可解释」，
+                      比 v2.47 那个「今日『关键词』」更能说明凭什么推这些 */}
                   <span className="mt-1 block truncate text-[10px] font-medium text-accent/80">
-                    今日「{mixQuery(mix)}」
+                    {mixSongs(mix).length > 0
+                      ? `${mixSongs(mix).length} 首${
+                          (rec?.mixes.find((m) => m.id === mix.id)?.topSingers?.length ?? 0) > 0
+                            ? ` · 常听 ${rec?.mixes.find((m) => m.id === mix.id)?.topSingers.slice(0, 2).join('/')}`
+                            : ''
+                        }`
+                      : recLoading ? '推荐生成中…' : '暂无推荐'}
                   </span>
                 </div>
               </div>
@@ -855,3 +906,4 @@ export default function Dashboard() {
     </div>
   )
 }
+

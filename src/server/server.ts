@@ -17,6 +17,10 @@ import {
 import { getUserSpace, releaseUserSpace, getUserName, getServerId, getUserDirname, getUserConfig, migrateUserData, renameUserSpace, finishRenameUserSpace, updateAllUserSnapshotDirs } from '@/user'
 import { parseDislikeRules, splitSingers } from '@/modules/dislike/match'
 import { encodeAlbumRule } from '@/modules/dislike/utils'
+// 今日甄选推荐流（v2.48.0）：官方推荐专辑池 + 本地播放画像重排
+import { getMixPlaylists, __clearRecommendCaches } from '@/modules/recommend/service'
+import { singerAffinity } from '@/modules/recommend/rank'
+import { fetchRecommendedSongs } from '@/server/utils/recommendSongs'
 import { normalizeText } from '@/server/utils/songVersion'
 import { invalidateDislikeCache } from '@/server/utils/dislikeCache'
 import { createMsg2call } from 'message2call'
@@ -2045,6 +2049,85 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         } catch (err: any) {
           res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ success: false, message: err?.message || '读取失败' }))
+        }
+        return
+      }
+
+      /** 今日甄选推荐流（v2.48.0）。
+       *
+       *  GET /api/music/recommend/daily?limit=20&force=1
+       *
+       *  【为什么要这个接口】
+       *  v2.47 之前，首页六张甄选卡是前端拿**固定关键词**去搜索接口捞「前 20 首」——
+       *  那不是推荐，是关键词检索：跟你听过什么完全无关，而且同一个词每天返回同一批。
+       *  这里改成：服务端抓平台官方推荐流（QQ 新专辑），再用**你本人的播放历史**重排。
+       *
+       *  【缓存】服务端按「用户+刷新日+数量」缓存，同一天内重复进首页不重算；
+       *  `force=1` 跳过缓存（首页的刷新按钮用）。 */
+      if (pathname === '/api/music/recommend/daily' && req.method === 'GET') {
+        const username = verifyUserAuth(req)
+        if (!username) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: '需要用户认证' }))
+          return
+        }
+        try {
+          const limitRaw = Number.parseInt(urlObj.searchParams.get('limit') ?? '20', 10)
+          const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1), 60)
+          const force = urlObj.searchParams.get('force') === '1'
+
+          // 读该用户的播放历史（个性化依据）与收藏库
+          let history: any[] = []
+          try {
+            const page = getUserSpace(username).historyManage.list(1, 500)
+            history = Array.isArray(page?.list) ? page.list : []
+          } catch (e) {
+            console.error('[今日甄选] 读取播放历史失败，按无历史处理:', e)
+          }
+
+          let library: any = null
+          try {
+            const libDir = path.join(global.lx.userPath, getUserDirname(username), 'library')
+            const readJson = (f: string) => {
+              try {
+                const p = path.join(libDir, f)
+                if (!fs.existsSync(p)) return null
+                const v = JSON.parse(fs.readFileSync(p, 'utf-8'))
+                return v
+              } catch { return null }
+            }
+            library = {
+              singers: readJson('singers.json') ?? [],
+              songs: readJson('songs.json') ?? [],
+            }
+          } catch (e) {
+            console.error('[今日甄选] 读取收藏库失败，按空处理:', e)
+          }
+
+          if (force) __clearRecommendCaches()
+
+          const result = await getMixPlaylists({
+            userName: username,
+            history,
+            library,
+            limit,
+            fetchSongs: (size) => fetchRecommendedSongs(size),
+          })
+
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            success: true,
+            day: result.day,
+            basis: result.basis,
+            cached: result.cached,
+            // 命中偏好的歌手，前端可用来说明「凭什么推这些」
+            affinitySingers: Array.from(singerAffinity(history, library).entries())
+              .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k),
+            mixes: result.mixes,
+          }))
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, message: err?.message || '生成推荐失败' }))
         }
         return
       }
