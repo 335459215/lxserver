@@ -27,6 +27,10 @@ export interface DailyRecommendation {
   cached: boolean
   /** 画像里权重最高的几个歌手（归一化后的名字） */
   affinitySingers: string[]
+  /** 候选池构成：discover=平台推荐流，taste=按口味歌手搜来的（诊断用） */
+  poolStats?: { discover: number; taste: number; total: number }
+  /** 实际拿来搜歌的种子歌手（让「凭什么推这些」可解释） */
+  seedSingers?: string[]
   mixes: RecommendMix[]
 }
 

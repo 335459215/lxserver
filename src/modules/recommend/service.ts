@@ -26,6 +26,7 @@ import {
   type LibraryLike,
   type RecommendSong,
 } from '@/modules/recommend/rank.js'
+import { buildCandidatePool, mergePools, type PoolBuildResult } from '@/modules/recommend/pool.js'
 
 /** 一张甄选卡的服务端定义。
  *
@@ -55,8 +56,8 @@ interface CacheEntry {
 /** 每用户每卡一天一份 */
 const playlistCache = new Map<string, CacheEntry>()
 
-/** 推荐流候选池：按日期缓存原始池（与用户无关的部分只算一次） */
-const poolCache = new Map<string, { day: string; songs: RecommendSong[] }>()
+/** 推荐流候选池：按「刷新日 + 画像指纹」缓存（与用户有关，所以带指纹） */
+const poolCache = new Map<string, { key: string; result: PoolBuildResult }>()
 
 export function dayKey(now: number = Date.now(), refreshHour = 6): string {
   const d = new Date(now)
@@ -67,31 +68,56 @@ export function dayKey(now: number = Date.now(), refreshHour = 6): string {
   return `${y}-${m}-${day}`
 }
 
-/** 取（并缓存）当天的原始推荐池。
+/** 取（并缓存）当天的候选池（双源：平台推荐流 + 口味回响）。
  *
- *  @param fetchSongs 注入的推荐流抓取函数（生产传 fetchRecommendedSongs，
- *                    单测可传桩，避免测试打外网）
+ *  @param fetchSongs    源 A：平台推荐流（生产传 fetchRecommendedSongs）
+ *  @param searchSongs   源 B：按关键词搜索（生产传平台搜索）；不传则退化成单源
+ *  @param affinity      用户歌手亲和度 —— 决定源 B 搜谁
+ *
+ *  【为什么必须缓存】源 B 要串行搜好几位歌手，每次进首页都跑一遍太慢，
+ *  且容易触发上游限流。按「刷新日 + 画像指纹」缓存：画像变了才重算，
+ *  同一天同一口味只算一次。
  */
 export async function getDailyPool(
   fetchSongs: (size: number) => Promise<RecommendSong[]>,
   now: number = Date.now(),
-): Promise<RecommendSong[]> {
+  searchSongs?: (keyword: string) => Promise<RecommendSong[]>,
+  affinity?: Map<string, number>,
+): Promise<PoolBuildResult> {
   const day = dayKey(now)
+  // 缓存键带上画像指纹：品味变了（听了新歌手）就该换池子，不能钉死一整天
+  const seedKey = affinity
+    ? Array.from(affinity.entries()).sort((a, b) => b[1] - a[1]).slice(0, 4)
+        .map(([k, v]) => `${k}:${v.toFixed(1)}`).join('|')
+    : 'noaffinity'
+  const cacheKey = `${day}|${seedKey}`
   const hit = poolCache.get('pool')
-  if (hit && hit.day === day && hit.songs.length > 0) return hit.songs
+  if (hit && hit.key === cacheKey && hit.result.pool.length > 0) return hit.result
 
-  let songs: RecommendSong[] = []
-  try {
-    // 多取一些：后面要按六张卡的主题分别筛选，池子小了每张卡都不够填
-    songs = (await fetchSongs(120)) ?? []
-  } catch (e) {
-    console.error('[今日甄选] 抓取推荐流失败:', e)
-    // 抓取失败：有旧池就用旧的（宁可给昨天的推荐，也别开天窗）
-    if (hit && hit.songs.length > 0) return hit.songs
-    return []
+  let result: PoolBuildResult
+  if (searchSongs && affinity && affinity.size > 0) {
+    result = await buildCandidatePool({
+      fetchDiscover: fetchSongs,
+      searchSongs,
+      affinity,
+    })
+  } else {
+    // 无画像（新用户）：只有平台推荐流，冷启动也给出内容
+    let discover: RecommendSong[] = []
+    try {
+      discover = (await fetchSongs(80)) ?? []
+    } catch (e) {
+      console.error('[今日甄选] 抓取推荐流失败:', e)
+    }
+    result = {
+      pool: mergePools(discover),
+      seedSingers: [],
+      stats: { discover: discover.length, taste: 0, total: discover.length },
+    }
   }
-  if (songs.length > 0) poolCache.set('pool', { day, songs })
-  return songs.length > 0 ? songs : (hit?.songs ?? [])
+
+  if (result.pool.length > 0) poolCache.set('pool', { key: cacheKey, result })
+  return result.pool.length > 0 ? result : (hit?.result ?? result)
 }
 
 export interface BuildOptions {
@@ -119,10 +145,15 @@ export interface MixResult {
  *  如果每张卡独立排序，那个歌手会在六张卡里都排第一，六张卡的首曲就完全一样，
  *  又退回「点哪张都听同一批」的老问题。
  *
- *  所以这里的策略是：**按卡顺序逐张取歌，已被前面卡用掉的歌不再给后面的卡**。
- *  卡顺序按「主题越具体越先取」（drive/focus/night/pop/nostalgia 先，radar 最后），
- *  让主题卡先锁定自己的特色曲，radar 拿剩下的 —— 这样既保留个性化，
- *  又保证六张卡内容互不重复。 */
+ *  【v2.48.0 线上暴露的第二个问题｜配额极不均】
+ *  第一版是「按卡顺序逐张取，取完从池子删掉」，结果池子小的时候前面的卡把好歌吃光：
+ *  实测 drive 拿到 20 首，radar/pop/nostalgia 各只有 3 首。
+ *
+ *  现在改成**两轮分配**：
+ *    第一轮每张卡只取 targetPerCard 首（先保证人人有份、主题卡先挑）；
+ *    第二轮把剩下的好歌按各卡剩余容量回填（不浪费池子）。
+ *  这样既避免重复，也不会出现「一张卡 20 首、另一张 3 首」。
+ */
 const THEME_FIRST_ORDER = ['drive', 'focus', 'night', 'pop', 'nostalgia', 'radar']
 
 export function buildMixPlaylists(options: BuildOptions): MixResult[] {
@@ -134,23 +165,65 @@ export function buildMixPlaylists(options: BuildOptions): MixResult[] {
   // 先按日期洗牌：保证每天的开头不总是「最新上架那几张专辑」
   const shuffled = seededShuffle(options.pool, day)
 
+  // 第一轮每卡的目标首数：池子够就均分，池子小就每人至少几首
+  const cardCount = MIX_SPECS.length
+  const fairShare = Math.max(3, Math.floor(shuffled.length / cardCount))
+  const targetPerCard = Math.min(limit, fairShare)
+
   const usedKeys = new Set<string>()
   const byId = new Map<string, MixResult>()
+  const remaining = new Map<string, number>()
 
+  // ---- 第一轮：每卡取 targetPerCard 首 ----
   for (const id of THEME_FIRST_ORDER) {
     const spec = MIX_SPECS.find((s) => s.id === id)
     if (!spec) continue
-    // 候选池里去掉已被其他卡选走的歌，避免六张卡重复
     const pool = shuffled.filter((s) => !usedKeys.has(songIdentityKey(s.name, s.singer)))
-    const ranked = rankByTheme(pool, spec.keywords, affinity, recent, limit, 3)
+    const ranked = rankByTheme(pool, spec.keywords, affinity, recent, targetPerCard, 3)
     for (const s of ranked.songs) usedKeys.add(songIdentityKey(s.name, s.singer))
-    const basis = spec.keywords.length
-      ? `平台新专辑 × 主题「${spec.keywords.slice(0, 2).join('/')}」× 你的口味`
-      : '平台新专辑 × 你的口味'
-    byId.set(id, { id, songs: ranked.songs, topSingers: ranked.topSingers, basis })
+    byId.set(id, {
+      id,
+      songs: ranked.songs,
+      topSingers: ranked.topSingers,
+      basis: spec.keywords.length
+        ? `平台新专辑 × 主题「${spec.keywords.slice(0, 2).join('/')}」× 你的口味`
+        : '平台新专辑 × 你的口味',
+    })
+    remaining.set(id, Math.max(0, limit - ranked.songs.length))
   }
 
-  // 按前端声明顺序返回（CURATED_MIXES 的顺序），保证展示顺序稳定
+  // ---- 第二轮：剩余好歌按各卡剩余容量回填 ----
+  const leftover = shuffled.filter((s) => !usedKeys.has(songIdentityKey(s.name, s.singer)))
+  if (leftover.length > 0) {
+    for (const id of THEME_FIRST_ORDER) {
+      const cap = remaining.get(id) ?? 0
+      if (cap <= 0) continue
+      const spec = MIX_SPECS.find((s) => s.id === id)!
+      const cur = byId.get(id)!
+      // 已选歌的歌手也要计入防霸屏（否则回填会把同一歌手堆进来）
+      const existingBySinger = new Map<string, number>()
+      for (const s of cur.songs) {
+        const k = normalizeSinger(s.singer)
+        existingBySinger.set(k, (existingBySinger.get(k) ?? 0) + 1)
+      }
+      const pool = leftover.filter((s) => {
+        const k = songIdentityKey(s.name, s.singer)
+        if (usedKeys.has(k)) return false
+        const sk = normalizeSinger(s.singer)
+        return (existingBySinger.get(sk) ?? 0) < 3
+      })
+      if (pool.length === 0) continue
+      const ranked = rankByTheme(pool, spec.keywords, affinity, recent, cap, 3)
+      for (const s of ranked.songs) usedKeys.add(songIdentityKey(s.name, s.singer))
+      byId.set(id, {
+        ...cur,
+        songs: [...cur.songs, ...ranked.songs],
+        topSingers: cur.topSingers.length ? cur.topSingers : ranked.topSingers,
+      })
+    }
+  }
+
+  // 按 SERVER 声明顺序返回（CURATED_MIXES 的顺序），保证展示顺序稳定
   return MIX_SPECS.map((s) => byId.get(s.id) ?? { id: s.id, songs: [], topSingers: [], basis: '' })
 }
 
@@ -160,27 +233,43 @@ export async function getMixPlaylists(options: {
   history: readonly HistoryEntryLike[]
   library: LibraryLike | null | undefined
   fetchSongs: (size: number) => Promise<RecommendSong[]>
+  /** 源 B：按关键词搜索（可选；不传则退化成只有平台推荐流） */
+  searchSongs?: (keyword: string) => Promise<RecommendSong[]>
   now?: number
   limit?: number
-}): Promise<{ day: string; basis: string; mixes: MixResult[]; cached: boolean }> {
+}): Promise<{
+  day: string
+  basis: string
+  mixes: MixResult[]
+  cached: boolean
+  seedSingers: string[]
+  stats: { discover: number; taste: number; total: number }
+}> {
   const now = options.now ?? Date.now()
   const day = dayKey(now)
   const key = `${options.userName}|${day}|${options.limit ?? 20}`
   const hit = playlistCache.get(key)
   if (hit && hit.day === day) {
-    return { ...(hit.payload as { day: string; basis: string; mixes: MixResult[] }), cached: true }
+    return { ...(hit.payload as ReturnType<typeof buildPayload>), cached: true }
   }
 
-  const pool = await getDailyPool(options.fetchSongs, now)
-  const mixes = buildMixPlaylists({ ...options, pool, now })
-  const payload = {
+  const affinity = singerAffinity(options.history, options.library, now)
+  const poolResult = await getDailyPool(options.fetchSongs, now, options.searchSongs, affinity)
+  const mixes = buildMixPlaylists({ ...options, pool: poolResult.pool, now })
+  const payload = buildPayload(day, mixes, poolResult)
+  // 只在有货时缓存，避免把「抓取失败的空池」钉住一整天
+  if (poolResult.pool.length > 0) playlistCache.set(key, { day, payload })
+  return { ...payload, cached: false }
+}
+
+function buildPayload(day: string, mixes: MixResult[], poolResult: PoolBuildResult) {
+  return {
     day,
     basis: '平台官方推荐流 + 你的播放画像',
     mixes,
+    seedSingers: poolResult.seedSingers,
+    stats: poolResult.stats,
   }
-  // 只在有货时缓存，避免把「抓取失败的空池」钉住一整天
-  if (pool.length > 0) playlistCache.set(key, { day, payload })
-  return { ...payload, cached: false }
 }
 
 /** 仅供测试：清空所有缓存 */

@@ -573,8 +573,12 @@ export default function Dashboard() {
           subtitle={
             recError
               ? `推荐暂不可用：${recError}`
-              : rec?.basis
-                ? `${rec.basis} · ${rec.day}`
+              : rec
+                ? `平台新专辑 ${rec.poolStats?.discover ?? 0} 首${
+                    (rec.seedSingers?.length ?? 0) > 0
+                      ? ` + 按你的口味（${rec.seedSingers!.slice(0, 3).join('、')}）${rec.poolStats?.taste ?? 0} 首`
+                      : ''
+                  } · ${rec.day}`
                 : '根据你的听歌画像，从平台新专辑里为你精选'
           }
           icon={Headphones}

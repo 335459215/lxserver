@@ -2106,12 +2106,29 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
 
           if (force) __clearRecommendCaches()
 
+          // 源 B 的搜索实现：直接调 SDK（与 /api/music/search 同一套实现）。
+          // 只取单平台 wy 的一页，控制请求量与上游压力；
+          // 搜不到/被限流都不该让推荐整体失败 —— buildCandidatePool 内部已 try/catch。
+          const searchSongs = async (keyword: string) => {
+            try {
+              const sdk = (musicSdk as any)?.wy
+              if (!sdk?.musicSearch?.search) return []
+              const data = await sdk.musicSearch.search(keyword, 1, 20)
+              const list = Array.isArray(data?.list) ? data.list : []
+              return list.map((s: any) => ({ ...s, source: 'wy' }))
+            } catch (e) {
+              console.error(`[今日甄选] 种子歌手「${keyword}」搜索失败:`, e)
+              return []
+            }
+          }
+
           const result = await getMixPlaylists({
             userName: username,
             history,
             library,
             limit,
             fetchSongs: (size) => fetchRecommendedSongs(size),
+            searchSongs,
           })
 
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -2120,6 +2137,9 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
             day: result.day,
             basis: result.basis,
             cached: result.cached,
+            // 候选池构成（诊断用：能看出画像源有没有生效）
+            poolStats: result.stats,
+            seedSingers: result.seedSingers,
             // 命中偏好的歌手，前端可用来说明「凭什么推这些」
             affinitySingers: Array.from(singerAffinity(history, library).entries())
               .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k),
