@@ -26,8 +26,13 @@ import { coverUrl, type CoverSource } from './coverUrl'
 
 /** localStorage 键前缀（含版本号，便于整体失效） */
 export const CURATED_COVER_CACHE_PREFIX = 'lxserver:curatedCovers'
-/** 缓存版本：换封面来源/归一化规则时 +1 即可让所有客户端重新取图 */
-export const CURATED_COVER_CACHE_VERSION = 'v1'
+/** 缓存版本：换封面来源/归一化规则时 +1 即可让所有客户端重新取图。
+ *
+ *  【v1 → v2（2026-11-05）】今日甄选改成「关键词池按天轮换」（见 lib/curatedMixes.ts）。
+ *  老客户端 localStorage 里存的是**固定词**搜出来的封面，而升级后卡片当天用的已经是
+ *  轮换词 —— 不 bump 就会出现「标题/关键词是新的、封面还是旧词那张」的错位，
+ *  且 refreshDay 当天已写过，不会触发整批作废。bump 后旧键自然读不到，一次到位。 */
+export const CURATED_COVER_CACHE_VERSION = 'v2'
 /** 缓存有效期：7 天。封面是「某首歌的海报」，不会天天变；过期后下次进首页重取。
  *
  *  【为什么 TTL 之外还要有「按天刷新」】甄选卡卖的就是「今日」两个字 ——

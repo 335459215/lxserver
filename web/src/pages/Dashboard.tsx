@@ -39,11 +39,13 @@ import {
   forgetAllCuratedCovers,
   forgetCuratedCover,
   getBrowserStorage,
+  curatedRefreshDayKey,
   readCuratedCovers,
   readCuratedRefreshDay,
   shouldRefreshDailyCovers,
   writeCuratedRefreshDay,
 } from '@/lib/curatedCovers'
+import { pickDailyKeyword } from '@/lib/curatedMixes'
 import {
   isStale,
   readTimestamp,
@@ -124,23 +126,18 @@ interface CuratedMix {
   desc: string
   gradient: string
   badgeColor: string
-  /** 点这张卡片时真正拿去搜的关键词。
+  /** 点这张卡片时真正拿去搜的关键词**池**（每天轮换其中一个，见 lib/curatedMixes.ts）。
    *
-   *  【为什么每张卡必须有自己的关键词】
-   *  此前 `handlePlayMix` **完全忽略传入的 mix**，六张卡一律
-   *  `player.playQueue(topSongs, 0)` —— 也就是不管点哪张，播的都是「今日热播」
-   *  那一批歌。用户的原话是「几个歌单的歌都一样的，这有什么用」，完全属实。
-   *  现在每张卡各自去搜自己的关键词，卡片之间才是真的不同。
+   *  【为什么是词池而不是单个词】
+   *  此前每张卡只有一个固定词（`query: '经典'`）。v2.45 给封面加了「按天作废缓存」，
+   *  但固定词重新搜出来的还是同一批歌、同一张封面 —— 用户反馈「今日甄选一直没变过」，
+   *  属实：机制有了，可变的内容源没有。改成词池后跨天换词，歌单与封面一起变。
    *
-   *  关键词取的是「在歌名里高频出现、且贴合场景」的词，与下面 MOOD_VIBES
-   *  用的是同一套思路（那七个心情标签本来就用关键词跳搜索页）。
-   *
-   *  【关键词是实测选出来的，不是拍脑袋】
-   *  搜「经典」「怀旧」「经典老歌」在五大平台返回的**第一首都是《吻别》**——
-   *  也就是说这三个词做出来的歌单看起来还是一样。现在的六个词
-   *  （经典 / 流行 / 时光 / 纯音乐 / 晚安 / 摇滚）实测首曲互不相同、结果集基本不重叠。
-   *  改词前请先跑 `.playwright/_probe-mixwords.py` 看一眼首曲会不会撞。 */
-  query: string
+   *  【每个词都实测过】
+   *  2026-11-05 用线上账号逐个搜过，**48 个词全部能返回 20 首**（不是拍脑袋凑的）。
+   *  换词前请重跑 `.playwright/_probe_keyword_pools.py`，确认新词不空、且同卡内
+   *  首曲不会全是同一首。 */
+  pool: string[]
 }
 
 const CURATED_MIXES: CuratedMix[] = [
@@ -151,7 +148,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '基于全网五大平台热度与声学品味智能聚合',
     gradient: 'from-indigo-600 via-indigo-700 to-purple-800',
     badgeColor: 'bg-white/95 text-indigo-900',
-    query: '经典',
+    pool: ['经典', '老歌', '怀旧金曲', '华语经典', '岁月', '回忆', '金曲', '传唱'],
   },
   {
     id: 'pop',
@@ -160,7 +157,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '全网华语主流热播与全球流行音乐风向速递',
     gradient: 'from-rose-500 via-pink-600 to-rose-700',
     badgeColor: 'bg-white/95 text-rose-900',
-    query: '流行',
+    pool: ['流行', '热歌', '新歌', '华语流行', '热门', '潮流', '榜单', '情歌'],
   },
   {
     id: 'nostalgia',
@@ -169,7 +166,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '回响岁月的港台经典与千禧黄金时代流行记忆',
     gradient: 'from-amber-500 via-amber-600 to-orange-700',
     badgeColor: 'bg-white/95 text-amber-900',
-    query: '时光',
+    pool: ['时光', '千禧', '港台经典', '粤语经典', '老唱片', '怀旧', '八零年代', '九零年代'],
   },
   {
     id: 'focus',
@@ -178,7 +175,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '低保真器乐、环境音与纯音，助你深度对焦',
     gradient: 'from-emerald-600 via-teal-700 to-cyan-800',
     badgeColor: 'bg-white/95 text-emerald-900',
-    query: '纯音乐',
+    pool: ['纯音乐', '轻音乐', '钢琴曲', '器乐', '环境音', '吉他', '治愈钢琴', '白噪音'],
   },
   {
     id: 'night',
@@ -187,7 +184,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '慵懒 R&B、City Pop 与温柔民谣，治愈疲惫心绪',
     gradient: 'from-violet-700 via-purple-800 to-slate-900',
     badgeColor: 'bg-white/95 text-purple-900',
-    query: '晚安',
+    pool: ['晚安', '助眠', '治愈', '温柔', '民谣', '慢歌', '夜色', '轻声'],
   },
   {
     id: 'drive',
@@ -196,7 +193,7 @@ const CURATED_MIXES: CuratedMix[] = [
     desc: '强劲节拍与电子浪潮，释放驾驶与运动活力',
     gradient: 'from-cyan-600 via-blue-600 to-indigo-800',
     badgeColor: 'bg-white/95 text-cyan-900',
-    query: '摇滚',
+    pool: ['摇滚', '电音', '节奏', '热血', '乐队', '舞曲', '鼓点', '燃'],
   },
 ]
 
@@ -286,6 +283,25 @@ export default function Dashboard() {
   /** 正在解析的甄选卡片 id（用于卡上转圈）。同一时刻只允许点一张，避免并发搜五路。 */
   const [mixingId, setMixingId] = useState<string | null>(null)
 
+  /** 本次挂载的「刷新日」键（凌晨 6:00 为界）。
+   *
+   *  只取一次、整个会话内不变 —— 关键词轮换与封面缓存必须锚在**同一个日键**上，
+   *  否则会出现「歌单按新词搜、封面还是昨天那张」的错位。
+   *  跨天要生效就重新进首页（与 refreshDay 的判定时机一致）。 */
+  const [dayKey] = useState(() => curatedRefreshDayKey(Date.now()))
+
+  /** 某张卡「今天」要搜的关键词 */
+  const mixQuery = useCallback(
+    (mix: CuratedMix) => pickDailyKeyword(mix.pool, dayKey),
+    [dayKey],
+  )
+
+  /** 今天这批卡的封面目标（id + 当天的关键词）——喂给 curatedCovers 的统一形状 */
+  const coverTargets = useMemo(
+    () => CURATED_MIXES.map((mix) => ({ id: mix.id, query: pickDailyKeyword(mix.pool, dayKey) })),
+    [dayKey],
+  )
+
   /** ② 今日甄选卡的真封面：id → 封面地址。
    *
    *  初值直接读 localStorage，首帧就能把上次取到的封面画出来；
@@ -298,18 +314,18 @@ export default function Dashboard() {
   const [mixCovers, setMixCovers] = useState<Record<string, string>>(() => {
     const store = getBrowserStorage()
     // 按天刷新（v2.45）：跨过刷新点（默认凌晨 6:00，见 CURATED_REFRESH_HOUR）后
-    // 首次进首页，整批作废封面缓存重新搜图 —— 「今日」甄选跨天要换一批，
-    // 对齐网易云「每日推荐每天重置一次」的产品预期。同一天内再进只补缺失的卡。
+    // 首次进首页，整批作废封面缓存重新搜图 —— 现在配合 lib/curatedMixes.ts 的
+    // 关键词轮换，「今天」这一批才是真的换了一批歌与封面（v2.47）。
     if (shouldRefreshDailyCovers(readCuratedRefreshDay(store), Date.now())) {
       writeCuratedRefreshDay(store, Date.now())
-      forgetAllCuratedCovers(store, CURATED_MIXES)
+      forgetAllCuratedCovers(store, coverTargets)
       return {}
     }
-    return readCuratedCovers(store, CURATED_MIXES)
+    return readCuratedCovers(store, coverTargets)
   })
   useEffect(() => {
     const store = getBrowserStorage()
-    const missing = CURATED_MIXES.filter((mix) => !mixCovers[mix.id])
+    const missing = coverTargets.filter((t) => !mixCovers[t.id])
     if (missing.length === 0) return
     const ac = new AbortController()
     void fetchCuratedCovers(missing, {
@@ -420,20 +436,22 @@ export default function Dashboard() {
   const handlePlayMix = async (mix: CuratedMix) => {
     if (mixingId) return
     setMixingId(mix.id)
+    // 今天用哪个词：与封面、与卡片上显示的完全同源（同一个 dayKey）
+    const keyword = mixQuery(mix)
     try {
-      const songs = await searchMusicAggregate({ name: mix.query })
+      const songs = await searchMusicAggregate({ name: keyword })
       if (songs.length === 0) {
         toast({
           title: `「${mix.title}」没搜到歌`,
-          description: `关键词「${mix.query}」在五大平台都没有结果，去搜索页换个词试试`,
+          description: `关键词「${keyword}」在五大平台都没有结果，去搜索页换个词试试`,
         })
-        navigate(`/search?q=${encodeURIComponent(mix.query)}`)
+        navigate(`/search?q=${encodeURIComponent(keyword)}`)
         return
       }
       player.playQueue(songs, 0)
       toast({
         title: `开始播放「${mix.title}」`,
-        description: `共 ${songs.length} 首 · 关键词「${mix.query}」`,
+        description: `共 ${songs.length} 首 · 今日关键词「${keyword}」`,
         variant: 'success',
       })
     } catch (e: unknown) {
@@ -598,7 +616,11 @@ export default function Dashboard() {
                     {mix.title}
                   </span>
                   <span className="mt-0.5 block line-clamp-2 text-[11px] text-faint leading-snug">
-                    {loading ? `正在全网搜索「${mix.query}」…` : mix.desc}
+                    {loading ? `正在全网搜索「${mixQuery(mix)}」…` : mix.desc}
+                  </span>
+                  {/* 今日实际用的关键词：跨天会变，摆出来让「今日」二字有据可查 */}
+                  <span className="mt-1 block truncate text-[10px] font-medium text-accent/80">
+                    今日「{mixQuery(mix)}」
                   </span>
                 </div>
               </div>

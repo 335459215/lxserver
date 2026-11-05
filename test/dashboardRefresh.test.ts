@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import {
   CURATED_REFRESH_DAY_STORAGE_KEY,
   CURATED_REFRESH_HOUR,
+  curatedCoverCacheKey,
   curatedRefreshDayKey,
   forgetAllCuratedCovers,
   readCuratedRefreshDay,
@@ -93,8 +94,10 @@ test('刷新日存取：写 → 读 roundtrip；脏值与抛异常的存储都�
 
 test('forgetAllCuratedCovers 整批作废并报告张数；空存储 / 脏目标不炸', () => {
   const store = memStore()
-  store.setItem('lxserver:curatedCovers:v1:radar', '{"url":"https://cdn/a.jpg","at":1}')
-  store.setItem('lxserver:curatedCovers:v1:pop', '{"url":"https://cdn/b.jpg","at":1}')
+  // 用导出的键构造器而不是硬编码 `:v1:` —— 缓存版本一 bump（v1→v2 换过词池），
+  // 硬编码的测试就会误报「没删掉」，掩盖真正的回归。
+  store.setItem(curatedCoverCacheKey('radar'), '{"url":"https://cdn/a.jpg","at":1}')
+  store.setItem(curatedCoverCacheKey('pop'), '{"url":"https://cdn/b.jpg","at":1}')
 
   const removed = forgetAllCuratedCovers(store, [
     { id: 'radar', query: '经典' },
