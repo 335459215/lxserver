@@ -1,6 +1,6 @@
 {
   "name": "lx-music-sync-server",
-  "version": "2.48.4",
+  "version": "2.48.5",
   "private": true,
   "scripts": {
     "prebuild": "node scripts/download-binary.js && node scripts/update-build-hash.js",

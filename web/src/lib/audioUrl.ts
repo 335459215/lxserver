@@ -36,6 +36,12 @@ const HTTPS_AUDIO_HOSTS = [
   'migu.cn', // 咪咕（freetyst.nf.migu.cn …）
   'gtimg.cn', // QQ 音乐（y. / p. / q.）
   'y.qq.com',
+  // 【v2.48.5 补】QQ 音乐真正的音频 CDN 在 tc.qq.com 下
+  // （wx.music.tc.qq.com / aqqmusic.tc.qq.com …）。v2.46 只写了 y.qq.com，
+  // 而推荐流几乎全是 tx 源的歌 —— 实测点开甄选卡又变回明文 http，
+  // 地址栏「不安全」回归。已实测该域 http/https 双协议均 200、Content-Type 一致。
+  'tc.qq.com',
+  'qq.com',
   'haitangw.cc', // 海棠（kg 常见）
   'liuyunidc.cn', // 流云 IDC（kw 常见）
   'zddyr.top', // 自定义源常见

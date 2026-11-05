@@ -90,3 +90,14 @@ test('畸形 URL 原样返回（不抛异常）', () => {
   const u = 'http://[bad-url/x.mp3'
   assert.equal(secureAudioUrl(u), u)
 })
+
+test('QQ 音乐音频 CDN（tc.qq.com）也升级（v2.48.5 回归：推荐流大量 tx 源歌曲）', () => {
+  for (const [input, expected] of [
+    ['http://wx.music.tc.qq.com/M500001g2MQU26pOcr.mp3?guid=550851B6F4&vkey=EB8C',
+     'https://wx.music.tc.qq.com/M500001g2MQU26pOcr.mp3?guid=550851B6F4&vkey=EB8C'],
+    ['http://aqqmusic.tc.qq.com/C400003u01x83DaUvA.m4a?guid=451&vkey=3555',
+     'https://aqqmusic.tc.qq.com/C400003u01x83DaUvA.m4a?guid=451&vkey=3555'],
+  ]) {
+    assert.equal(secureAudioUrl(input), expected, input)
+  }
+})
