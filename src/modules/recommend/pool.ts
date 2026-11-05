@@ -31,6 +31,54 @@ export function poolKey(song: RecommendSong): string {
   return n ? `${n}::${s}` : ''
 }
 
+/** 古典/器乐大专辑的识别特征。
+ *
+ * 【为什么需要过滤｜v2.48.1 线上实测】
+ * `fetchRecommendedSongs` 抓的是 QQ 六个地区的「新上架专辑」，其中古典乐占比极高
+ * （唱片公司持续数字化重发老录音）。实测推荐池里 **62% 是古典曲目、56% 的标题超过 50 字**
+ * （如 `Serenade in C Major, K. 648 "A Very Little Night Music" (Original Version ...)`），
+ * 直接把 radar / nostalgia 两张卡刷成了莫扎特专辑 —— 对一个「流行音乐播放器」来说
+ * 这是明显的质量事故。
+ *
+ * 过滤策略：**只对「平台推荐流」这一源做古典降权**，不去动用户口味源 ——
+ * 用户自己常听古典的话，源 B 仍然会把古典搜回来（那是他的真实偏好，不该被算法歧视）。
+ */
+const CLASSICAL_MARKERS = [
+  'mozart', 'bach', 'beethoven', 'chopin', 'haydn', 'schubert', 'brahms',
+  'tchaikovsky', 'debussy', 'liszt', 'vivaldi', 'handel', 'rachmaninoff',
+  'symphony', 'concerto', 'sonata', 'variations on', 'minuets', 'serenade in',
+  'nocturne', 'prelude in', 'fugue', 'requiem', 'orchestra', 'philharmonic',
+]
+
+/** 判断一首歌是否像「古典/器乐大专辑」曲目。 */
+export function looksClassical(song: RecommendSong): boolean {
+  const hay = `${song?.name ?? ''} ${song?.albumName ?? ''} ${song?.singer ?? ''}`.toLowerCase()
+  // 作品编号是强特征。
+  // 注意 `Op.` 后面不一定是数字（`Op. Posth.` = 遗作，古典唱片里很常见），
+  // 所以只要求出现 `op.` 标记本身即可；`K. 398` 这类要带数字以免误伤英文名。
+  if (/\bop\.\s/i.test(hay) || /\bk\.\s*\d{2,}/i.test(hay)) return true
+  // 「No. 19 In A Minor」这类调性+编号写法也是古典专属
+  if (/\bno\.\s*\d+\s+in\s+[a-g]\b/i.test(hay)) return true
+  return CLASSICAL_MARKERS.some((m) => hay.includes(m))
+}
+
+/** 标题是否过长（古典曲目的典型特征，移动端列表里根本显示不下）。 */
+export function isOverlongTitle(song: RecommendSong, max = 60): boolean {
+  return String(song?.name ?? '').length > max
+}
+
+/** 过滤候选池的明显劣质内容。
+ *
+ *  @param song      待判断
+ *  @param dropClassical 是否剔除古典（只对平台推荐流为 true；口味源为 false）
+ */
+export function isLowQuality(song: RecommendSong, dropClassical: boolean): boolean {
+  if (!song || typeof song.name !== 'string' || !song.name.trim()) return true
+  if (isOverlongTitle(song)) return true
+  if (dropClassical && looksClassical(song)) return true
+  return false
+}
+
 /** 合并多个候选源并去重（先到的优先 —— 调用方按「质量从高到低」排列各源）。 */
 export function mergePools(...sources: (readonly RecommendSong[] | undefined | null)[]): RecommendSong[] {
   const out: RecommendSong[] = []
@@ -105,7 +153,15 @@ export async function buildCandidatePool(options: {
   // 源 A：平台推荐流（失败不影响整体 —— 有 B 也能出推荐）
   let discover: RecommendSong[] = []
   try {
-    discover = (await options.fetchDiscover(discoverSize)) ?? []
+    const raw = (await options.fetchDiscover(discoverSize)) ?? []
+    // 推荐流里古典/超长标题占比极高（实测 62%/56%），这里剔除。
+    // 注意只过滤源 A：源 B 是用户真实口味，不该被过滤。
+    const kept = raw.filter((s) => !isLowQuality(s, true))
+    const dropped = raw.length - kept.length
+    if (dropped > 0) {
+      console.log(`[今日甄选] 推荐流剔除劣质内容 ${dropped}/${raw.length} 首（古典/超长标题）`)
+    }
+    discover = kept
   } catch (e) {
     console.error('[今日甄选] 平台推荐流抓取失败，继续用口味源:', e)
   }
@@ -122,7 +178,8 @@ export async function buildCandidatePool(options: {
         const got = String(s?.singer ?? '').split(/[、,，;；&/]/)[0].trim().toLowerCase()
         return got === singer.toLowerCase()
       })
-      taste.push(...own.slice(0, perSinger))
+      // 口味源只过滤「空曲名/超长标题」，不过滤古典 —— 用户真听古典就该推
+      taste.push(...own.filter((s) => !isLowQuality(s, false)).slice(0, perSinger))
     } catch (e) {
       console.error(`[今日甄选] 种子歌手「${singer}」搜索失败:`, e)
     }

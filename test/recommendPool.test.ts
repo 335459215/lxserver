@@ -11,6 +11,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildCandidatePool,
+  isLowQuality,
+  isOverlongTitle,
+  looksClassical,
   mergePools,
   pickSeedSingers,
   poolKey,
@@ -189,4 +192,60 @@ test('六张卡的 id 与服务端 MIX_SPECS 完全对齐（前端靠 id 取数�
     MIX_SPECS.map((s) => s.id),
     ['radar', 'pop', 'nostalgia', 'focus', 'night', 'drive'],
   )
+})
+
+// ===== 劣质内容过滤（v2.48.1 线上实测：推荐流 62% 古典 / 56% 超长标题） =====
+
+test('looksClassical：识别古典曲目（作曲家名与作品编号）', () => {
+  for (const n of [
+    'Serenade in C Major, K. 648',
+    'Waltz No. 19 In A Minor, Op. Posth. B. 150',
+    'Symphony No. 5',
+    'Piano Concerto in D',
+    'Variations on a Theme',
+  ]) {
+    assert.equal(looksClassical({ name: n, singer: '某乐团' }), true, n)
+  }
+  assert.equal(looksClassical({ name: '晴天', singer: '周杰伦' }), false)
+  assert.equal(looksClassical({ name: '等你等到我心痛', singer: '张学友' }), false)
+})
+
+test('isOverlongTitle：超过 60 字判为超长', () => {
+  assert.equal(isOverlongTitle({ name: 'x'.repeat(59), singer: 'a' }), false)
+  assert.equal(isOverlongTitle({ name: 'x'.repeat(61), singer: 'a' }), true)
+})
+
+test('isLowQuality：空曲名一律判劣质', () => {
+  assert.equal(isLowQuality({ name: '  ', singer: 'a' }, false), true)
+})
+
+test('buildCandidatePool：推荐流里的古典被剔除，口味源里的古典保留', async () => {
+  const res = await buildCandidatePool({
+    fetchDiscover: async () => [
+      mk('Symphony No. 5', 'Berlin Orchestra'),
+      mk('普通新歌', '新歌手'),
+    ],
+    searchSongs: async () => [mk('Piano Sonata No. 14', '某古典歌手')],
+    // 用户自己常听「某古典歌手」→ 源 B 搜回来的古典不该被剔除
+    affinity: new Map([['某古典歌手', 9]]),
+  })
+  const names = res.pool.map((s) => s.name)
+  assert.ok(!names.includes('Symphony No. 5'), '推荐流里的古典应被剔除')
+  assert.ok(names.includes('普通新歌'), '正常新歌应保留')
+  assert.ok(names.includes('Piano Sonata No. 14'), '口味源里的古典应保留（用户真实偏好）')
+})
+
+test('双源池在国产流行画像下不产出古典（回归 v2.48.1 的质量事故）', async () => {
+  const res = await buildCandidatePool({
+    fetchDiscover: async () => [
+      mk('6 Variations on "Salve tu, Domine" by Paisiello, K. 398', 'Glenn Gould'),
+      mk('The Nutcracker, Op. 71, Act II', 'Mariinsky Orchestra'),
+      mk('周杰伦风格新歌', '某新人'),
+    ],
+    searchSongs: async () => [mk('晴天', '周杰伦')],
+    affinity: new Map([['周杰伦', 9]]),
+  })
+  const classical = res.pool.filter((s) => looksClassical(s))
+  // 只剩口味源可能带古典，这里口味源是流行，所以应为 0
+  assert.equal(classical.length, 0, `仍有古典: ${classical.map((s) => s.name).join(' / ')}`)
 })
