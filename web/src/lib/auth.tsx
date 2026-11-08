@@ -331,16 +331,19 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ filename, content, username: sourceOwner(), allowUnsafeVM }),
       }),
-    /** 批量链接导入：urls 每项一条链接，服务端逐条抓取并去重。 */
-    importBatch: (urls: string[], useProxy = false, allowUnsafeVM = false) =>
+    /** 批量链接导入：urls 每项一条链接，服务端逐条抓取并去重。
+     *  signal 由调用方给绝对超时用（服务端也有硬截止，这里只兜浏览器侧）。 */
+    importBatch: (urls: string[], useProxy = false, allowUnsafeVM = false, signal?: AbortSignal) =>
       adminFetch('/api/custom-source/import-batch', {
         method: 'POST',
+        signal,
         body: JSON.stringify({ urls, useProxy, username: sourceOwner(), allowUnsafeVM }),
       }),
     /** 批量文件导入：files 为 [{ filename, content }]，服务端逐条分析并去重。 */
-    uploadBatch: (files: Array<{ filename: string; content: string }>, allowUnsafeVM = false) =>
+    uploadBatch: (files: Array<{ filename: string; content: string }>, allowUnsafeVM = false, signal?: AbortSignal) =>
       adminFetch('/api/custom-source/upload-batch', {
         method: 'POST',
+        signal,
         body: JSON.stringify({ files, username: sourceOwner(), allowUnsafeVM }),
       }),
     toggle: (id: string, enabled: boolean) =>

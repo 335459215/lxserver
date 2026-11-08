@@ -11,14 +11,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   SOURCE_MAX_BYTES,
+  SOURCE_BATCH_TOTAL_TIMEOUT_MS,
+  SOURCE_IMPORT_ITEM_TIMEOUT_MS,
   addChunkSize,
   basenameFromUrl,
   buildFetchPlan,
   checkDeclaredLength,
+  describeTimeout,
   isBlockedHost,
   normalizeSourceContent,
   resolveRedirectUrl,
   validateSourceUrl,
+  withTimeout,
 } from '../src/server/customSourceUrl.ts'
 
 test('validateSourceUrl 只放行 http/https', () => {
@@ -76,4 +80,56 @@ test('内容归一化：拒绝空内容 / HTML 页面，去 BOM', () => {
 test('basenameFromUrl 给出可读回退文件名', () => {
   assert.equal(basenameFromUrl('https://example.com/a/b/my-source.js?x=1'), 'my-source.js')
   assert.equal(basenameFromUrl('not-a-url'), '')
+})
+
+// ===== v2.49.2 超时（绝对截止时间）=====
+
+test('withTimeout 到点必定 reject，即使内部 Promise 永不 resolve', async () => {
+  const started = Date.now()
+  await assert.rejects(
+    () => withTimeout(new Promise<never>(() => {}), 60),
+    /超时/,
+  )
+  const elapsed = Date.now() - started
+  // 必须真的在预算附近返回，不能拖到几百毫秒以上（covers DNS-hang 场景）
+  assert.ok(elapsed < 1000, `应在 60ms 级别返回，实际 ${elapsed}ms`)
+})
+
+test('withTimeout 内部先完成时正常返回，不受超时影响', async () => {
+  const value = await withTimeout(Promise.resolve('ok'), 500)
+  assert.equal(value, 'ok')
+})
+
+test('withTimeout 透传内部错误（不把真实失败伪装成超时）', async () => {
+  await assert.rejects(
+    () => withTimeout(Promise.reject(new Error('ECONNREFUSED')), 500),
+    /ECONNREFUSED/,
+  )
+})
+
+test('withTimeout 支持自定义超时文案', async () => {
+  await assert.rejects(
+    () => withTimeout(new Promise<never>(() => {}), 30, '解析脚本超时（测试）'),
+    /解析脚本超时（测试）/,
+  )
+})
+
+test('超时预算常量：单条 < 整批，且都在可接受范围内', () => {
+  assert.ok(SOURCE_IMPORT_ITEM_TIMEOUT_MS > 0)
+  assert.ok(SOURCE_BATCH_TOTAL_TIMEOUT_MS > SOURCE_IMPORT_ITEM_TIMEOUT_MS,
+    '整批预算必须大于单条，否则第一条就会吃掉全部预算')
+  // 90 秒：用户可接受的等待上限；再长就该判超时
+  assert.equal(SOURCE_BATCH_TOTAL_TIMEOUT_MS, 90_000)
+  assert.equal(SOURCE_IMPORT_ITEM_TIMEOUT_MS, 25_000)
+})
+
+test('describeTimeout 文案带上秒数，且能被 describeFetchError 识别为超时', async () => {
+  const text = describeTimeout(20_000)
+  assert.match(text, /20 秒/)
+  assert.match(text, /超时/)
+  // 服务端 read ETIMEDOUT / connect ETIMEDOUT 也要映射成「超时」而不是「抓取失败」
+  const { describeFetchError } = await import('../src/server/customSourceUrl.ts')
+  assert.match(describeFetchError(new Error('read ETIMEDOUT')), /超时/)
+  assert.match(describeFetchError(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' })), /超时/)
+  assert.match(describeFetchError(new Error('TIMEOUT: 抓取超时')), /超时/)
 })

@@ -102,6 +102,11 @@ interface PickedScriptFile {
 const MAX_IMPORT_ITEMS = 50
 /** 与服务端 SOURCE_MAX_BYTES 保持一致。 */
 const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+/** 与服务端 SOURCE_BATCH_TOTAL_TIMEOUT_MS 保持一致（90s）。
+ *  前端到点仍未收到响应，直接按超时收口，不等浏览器默认那几分钟。 */
+const BATCH_TIMEOUT_MS = 90_000
+/** 服务端单条预算（SOURCE_IMPORT_ITEM_TIMEOUT_MS）。用于把提示说清楚。 */
+const ITEM_TIMEOUT_MS = 25_000
 
 function prettySize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
@@ -132,9 +137,36 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
   const [allowUnsafeVM, setAllowUnsafeVM] = useState(false)
   const [metadata, setMetadata] = useState<{ name?: string; version?: string; platforms?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
   const [step, setStep] = useState<'input' | 'validated'>('input')
   const [result, setResult] = useState<SourceBatchResult | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  /** 导入进行中每秒 +1，用于显示「已等待 N 秒 / 超时 90s」。
+   *
+   *  【为什么要有这个计数】服务端虽然加了硬截止，但最坏情况仍要等 20~25 秒；
+   *  界面上只有一个静止的「导入中…」，用户无法判断是「在跑」还是「卡死了」。
+   *  显示秒数后，「还在动」本身就是反馈；超过预算立刻停表并给出超时提示。 */
+  useEffect(() => {
+    if (!busy) return
+    const started = Date.now()
+    setElapsed(0)
+    const timer = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000))
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [busy])
+
+  /** 给任意请求套绝对超时：服务端正常会在 90s 内返回，这里兜底防止浏览器一直挂。 */
+  const withClientTimeout = async <T,>(run: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), ms)
+    try {
+      return await run(controller.signal)
+    } finally {
+      window.clearTimeout(timer)
+    }
+  }
 
   const urlLines = urlText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   const uniqueUrls = Array.from(new Set(urlLines))
@@ -175,7 +207,10 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
     setBusy(true)
     setResult(null)
     try {
-      const res = await api.sources.importBatch(uniqueUrls, useProxy, allowUnsafeVM)
+      const res = await withClientTimeout(
+        (signal) => api.sources.importBatch(uniqueUrls, useProxy, allowUnsafeVM, signal),
+        BATCH_TIMEOUT_MS,
+      )
       const data = (await res.json().catch(() => null)) as SourceBatchResult | null
       if (!res.ok || !data?.success) {
         toast({ title: '批量导入失败', description: await readError(res, '链接导入失败'), variant: 'destructive' })
@@ -183,7 +218,16 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
       }
       finishBatch(data)
     } catch (e) {
-      toast({ title: '批量导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
+      const aborted = e instanceof DOMException && e.name === 'AbortError'
+      toast({
+        title: aborted ? '导入超时' : '批量导入失败',
+        description: aborted
+          ? `超过 ${BATCH_TIMEOUT_MS / 1000} 秒仍未完成，已中止。请检查链接是否可访问，或勾选「使用代理」后重试。`
+          : e instanceof Error
+            ? e.message
+            : '网络错误',
+        variant: 'destructive',
+      })
     } finally {
       setBusy(false)
     }
@@ -231,7 +275,10 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
       const files = await Promise.all(
         picked.map(async (item) => ({ filename: item.name, content: await item.file.text() })),
       )
-      const res = await api.sources.uploadBatch(files, allowUnsafeVM)
+      const res = await withClientTimeout(
+        (signal) => api.sources.uploadBatch(files, allowUnsafeVM, signal),
+        BATCH_TIMEOUT_MS,
+      )
       const data = (await res.json().catch(() => null)) as SourceBatchResult | null
       if (!res.ok || !data?.success) {
         toast({ title: '批量导入失败', description: await readError(res, '文件导入失败'), variant: 'destructive' })
@@ -239,7 +286,16 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
       }
       finishBatch(data)
     } catch (e) {
-      toast({ title: '读取文件失败', description: e instanceof Error ? e.message : '请确认选的是文本脚本文件', variant: 'destructive' })
+      const aborted = e instanceof DOMException && e.name === 'AbortError'
+      toast({
+        title: aborted ? '导入超时' : '读取文件失败',
+        description: aborted
+          ? `超过 ${BATCH_TIMEOUT_MS / 1000} 秒仍未完成，已中止。请减少文件数量后重试。`
+          : e instanceof Error
+            ? e.message
+            : '请确认选的是文本脚本文件',
+        variant: 'destructive',
+      })
     } finally {
       setBusy(false)
     }
@@ -302,7 +358,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
   }
 
   const batchButtonLabel = (count: number, unit: string) => {
-    if (busy) return '导入中…'
+    if (busy) return `导入中… ${elapsed}s`
     return count > 0 ? `导入 ${count} 个${unit}` : `导入${unit}`
   }
 
@@ -474,6 +530,17 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
               ))}
             </ul>
           </div>
+        )}
+
+        {/* 进行中提示：明确告诉用户「还会等多久」，而不是只有一个转圈的按钮。
+            elapsed 由上面的 setInterval 每秒推进，超过服务端单条预算时改口径为
+            「正在等待服务端返回」—— 让用户知道不是界面卡死。 */}
+        {busy && !result && (
+          <p className="mt-3 text-xs text-faint" role="status" aria-live="polite">
+            {elapsed < ITEM_TIMEOUT_MS / 1000
+              ? `正在抓取并解析脚本…已等待 ${elapsed} 秒（单条最多 ${ITEM_TIMEOUT_MS / 1000} 秒，整批最多 ${BATCH_TIMEOUT_MS / 1000} 秒）`
+              : `仍在等待服务端返回…已等待 ${elapsed} 秒，达到 ${BATCH_TIMEOUT_MS / 1000} 秒会自动中止`}
+          </p>
         )}
 
         <DialogFooter>

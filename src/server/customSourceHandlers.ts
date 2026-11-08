@@ -5,7 +5,7 @@ import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getProxyAgent } from '../modules/utils/proxy.js'
 import { isAdminRequest } from './adminAuth'
-import { basenameFromUrl, buildFetchPlan, normalizeSourceContent, sizeLimitError, SOURCE_MAX_BYTES, SourceImportError } from './customSourceUrl'
+import { basenameFromUrl, buildFetchPlan, describeBatchBudgetExhausted, normalizeSourceContent, sizeLimitError, SOURCE_BATCH_TOTAL_TIMEOUT_MS, SOURCE_IMPORT_ITEM_TIMEOUT_MS, SOURCE_MAX_BYTES, SourceImportError, withTimeout } from './customSourceUrl'
 import { fetchSourceScript } from './customSourceFetch'
 import {
     SOURCE_BATCH_LIMIT,
@@ -181,6 +181,28 @@ interface BatchImportResultItem {
     code?: string
 }
 
+/**
+ * 单条链接的完整抓取：算 URL → 建代理 agent → 抓正文。
+ *
+ * 【为什么单独抽出来】批量循环里那条 `withTimeout(...)` 需要一个可传入的 Promise；
+ * 把这几步内联在循环里，就没法给整条链路套截止时间（`await` 已经散开了）。
+ * 抽成函数后，**整段**（含代理 agent 构建）都在同一个超时保护之下。
+ */
+async function importOneByUrl(
+    raw: unknown,
+    useProxy: boolean,
+    _budgetMs: number,
+): Promise<{ content: string; sourceUrl: string; filename: string }> {
+    const plan = buildFetchPlan({ url: raw, useProxy })
+    const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
+    const fetched = await fetchSourceScript(plan, { agent })
+    return {
+        content: fetched.content,
+        sourceUrl: fetched.finalUrl,
+        filename: basenameFromUrl(plan.url) || 'unknown_source.js',
+    }
+}
+
 interface BatchImportPayload {
     urls?: unknown
     files?: unknown
@@ -264,6 +286,10 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
     let imported = 0
     let skipped = 0
     let failed = 0
+    // 整批的绝对截止时间：逐条串行时，任何一条卡住都不能把整批拖成无限等待。
+    const batchDeadline = Date.now() + SOURCE_BATCH_TOTAL_TIMEOUT_MS
+    /** 距离整批截止还剩多少毫秒（可能为负）。 */
+    const deadlineLeft = () => batchDeadline - Date.now()
 
     for (let index = 0; index < rawItems.length; index++) {
         const raw: any = rawItems[index]
@@ -282,6 +308,20 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
             seenBatchUrls.add(normalized)
         }
 
+        // 总预算用完：剩余条目不再尝试，直接如实标记（不假装成功、也不悬挂）。
+        const batchLeft = deadlineLeft()
+        if (batchLeft <= 0) {
+            failed++
+            results.push({
+                index,
+                input: input || `第 ${index + 1} 项`,
+                status: 'failed',
+                code: 'BATCH_TIMEOUT',
+                reason: `整批导入已超过 ${Math.round(SOURCE_BATCH_TOTAL_TIMEOUT_MS / 1000)} 秒上限，本条未处理。请分批导入或检查链接可达性。`,
+            })
+            continue
+        }
+
         try {
             if (kind === 'url' && !input) throw new SourceImportError('链接为空')
             if (kind === 'upload' && (!raw || typeof raw.content !== 'string')) {
@@ -293,12 +333,21 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
             let sourceUrl: string | undefined
 
             if (kind === 'url') {
-                const plan = buildFetchPlan({ url: raw, useProxy: !!payload.useProxy })
-                const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
-                const fetched = await fetchSourceScript(plan, { agent })
-                content = fetched.content
-                sourceUrl = fetched.finalUrl
-                filename = basenameFromUrl(plan.url) || 'unknown_source.js'
+                // 单条的端到端上限 = min(单条预算, 整批剩余)，两层都不放过。
+                const itemBudget = Math.min(SOURCE_IMPORT_ITEM_TIMEOUT_MS, batchLeft)
+                // 单条预算被整批压缩时，文案要说明「是整批快到期」，不能只说一个
+                // 与「单条 25 秒」矛盾的秒数。
+                const squeezed = batchLeft < SOURCE_IMPORT_ITEM_TIMEOUT_MS
+                const item = await withTimeout(
+                    importOneByUrl(raw, !!payload.useProxy, itemBudget),
+                    itemBudget,
+                    squeezed
+                        ? describeBatchBudgetExhausted(SOURCE_BATCH_TOTAL_TIMEOUT_MS, batchLeft)
+                        : undefined,
+                )
+                content = item.content
+                sourceUrl = item.sourceUrl
+                filename = item.filename
             } else {
                 content = raw.content
                 filename = String(raw.filename || 'uploaded-source.js')
@@ -311,7 +360,15 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
                 throw new SourceImportError(sizeLimitError())
             }
 
-            const { metadata, supportedSources, requireUnsafe } = await getScriptInfo(content, !!payload.allowUnsafeVM)
+            // 脚本试运行（VM 初始化）也要有截止时间：脚本里若有个永不 resolve 的
+            // 顶层 await，`lx.send('inited')` 就永远等不到，这里会一直挂着。
+            // 内部 init 有 3s 超时，但那是「等 inited」本身；外层再兜一次更保险。
+            const infoBudget = Math.min(SOURCE_IMPORT_ITEM_TIMEOUT_MS, Math.max(1000, deadlineLeft()))
+            const { metadata, supportedSources, requireUnsafe } = await withTimeout(
+                getScriptInfo(content, !!payload.allowUnsafeVM),
+                infoBudget,
+                `解析脚本超时（${Math.round(infoBudget / 1000)} 秒内脚本没有初始化完成），请确认这是音源脚本。`,
+            )
             const displayName = metadata.name || filename
             if (!requireUnsafe && supportedSources.length === 0) {
                 throw new SourceImportError('脚本没有注册任何音源，请确认选的是音源脚本而不是普通 JS 文件。')
@@ -524,13 +581,20 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
         // ⑥ 链接导入：统一走「默认直连、勾选才走代理」的抓取计划（见 customSourceUrl.ts）。
         // 以前只要全局 app 代理开着就强制走代理 —— NAS 上 customSource 经代理会 ECONNRESET。
         // 现在：协议白名单 + 回环/元数据地址拦截 + 逐跳重定向校验 + 2MB 流式上限 + 20s 整体超时。
-        const plan = buildFetchPlan({ url, useProxy: !!useProxy })
-        const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
-        const fetched = await fetchSourceScript(plan, { agent })
-        const content = fetched.content
-
-        // 获取脚本信息
-        const { metadata, supportedSources, requireUnsafe } = await getScriptInfo(content, allowUnsafeVM)
+        //
+        // v2.49.2：整条链路（抓取 + 代理 agent 构建 + VM 试运行）套一个**绝对截止时间**。
+        // 原来的 20s 只是 socket 级超时，DNS 挂起 / 脚本 init 不返回时界面会一直转圈。
+        const itemBudget = SOURCE_IMPORT_ITEM_TIMEOUT_MS
+        const { content, finalUrl, metadata, supportedSources, requireUnsafe } = await withTimeout(
+            (async () => {
+                const plan = buildFetchPlan({ url, useProxy: !!useProxy })
+                const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
+                const fetched = await fetchSourceScript(plan, { agent })
+                const info = await getScriptInfo(fetched.content, allowUnsafeVM)
+                return { content: fetched.content, finalUrl: fetched.finalUrl, ...info }
+            })(),
+            itemBudget,
+        )
 
         // 核心安全校验：若脚本需要或者指定了 unsafe VM 模式，则必须验证管理员身份
         if (requireUnsafe || allowUnsafeVM) {
@@ -611,7 +675,7 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
             supportedSources, // 保存支持的源
             enabled: false,
             uploadTime: new Date().toISOString(),
-            sourceUrl: fetched.finalUrl,
+            sourceUrl: finalUrl,
             allowUnsafeVM: !!requireUnsafe || !!allowUnsafeVM,
             requireUnsafe: !!requireUnsafe
         })
