@@ -394,15 +394,46 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
         }
     }
 
-    // 针对音源脚本沙箱的 console 代理：非 DEBUG 模式下静默普通的 log/info/debug 等输出
+    // 针对音源脚本沙箱的 console 代理：非 DEBUG 模式下静默普通的 log/info/debug 等输出。
+    //
+    // 【v2.49.3 补齐：console 必须是**完整的**，否则脚本会直接崩】
+    // 原来只实现了 log/info/debug/warn/time/timeEnd/error 七个方法。
+    // 实测 `lx-animemusic` 这个源在初始化里有 `console.groupEnd()`，
+    // 而我们的 console 上没有这个方法 → 抛 `TypeError: console.groupEnd is not a function`
+    // → 整个源被判定「不可用」。这不是脚本的错：`console.group/groupEnd/table/trace/
+    // dir/count/assert` 都是 WHATWG Console 标准方法，任何在浏览器/Node 里跑得通的
+    // 脚本都有权调用它们。沙箱替身必须实现完整接口，缺一个就等于给脚本埋一颗地雷。
+    //
+    // 分级策略：
+    //  - 输出类（log/info/debug/trace/table/dir/group/...）受 debug 开关控制；
+    //  - 错误类（error/assert 失败）始终输出，便于排查真实故障；
+    //  - 所有方法都返回 undefined 且**永不抛异常**（console 本身不该成为故障点）。
+    const debugOn = () => !!global.lx.config['debug.enabled']
+    const silence = () => { /* 非 debug 模式：吞掉输出，但不改变控制流 */ }
     const sandboxConsole = {
-        log: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.log(...args) },
-        info: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.info(...args) },
-        debug: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.debug(...args) },
-        warn: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.warn(...args) },
-        time: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.time(...args) },
-        timeEnd: (...args: any[]) => { if (global.lx.config['debug.enabled']) console.timeEnd(...args) },
-        error: (...args: any[]) => { console.error(...args) }
+        log: (...args: any[]) => { if (debugOn()) console.log(...args) },
+        info: (...args: any[]) => { if (debugOn()) console.info(...args) },
+        debug: (...args: any[]) => { if (debugOn()) console.debug(...args) },
+        warn: (...args: any[]) => { if (debugOn()) console.warn(...args) },
+        error: (...args: any[]) => { console.error(...args) },
+        trace: (...args: any[]) => { if (debugOn()) console.trace(...args) },
+        dir: (...args: any[]) => { if (debugOn()) console.dir(...args) },
+        table: (...args: any[]) => { if (debugOn()) console.table(...args) },
+        // 分组：浏览器里会缩进，服务端没有这个概念，退化成普通日志即可
+        group: (...args: any[]) => { if (debugOn()) console.log(...args) },
+        groupCollapsed: (...args: any[]) => { if (debugOn()) console.log(...args) },
+        groupEnd: () => silence(),
+        time: (...args: any[]) => { if (debugOn()) console.time(...args) },
+        timeEnd: (...args: any[]) => { if (debugOn()) console.timeEnd(...args) },
+        timeLog: (...args: any[]) => { if (debugOn()) console.timeLog(...args) },
+        count: (...args: any[]) => { if (debugOn()) console.count(...args) },
+        countReset: () => silence(),
+        // assert：断言失败时**必须**出声，否则排查时看不到脚本内部的自我校验失败
+        assert: (cond?: any, ...args: any[]) => {
+            if (cond) return
+            console.error('[音源脚本 assert 失败]', ...args)
+        },
+        clear: () => silence(),
     }
 
     // 完整沙箱环境
