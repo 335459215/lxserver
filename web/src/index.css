@@ -320,3 +320,16 @@ body {
 .volume-range:focus-visible {
   outline: none;
 }
+
+/* ===== 弹窗打开期间把 toast 移到顶部 =====
+   弹窗底部的「完成 / 确认」是主操作，而 toast 的 viewport 是 fixed 且层级更高
+   （z-[100] > 弹窗的 z-50），贴在底部会**整条压住主操作**——
+   v2.49 的「导入自定义音源」批量结果面板实测被盖住，小屏上直接点不到。
+   移到顶部后与弹窗标题区共存，不遮挡任何可点元素。
+
+   :has() 在 Chromium 105+ / Safari 15.4+ / Firefox 121+ 均可用；
+   不支持的浏览器保持原本的底部位置（功能不受影响，只是仍可能压住）。 */
+body:has([role='dialog']) [data-toast-viewport] {
+  bottom: auto;
+  top: calc(var(--safe-top) + 0.75rem);
+}

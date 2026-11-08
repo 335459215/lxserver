@@ -23,7 +23,11 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      'inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm transition-all',
+      // 【为什么高度是 36px 而不是 py-1（实际 28px）】
+      // 28px 只勉强过 WCAG 2.2 的 24px 底线，离 Apple HIG 44pt 差得远；
+      // 而这个 Tabs 在移动端是「导入源」弹窗的主切换控件，点不准就等于用不了。
+      // 36px + 左右留白是这条高度上限（再高会把弹窗顶高、挤掉结果列表）。
+      'inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-all',
       'data-[state=active]:bg-line-strong data-[state=active]:text-ink',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-50',
       className,

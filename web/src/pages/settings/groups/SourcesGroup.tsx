@@ -150,15 +150,16 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
     }
   }
 
-  const finishBatch = (data: SourceBatchResult, label: string) => {
+  /** 批量导入收尾：只更新弹窗内的结果面板。
+   *
+   *  【为什么不再弹 toast】
+   *  toast 的 viewport 是 fixed bottom-0 z-[100]，弹窗期间会**压住结果列表底部和
+   *  「完成」按钮**（375×667 / 390×844 实测都盖住了）。而结果面板就在眼前、
+   *  信息比 toast 更全（逐条状态+原因），再弹一条只是重复且挡路。
+   *  失败时的完整原因同样在面板里，用户还能照着改链接重试。 */
+  const finishBatch = (data: SourceBatchResult) => {
     setResult(data)
     if (data.summary.imported > 0) onDone()
-    const detail = `成功 ${data.summary.imported} · 跳过 ${data.summary.skipped} · 失败 ${data.summary.failed}`
-    toast({
-      title: data.summary.failed > 0 ? `${label}导入完成（有失败项）` : `${label}导入完成`,
-      description: detail,
-      variant: data.summary.failed > 0 ? 'destructive' : 'success',
-    })
   }
 
   /** 批量链接导入：服务端逐条抓取（协议白名单 / 逐跳重定向校验 / 2MB 上限 / 20s 超时） */
@@ -180,7 +181,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
         toast({ title: '批量导入失败', description: await readError(res, '链接导入失败'), variant: 'destructive' })
         return
       }
-      finishBatch(data, '链接')
+      finishBatch(data)
     } catch (e) {
       toast({ title: '批量导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
     } finally {
@@ -236,7 +237,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
         toast({ title: '批量导入失败', description: await readError(res, '文件导入失败'), variant: 'destructive' })
         return
       }
-      finishBatch(data, '文件')
+      finishBatch(data)
     } catch (e) {
       toast({ title: '读取文件失败', description: e instanceof Error ? e.message : '请确认选的是文本脚本文件', variant: 'destructive' })
     } finally {
@@ -281,7 +282,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
         toast({ title: '导入失败', description: await readError(res, '导入失败'), variant: 'destructive' })
         return
       }
-      finishBatch(data, '脚本')
+      finishBatch(data)
     } catch (e) {
       toast({ title: '导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
     } finally {
@@ -312,7 +313,9 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
           <Plus className="size-4" /> 导入源
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
+      {/* max-h 里减掉安全区：PWA 全屏时刘海/手势条会吃掉视口，90dvh 仍可能把
+          弹窗顶出可视范围；减掉 --safe-* 再留 1rem 余量，弹窗永远完整可见。 */}
+      <DialogContent className="max-h-[calc(100dvh-var(--safe-top)-var(--safe-bottom)-1rem)] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>导入自定义音源</DialogTitle>
           <DialogDescription>
@@ -328,8 +331,11 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
           </TabsList>
 
           <TabsContent value="links" className="space-y-3">
+            {/* 【移动端字号必须是 16px】iOS Safari 聚焦 font-size < 16px 的输入框会
+                自动放大整页且不缩回。桌面保留紧凑的 12px（等宽字体看链接更整齐）。
+                placeholder 用 text-faint：默认的浏览器灰只有 ~2.5:1，户外看不清。 */}
             <textarea
-              className="h-40 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
+              className="h-40 w-full rounded-lg border border-line bg-panel p-3 font-mono text-base text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-none md:text-xs"
               placeholder={'https://example.com/source-a.js\nhttps://example.com/source-b.js\n\n（每行一个链接，空行自动忽略）'}
               aria-label="音源脚本链接，每行一个"
               spellCheck={false}
@@ -341,13 +347,15 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
                 每行一个链接{urlLines.length > 0 && ` · 共 ${urlLines.length} 条`}
                 {duplicateUrlCount > 0 && <span className="text-faint">（其中 {duplicateUrlCount} 条重复将自动忽略）</span>}
               </p>
+              {/* 触摸目标：整行补到 40px 高（原 label 只有 16px，是本次审查里唯一明确
+                  低于 WCAG 2.2 24px 的控件）。checkbox 保持 16px，靠 padding 扩热区。 */}
               <label
-                className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-dim"
+                className="flex min-h-10 shrink-0 cursor-pointer select-none items-center gap-2 py-2 text-dim"
                 title="勾选后由服务端经代理拉取；默认直连（NAS 上代理拉自定义源会 ECONNRESET）"
               >
                 <input
                   type="checkbox"
-                  className="size-4 accent-accent"
+                  className="size-4 shrink-0 accent-accent"
                   checked={useProxy}
                   onChange={(e) => setUseProxy(e.target.checked)}
                 />
@@ -400,7 +408,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
 
           <TabsContent value="paste" className="space-y-3">
             <textarea
-              className="h-48 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
+              className="h-48 w-full rounded-lg border border-line bg-panel p-3 font-mono text-base text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-none md:text-xs"
               placeholder="// 粘贴音源脚本..."
               aria-label="粘贴音源脚本内容"
               value={script}
@@ -427,7 +435,7 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
           </TabsContent>
         </Tabs>
 
-        <label className="mt-4 flex items-center gap-2 text-xs text-dim">
+        <label className="mt-4 flex min-h-10 items-center gap-2 py-1 text-xs text-dim">
           <Switch checked={allowUnsafeVM} onCheckedChange={setAllowUnsafeVM} />
           允许不安全 VM（仅可信源）
         </label>

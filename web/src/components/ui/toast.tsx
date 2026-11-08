@@ -25,7 +25,19 @@ const ToastViewport = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <ToastPrimitive.Viewport
     ref={ref}
-    className={cn('fixed bottom-0 right-0 z-[100] flex max-h-screen w-full max-w-sm flex-col gap-2 p-4', className)}
+    // 【为什么不再贴 bottom-0】
+    // 底部常驻的是移动 Tab 栏 / 桌面播放栏，toast 贴在 0 会被它们盖住半截
+    // （移动端实测：toast 直接压在迷你播放条上）。这里抬到两条栏之上，
+    // 再叠加安全区，PWA 全屏时也不会贴到手势条。
+    // data-toast-viewport 供 index.css 在「弹窗打开」时把它移到顶部，
+    // 避免盖住弹窗底部的主操作（批量导入的「完成」按钮曾被整条压住）。
+    data-toast-viewport=""
+    className={cn(
+      'fixed right-0 z-[100] flex max-h-[70dvh] w-full max-w-sm flex-col gap-2 p-4',
+      'bottom-[calc(var(--mobile-tabbar-h)+var(--safe-bottom)+0.25rem)]',
+      'lg:bottom-[calc(var(--playerbar-h)+0.25rem)]',
+      className,
+    )}
     {...props}
   />
 ))

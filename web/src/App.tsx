@@ -350,15 +350,27 @@ function Shell() {  const { auth, refresh } = useAuth()
 
       {/* 内容区：底部给常驻播放栏让位。
           桌面是 PlayerBar（--playerbar-h），移动端是 MobileTabBar（--mobile-tabbar-h，含迷你播放条），
-          两者在各自断点下非零、另一断点为 0，所以这里一条 pb- 就够，不用写两个媒体查询。 */}
+          两者在各自断点下非零、另一断点为 0，所以这里一条 pb- 就够，不用写两个媒体查询。
+
+          【为什么移动端还要再加 --safe-bottom】
+          --mobile-tabbar-h 是「迷你播放条 + Tab 行」的固定高度，不含 iOS 手势条安全区；
+          而 Tab 行自己用 pb-[var(--safe-bottom)] 把内容顶了上来 —— 也就是栏的实际高度
+          会多出安全区那一截。内容区不多留这一截，滚到底时最后一行会压在通道上。
+          env() 在桌面恒为 0，这条 calc 在桌面上等于原值。 */}
       <div
         className={cn(
-          'mx-auto flex w-full pb-[var(--mobile-tabbar-h)] lg:pb-[var(--playerbar-h)]',
+          'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]',
           showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
         )}
       >
         {/* 桌面侧边栏 */}
-        <aside className="sticky top-14 hidden h-[calc(100vh-3.5rem-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
+        {/* 【为什么高度要减 var(--header-h)+1px 而不是写死 3.5rem】
+            顶栏实际高度 = --header-h(3.75rem) + 1px 下边框 = 61px，而这里原来写的是
+            `100vh - 3.5rem`(56px) —— 少算 5px。侧栏在 flex 行里会把整个内容区撑高 5px，
+            于是**每一页**（尤其全屏播放页）都比视口多出一条 5px 的滚动条。
+            改用变量 + 1px 边框，顶栏高度以后调多少这里都跟着对；100dvh 则在移动浏览器
+            工具栏收缩时也不会多算高度。 */}
+        <aside className="sticky top-[calc(var(--header-h)+1px)] hidden h-[calc(100dvh-var(--header-h)-1px-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
           <NavItems
             onInstall={triggerInstall}
             isInstalled={isInstalled}
