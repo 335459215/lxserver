@@ -1328,18 +1328,52 @@ export async function handleProbe(req: IncomingMessage, res: ServerResponse) {
         }
 
         const sdk: any = musicSdkRaw
-        if (!sdk[platform]?.musicSearch?.search) {
+        const searchable = (p: string) => !!(sdk[p]?.musicSearch?.search)
+
+        // 【v2.49.3：平台不要盲取 [0]】
+        // 前端传的 platform 是 supportedSources[0]，而那个顺序来自脚本里
+        // `Object.keys(sources)` 的声明顺序，**不代表我们服务端能搜**。
+        // 若某源把 bilibili 之类放在首位，而 SDK 没有对应 musicSearch，
+        // 这里会直接 400「平台 X 不支持搜索」—— 用户看到的就是「不可用」，
+        // 但源本身可能完全正常。改为：先试请求的平台，不行就从该源
+        // **实际注册的平台**里挑第一个能搜的；一个都没有才如实报「无法检测」。
+        if (!id || !platform) {
             res.writeHead(400, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ success: false, error: `平台 ${platform} 不支持搜索` }))
+            res.end(JSON.stringify({ success: false, error: 'Missing id/platform' }))
             return
         }
 
-        // 1) 取样本歌
-        const searchData = await sdk[platform].musicSearch.search('晴天 周杰伦', 1, 5)
+        const loadedApiEarly: any = getLoadedApi(owner, id)
+        const declared: string[] = loadedApiEarly?.info?.sources
+            ? Object.keys(loadedApiEarly.info.sources)
+            : []
+        const candidates = [platform, ...declared].filter((p, i, arr) => p && arr.indexOf(p) === i)
+        const chosen = candidates.find(searchable) || ''
+
+        if (!chosen) {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+                success: true,
+                ok: false,
+                // unprobeable = 「测不了」，与「测出来是坏的」必须分开，
+                // 否则界面会把正常的源标红，误导用户去删它。
+                unprobeable: true,
+                ms: 0,
+                platform: platform,
+                error: `该源声明的平台（${declared.slice(0, 4).join('、') || platform}）都没有内置搜索能力，无法自动检测；不代表源不可用。`,
+            }))
+            return
+        }
+
+        // 1) 取样本歌（用挑好的可搜平台）
+        const searchData = await sdk[chosen].musicSearch.search('晴天 周杰伦', 1, 5)
         const list: any[] = searchData?.list || []
         const sample = list[0]
         if (!sample) {
-            res.end(JSON.stringify({ success: true, ok: false, ms: 0, error: '该平台搜不到样本歌，无法检测' }))
+            res.end(JSON.stringify({
+                success: true, ok: false, ms: 0, platform: chosen,
+                error: '该平台搜不到样本歌，无法检测',
+            }))
             return
         }
 
@@ -1392,7 +1426,7 @@ export async function handleProbe(req: IncomingMessage, res: ServerResponse) {
         if (ok) recordSourceSpeed(id, ms, owner)
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ success: true, ok, ms, error, sample: sample?.name || '' }))
+        res.end(JSON.stringify({ success: true, ok, ms, error, sample: sample?.name || '', platform: chosen }))
     } catch (error: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: false, error: error.message }))

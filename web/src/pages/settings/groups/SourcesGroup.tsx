@@ -684,7 +684,9 @@ export default function SourcesGroup() {
   const { toast } = useToast()
   const [sources, setSources] = useState<SourceRow[] | null>(null)
   /** 每源最近一次的检测结果（只存内存：这是「此刻测的」，不该当成持久事实） */
-  const [probes, setProbes] = useState<Record<string, { ok: boolean; ms: number; error?: string }>>({})
+  // unprobeable：源本身没问题，只是我们没法自动测（例如它声明的平台都没有内置搜索）。
+  // 必须与「检测失败」区分开 —— 否则正常的源会被标红，用户会去删掉它。
+  const [probes, setProbes] = useState<Record<string, { ok: boolean; ms: number; error?: string; unprobeable?: boolean }>>({})
   const [probingId, setProbingId] = useState<string | null>(null)
   /** 全量检测进度。null = 没在跑；{done,total} = 正在跑 */
   const [probeAll, setProbeAll] = useState<{ done: number; total: number } | null>(null)
@@ -704,7 +706,7 @@ export default function SourcesGroup() {
     setProbingId(s.id)
     try {
       const r = await api.sources.probe(s.id, s.name, platform)
-      setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error } }))
+      setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error, unprobeable: !!(r as { unprobeable?: boolean }).unprobeable } }))
     } catch (e) {
       setProbes((prev) => ({
         ...prev,
@@ -740,7 +742,7 @@ export default function SourcesGroup() {
       try {
         const r = await api.sources.probe(s.id, s.name, platform)
         if (r.ok) okCount++
-        setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error } }))
+        setProbes((prev) => ({ ...prev, [s.id]: { ok: !!r.ok, ms: r.ms, error: r.error, unprobeable: !!(r as { unprobeable?: boolean }).unprobeable } }))
       } catch (e) {
         setProbes((prev) => ({
           ...prev,
@@ -939,14 +941,20 @@ export default function SourcesGroup() {
                   {probes[s.id] && (
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
-                        probes[s.id].ok ? 'bg-ok/10 text-ok' : 'bg-danger/10 text-danger'
+                        probes[s.id].ok
+                          ? 'bg-ok/10 text-ok'
+                          : probes[s.id].unprobeable
+                            ? 'bg-panel2 text-faint'
+                            : 'bg-danger/10 text-danger'
                       }`}
                       title={
                         probes[s.id].ok
                           ? probes[s.id].ms < 10
                             ? '检测通过：几乎瞬时返回 —— 极可能是源内部缓存命中了，这个耗时不能代表真实取链速度'
                             : `检测通过：真实解析成功，耗时 ${probes[s.id].ms}ms`
-                          : `检测失败：${probes[s.id].error || '未知原因'}`
+                          : probes[s.id].unprobeable
+                            ? `无法自动检测（不代表源不可用）：${probes[s.id].error || ''}`
+                            : `检测失败：${probes[s.id].error || '未知原因'}`
                       }
                     >
                       {/* <10ms 就别报毫秒数了：实测「长青SVIP音源」连续两次都是 1ms，
@@ -955,12 +963,14 @@ export default function SourcesGroup() {
                         ? probes[s.id].ms < 10
                           ? '可用 · 缓存'
                           : `可用 · ${probes[s.id].ms < 1000 ? `${probes[s.id].ms}ms` : `${(probes[s.id].ms / 1000).toFixed(1)}s`}`
-                        : '不可用'}
+                        : probes[s.id].unprobeable
+                          ? '无法检测'
+                          : '不可用'}
                     </span>
                   )}
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                  {s.version && <Badge>v{s.version}</Badge>}
+                  {s.version && <Badge>v{String(s.version).replace(/^[vV]/, '')}</Badge>}
                   {s.isPublic && <Badge>公开</Badge>}
                   {(s.supportedSources ?? s.platforms ?? []).map((p) => <Badge key={p}>{p}</Badge>)}
                 </div>
