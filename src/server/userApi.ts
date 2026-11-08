@@ -465,6 +465,10 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
     sandbox.window = sandbox
     sandbox.globalThis = sandbox
 
+    /* 脚本初始化期间自己抛出的错误（同步的能抓到；异步的只有 VM 层能拦）。
+       用于在「初始化超时」时把真正原因带到日志与 API 文案里，而不是只说
+       「请确保调用了 lx.send」。 */
+    let scriptInitError = ''
     try {
         if (apiInfo.allowUnsafeVM && global.lx.config['system.allowUnsafeVM']) {
             console.log(`[自定义源] ${fullApiInfo.name} 正在以原生 VM 模式启动...`)
@@ -486,6 +490,7 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
                 })
                 await vmInstance.run(apiInfo.script)
             } catch (e: any) {
+                scriptInitError = e?.message ? String(e.message).slice(0, 200) : String(e).slice(0, 200)
                 const isContextError = e.message.includes('contextified object') || e.message.includes('Operation not allowed')
                 if (isContextError) {
                     console.warn(`[自定义源] ${fullApiInfo.name} 触发 vm2 安全限制，正在提示用户开启 VM 模式`)
@@ -496,11 +501,28 @@ export async function loadUserApi(apiInfo: UserApiInfo, opts?: { persist?: boole
         }
 
         // Clear the initialization deadline on success as well (no detached 3s timers).
+        //
+        // 【v2.49.3：文案不再甩锅给用户】
+        // 原来只有一句「初始化超时，请确保脚本调用了 lx.send("inited", ...)」。
+        // 实测「聚合API接口 (CF)」这个源：它**确实**调用了 inited，只是初始化时先
+        // 请求上游 `https://…/init.conf`，对方返回 429 限流 → 请求进 catch →
+        // inited 永远发不出来。此时提示「请确保调用了 lx.send」等于把
+        // 上游故障说成用户/脚本作者写错了，误导排查方向。
+        // 现在把「可能的真实原因」一并列出，并优先展示脚本自己抛的错。
         let initTimer: ReturnType<typeof setTimeout> | undefined
         try {
             await Promise.race([
                 initPromise,
-                new Promise((_, reject) => { initTimer = setTimeout(() => reject(new Error('初始化超时，请确保脚本调用了 lx.send("inited", ...)')), 3000) })
+                new Promise((_, reject) => {
+                    initTimer = setTimeout(() => {
+                        const detail = scriptInitError ? `（脚本报错：${scriptInitError}）` : ''
+                        reject(new Error(
+                            '初始化超时：脚本 3 秒内没有发出 inited。常见原因：' +
+                            '①脚本初始化时要访问的上游接口不可用或被限流（如 429/超时）；' +
+                            '②脚本内部抛错；③确实没有调用 lx.send("inited", …)。' + detail,
+                        ))
+                    }, 3000)
+                }),
             ])
         } finally {
             clearTimeout(initTimer)
