@@ -65,6 +65,24 @@ function sourceOwner(): string {
   return getUserName() || 'default'
 }
 
+/** 批量导入音源的逐条结果（链接/文件共用）。 */
+export interface SourceBatchResultItem {
+  index: number
+  input: string
+  name?: string
+  id?: string
+  status: 'imported' | 'skipped' | 'failed'
+  reason?: string
+  code?: string
+}
+
+export interface SourceBatchResult {
+  success: boolean
+  summary: { total: number; imported: number; skipped: number; failed: number }
+  results: SourceBatchResultItem[]
+  error?: string
+}
+
 /**
  * 清除旧版遗留的部署密码（迁移用，登录成功与退出登录时各调一次）。
  *
@@ -312,6 +330,18 @@ export const api = {
       adminFetch('/api/custom-source/upload', {
         method: 'POST',
         body: JSON.stringify({ filename, content, username: sourceOwner(), allowUnsafeVM }),
+      }),
+    /** 批量链接导入：urls 每项一条链接，服务端逐条抓取并去重。 */
+    importBatch: (urls: string[], useProxy = false, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/import-batch', {
+        method: 'POST',
+        body: JSON.stringify({ urls, useProxy, username: sourceOwner(), allowUnsafeVM }),
+      }),
+    /** 批量文件导入：files 为 [{ filename, content }]，服务端逐条分析并去重。 */
+    uploadBatch: (files: Array<{ filename: string; content: string }>, allowUnsafeVM = false) =>
+      adminFetch('/api/custom-source/upload-batch', {
+        method: 'POST',
+        body: JSON.stringify({ files, username: sourceOwner(), allowUnsafeVM }),
       }),
     toggle: (id: string, enabled: boolean) =>
       adminFetch('/api/custom-source/toggle', {

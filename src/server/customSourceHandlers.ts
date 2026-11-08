@@ -5,8 +5,17 @@ import musicSdkRaw from '@/modules/utils/musicSdk/index.js'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getProxyAgent } from '../modules/utils/proxy.js'
 import { isAdminRequest } from './adminAuth'
-import { buildFetchPlan, SourceImportError } from './customSourceUrl'
+import { basenameFromUrl, buildFetchPlan, normalizeSourceContent, sizeLimitError, SOURCE_MAX_BYTES, SourceImportError } from './customSourceUrl'
 import { fetchSourceScript } from './customSourceFetch'
+import {
+    SOURCE_BATCH_LIMIT,
+    describeDuplicate,
+    findDuplicateSource,
+    hashSourceContent,
+    normalizeSourceUrl,
+    sourceIdFromName,
+    type SourceFingerprint,
+} from './customSourceDedupe'
 
 // 读取请求体
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -122,34 +131,278 @@ async function getScriptInfo(scriptContent: string, allowUnsafeVM: boolean = fal
 function getSourceDir(username?: string) {
     const dataPath = process.env.DATA_PATH || path.join(process.cwd(), 'data')
     const root = path.join(dataPath, 'users', 'source')
-    // 如果 username 是 'open' 或 'default' 或空，则映射到 '_open'
+    // 如果 username 是 'open' 或 'default' 或空，则映射到 _open
     const targetDirName = (username && username !== 'default' && username !== 'open') ? username : '_open'
     return path.join(root, targetDirName)
 }
 
-// 辅助函数：生成可读且唯一的 ID/文件名
-function generateId(name?: string, fallbackFilename?: string): string {
-    let input = name || fallbackFilename || 'source'
-
-    // 尝试解码，防止输入已经是 URL 编码的状态
+/** 读 sources.json；损坏或不存在都当空列表，避免批量导入被一条脏数据整体卡死。 */
+function readSourcesMeta(dir: string): any[] {
+    const metaPath = path.join(dir, 'sources.json')
+    if (!fs.existsSync(metaPath)) return []
     try {
-        input = decodeURIComponent(input)
+        const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+        return Array.isArray(parsed) ? parsed : []
     } catch (e) {
-        // 忽略解码错误（例如包含不合法的 % 字符）
+        console.warn('[自定义源] sources.json 解析失败，按空列表处理:', metaPath, e)
+        return []
+    }
+}
+
+/** 给现有源补上内容哈希，供批量导入按「同一份脚本」判重。 */
+function fingerprintExistingSources(dir: string, owner: string): SourceFingerprint[] {
+    return readSourcesMeta(dir).map(source => {
+        let contentHash = ''
+        try {
+            const scriptPath = path.join(dir, String(source.id || ''))
+            if (source.id && fs.existsSync(scriptPath)) {
+                contentHash = hashSourceContent(fs.readFileSync(scriptPath, 'utf-8'))
+            }
+        } catch (e) {
+            // 单个源读不到内容不影响其它源的判重
+        }
+        return {
+            id: source.id,
+            name: source.name,
+            sourceUrl: source.sourceUrl,
+            contentHash,
+            owner,
+        }
+    })
+}
+
+interface BatchImportResultItem {
+    index: number
+    input: string
+    name?: string
+    id?: string
+    status: 'imported' | 'skipped' | 'failed'
+    reason?: string
+    code?: string
+}
+
+interface BatchImportPayload {
+    urls?: unknown
+    files?: unknown
+    username?: string
+    allowUnsafeVM?: boolean
+    useProxy?: boolean
+}
+
+/**
+ * 批量导入音源（链接 / 本地脚本共用一套逻辑）。
+ *
+ * 设计取舍：
+ * - 逐条处理、逐条返回结果：一条链接抓取失败不应该让整批 10 个源全部回滚；
+ * - 批量内也判重：同一批里重复粘贴的链接、同一份脚本换文件名，只入第一个；
+ * - 与已有源按「id / 内容哈希 / 原始链接」三重判重，命中就跳过并说明原因；
+ * - 公开源只参与「内容/链接」判重（把 id 清空），保留用户用同名私有源覆盖公开源的既有能力。
+ */
+async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind: 'url' | 'upload') {
+    let payload: BatchImportPayload
+    try {
+        payload = JSON.parse((await readBody(req)) || '{}')
+    } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: '请求体不是合法 JSON' }))
+        return
     }
 
-    // 如果是路径，只取最后一部分
-    let base = path.basename(input)
-
-    // 统一移除 .js 后缀，后面再补上，确保一致性
-    if (base.toLowerCase().endsWith('.js')) {
-        base = base.slice(0, -3)
+    const rawItems = kind === 'url' ? payload.urls : payload.files
+    if (!Array.isArray(rawItems) || rawItems.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: kind === 'url' ? '请至少填写一条音源链接' : '请至少选择一个脚本文件' }))
+        return
+    }
+    if (rawItems.length > SOURCE_BATCH_LIMIT) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: `一次最多导入 ${SOURCE_BATCH_LIMIT} 个音源，请分批导入。` }))
+        return
+    }
+    if (kind === 'upload') {
+        // 防止一次请求把整个进程内存吃满：单文件另有 2MB 上限，这里再兜总大小。
+        const totalBytes = rawItems.reduce((sum: number, item: any) => (
+            sum + (typeof item?.content === 'string' ? Buffer.byteLength(item.content, 'utf-8') : 0)
+        ), 0)
+        if (totalBytes > 50 * 1024 * 1024) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, error: '本批脚本总大小超过 50MB，请分批导入。' }))
+            return
+        }
     }
 
-    // 过滤掉文件系统非法字符，保持中文等字符可读
-    const clean = base.replace(/[\\/:*?"<>|]/g, '_').trim()
+    const targetOwner = (payload.username && payload.username !== 'default') ? payload.username : 'open'
+    const auth = req.headers['x-user-token']
+    const isAdmin = isAdminRequest(req, auth)
 
-    return `${clean || 'source'}.js`
+    // 与单条导入保持同一套权限：公共源、或勾选允许不安全 VM，必须是管理员。
+    if (targetOwner === 'open' && !isAdmin) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: '公共源管理已受限，仅管理员可操作。' }))
+        return
+    }
+    if (payload.allowUnsafeVM && !isAdmin) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, error: '允许以 VM 模式运行脚本需要验证管理员身份。' }))
+        return
+    }
+
+    const sourcesDir = getSourceDir(payload.username)
+    const metaPath = path.join(sourcesDir, 'sources.json')
+    if (!fs.existsSync(sourcesDir)) fs.mkdirSync(sourcesDir, { recursive: true })
+
+    const sources = readSourcesMeta(sourcesDir)
+    const existing: SourceFingerprint[] = fingerprintExistingSources(sourcesDir, targetOwner)
+    if (targetOwner !== 'open') {
+        // 公开源只按内容/链接判重：id 置空，避免阻止「同名私有源覆盖公开源」的既有用法。
+        const openDir = getSourceDir('open')
+        for (const fp of fingerprintExistingSources(openDir, 'open')) existing.push({ ...fp, id: undefined })
+    }
+
+    const results: BatchImportResultItem[] = []
+    const seenBatchUrls = new Set<string>()
+    let imported = 0
+    let skipped = 0
+    let failed = 0
+
+    for (let index = 0; index < rawItems.length; index++) {
+        const raw: any = rawItems[index]
+        const input = kind === 'url'
+            ? String(raw ?? '').trim()
+            : String(raw?.filename || '').trim()
+
+        // 同一批里重复粘贴的链接直接跳过，不再重复抓取（前端也会先做一次去重）。
+        if (kind === 'url' && input) {
+            const normalized = normalizeSourceUrl(input)
+            if (seenBatchUrls.has(normalized)) {
+                skipped++
+                results.push({ index, input, status: 'skipped', reason: '同一批次里重复的链接' })
+                continue
+            }
+            seenBatchUrls.add(normalized)
+        }
+
+        try {
+            if (kind === 'url' && !input) throw new SourceImportError('链接为空')
+            if (kind === 'upload' && (!raw || typeof raw.content !== 'string')) {
+                throw new SourceImportError('缺少脚本内容')
+            }
+
+            let content = ''
+            let filename = ''
+            let sourceUrl: string | undefined
+
+            if (kind === 'url') {
+                const plan = buildFetchPlan({ url: raw, useProxy: !!payload.useProxy })
+                const agent = plan.proxyCategory ? await getProxyAgent(plan.url, plan.proxyCategory) : undefined
+                const fetched = await fetchSourceScript(plan, { agent })
+                content = fetched.content
+                sourceUrl = fetched.finalUrl
+                filename = basenameFromUrl(plan.url) || 'unknown_source.js'
+            } else {
+                content = raw.content
+                filename = String(raw.filename || 'uploaded-source.js')
+            }
+
+            const normalized = normalizeSourceContent(content)
+            if (!normalized.ok) throw new SourceImportError(normalized.error)
+            content = normalized.content
+            if (Buffer.byteLength(content, 'utf-8') > SOURCE_MAX_BYTES) {
+                throw new SourceImportError(sizeLimitError())
+            }
+
+            const { metadata, supportedSources, requireUnsafe } = await getScriptInfo(content, !!payload.allowUnsafeVM)
+            const displayName = metadata.name || filename
+            if (!requireUnsafe && supportedSources.length === 0) {
+                throw new SourceImportError('脚本没有注册任何音源，请确认选的是音源脚本而不是普通 JS 文件。')
+            }
+
+            // 需要原生 VM 的脚本逐条判断，不让一条危险脚本拖垮整批导入。
+            if (requireUnsafe) {
+                if (!isAdmin) {
+                    failed++
+                    results.push({ index, input, name: displayName, status: 'failed', code: 'ADMIN_REQUIRED', reason: '该脚本需要原生 VM 模式，仅管理员可导入。' })
+                    continue
+                }
+                if (!global.lx.config['system.allowUnsafeVM']) {
+                    failed++
+                    results.push({ index, input, name: displayName, status: 'failed', code: 'VM_DISABLED', reason: '服务器已禁用 VM 模式，该脚本无法运行。' })
+                    continue
+                }
+                if (!payload.allowUnsafeVM) {
+                    failed++
+                    results.push({ index, input, name: displayName, status: 'failed', code: 'REQUIRE_UNSAFE_VM', reason: '该脚本需要原生 VM 模式，请勾选「允许不安全 VM」后重试。' })
+                    continue
+                }
+            }
+
+            const id = sourceIdFromName(metadata.name, filename)
+            const contentHash = hashSourceContent(content)
+            const candidate = { id, name: displayName, sourceUrl, contentHash }
+            const hit = findDuplicateSource(candidate, existing)
+            if (hit) {
+                skipped++
+                results.push({ index, input, name: displayName, id, status: 'skipped', reason: describeDuplicate(hit) })
+                continue
+            }
+
+            fs.writeFileSync(path.join(sourcesDir, id), content, 'utf-8')
+            const newSource = {
+                id,
+                name: displayName,
+                version: metadata.version || '1.0.0',
+                author: metadata.author || '未知',
+                description: metadata.description || '',
+                homepage: metadata.homepage || '',
+                size: Buffer.byteLength(content, 'utf-8'),
+                supportedSources,
+                enabled: false,
+                uploadTime: new Date().toISOString(),
+                sourceUrl,
+                allowUnsafeVM: !!requireUnsafe || !!payload.allowUnsafeVM,
+                requireUnsafe: !!requireUnsafe,
+            }
+            sources.push(newSource)
+            existing.push({ id, name: newSource.name, sourceUrl, contentHash, owner: targetOwner })
+            imported++
+            results.push({ index, input, name: newSource.name, id, status: 'imported' })
+        } catch (e: any) {
+            failed++
+            results.push({
+                index,
+                input: input || `第 ${index + 1} 项`,
+                status: 'failed',
+                code: e instanceof SourceImportError ? 'IMPORT_ERROR' : 'UNKNOWN',
+                reason: e?.message || String(e),
+            })
+        }
+    }
+
+    if (imported > 0) {
+        fs.writeFileSync(metaPath, JSON.stringify(sources, null, 2))
+        try {
+            await initUserApis(targetOwner)
+        } catch (e: any) {
+            console.warn('[自定义源] 批量导入后重新加载失败:', e?.message || e)
+        }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+        success: true,
+        summary: { total: rawItems.length, imported, skipped, failed },
+        results,
+    }))
+}
+
+/** 批量按链接导入音源（每行一个链接）。 */
+export async function handleBatchImportUrls(req: IncomingMessage, res: ServerResponse) {
+    return handleBatchImport(req, res, 'url')
+}
+
+/** 批量按本地脚本文件导入音源（可多选）。 */
+export async function handleBatchUploadFiles(req: IncomingMessage, res: ServerResponse) {
+    return handleBatchImport(req, res, 'upload')
 }
 
 // 上传脚本
@@ -210,7 +463,7 @@ export async function handleUpload(req: IncomingMessage, res: ServerResponse) {
         }
 
         // 生成唯一ID（可读的文件名）
-        const id = generateId(metadata.name, filename)
+        const id = sourceIdFromName(metadata.name, filename)
         const scriptPath = path.join(sourcesDir, id)
 
         // 读取现有列表
@@ -328,7 +581,7 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse) {
 
         // 生成唯一ID（可读的文件名）
         const displayName = metadata.name || filename || 'unknown_source'
-        const id = generateId(metadata.name, filename || 'unknown_source')
+        const id = sourceIdFromName(metadata.name, filename || 'unknown_source')
         const scriptPath = path.join(sourcesDir, id)
 
         // 读取现有列表

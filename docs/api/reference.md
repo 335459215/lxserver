@@ -155,6 +155,8 @@ LX Sync Server 提供了多种 RESTful 风格的 API 接口，用于自动化获
 - `GET /api/custom-source/list`: 获取已导入的自定义源列表。
 - `POST /api/custom-source/import`: 在线导入自定义源脚本。
 - `POST /api/custom-source/upload`: 上传本地脚本文件。
+- `POST /api/custom-source/import-batch`: 批量在线导入音源链接（`{ urls: string[], useProxy?: boolean, allowUnsafeVM?: boolean }`，每项一条链接，自动去重）。
+- `POST /api/custom-source/upload-batch`: 批量导入本地音源脚本（`{ files: [{ filename, content }], allowUnsafeVM?: boolean }`，自动去重）。
 - `POST /api/custom-source/toggle`: 启用或禁用某个源。
 - `POST /api/custom-source/delete`: 删除自定义源。
 - `POST /api/custom-source/reorder`: 对自定义源进行排序。

@@ -1,6 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, ArrowDown, ArrowUp, Download, Loader2, Plus, Trash2, Zap } from 'lucide-react'
-import { api, isAdmin, useAuth } from '@/lib/auth'
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CheckCircle2,
+  Download,
+  FileText,
+  Link2,
+  Loader2,
+  Plus,
+  Trash2,
+  X,
+  Zap,
+} from 'lucide-react'
+import { api, isAdmin, useAuth, type SourceBatchResult } from '@/lib/auth'
 import { useConfigForm } from '@/lib/useConfig'
 import {
   Button,
@@ -12,10 +26,13 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  Input,
   Stack,
   Switch,
   SwitchField,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   useToast,
 } from '@/components/ui'
 
@@ -75,28 +92,53 @@ function SpeedBadge({ ms }: { ms?: number }) {
   )
 }
 
-/** 导入音源 Dialog（v2.44.0 ⑥）。
+interface PickedScriptFile {
+  file: File
+  name: string
+  size: number
+}
+
+/** 与服务端 SOURCE_BATCH_LIMIT 保持一致；超过就让用户分批，避免一次拉满 VM。 */
+const MAX_IMPORT_ITEMS = 50
+/** 与服务端 SOURCE_MAX_BYTES 保持一致。 */
+const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+
+function prettySize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** 导入音源 Dialog（v2.49 批量版）。
  *
- *  【为什么改成一行的布局】
- *  原来只有一个 `h-48` 的 textarea，用户必须先拿到脚本文本才能导入 ——
- *  而绝大多数音源就是一个**链接**。现在：
- *    链接输入框（一行） + 右侧「使用代理」勾选 + 「+」调起本地文件选择器；
- *  粘贴脚本仍保留（折叠在 details 里），不破坏老用法。
+ *  支持三条路径：
+ *    1. 多个链接：一行一个，空行忽略；重复链接自动去重；
+ *    2. 多个本地脚本：一次多选 .js/.mjs/.cjs/.json，单文件 ≤2MB；
+ *    3. 粘贴单个脚本内容（保留老用法，先验证再导入）。
  *
- *  【为什么「使用代理」默认不勾】
- *  NAS 上 customSource 经代理会 ECONNRESET（needle + tunnel 的 TLS-over-CONNECT 不兼容），
- *  现网直连是可用的。只有用户明确勾选，服务端才挂代理 agent。 */
+ *  【为什么批量结果不直接弹 toast 就完事】
+ *  一次导入十几个源，用户必须知道「哪几个进来了、哪几个因为重复/VM/抓取失败没进来」，
+ *  否则只能对着列表猜。结果面板逐条给出状态与原因，失败项还能照着改。
+ */
 function ImportSourceDialog({ onDone }: { onDone: () => void }) {
   const { toast } = useToast()
-  const [url, setUrl] = useState('')
+  const [tab, setTab] = useState<'links' | 'files' | 'paste'>('links')
+  const [urlText, setUrlText] = useState('')
   const [useProxy, setUseProxy] = useState(false)
+  const [picked, setPicked] = useState<PickedScriptFile[]>([])
   const [script, setScript] = useState('')
   const [fileName, setFileName] = useState('')
   const [allowUnsafeVM, setAllowUnsafeVM] = useState(false)
   const [metadata, setMetadata] = useState<{ name?: string; version?: string; platforms?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [step, setStep] = useState<'input' | 'validated'>('input')
+  const [result, setResult] = useState<SourceBatchResult | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const urlLines = urlText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const uniqueUrls = Array.from(new Set(urlLines))
+  const duplicateUrlCount = urlLines.length - uniqueUrls.length
 
   /** 把服务端返回的错误文案读出来（统一是 { success:false, error }） */
   const readError = async (res: Response, fallback: string) => {
@@ -108,33 +150,101 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
     }
   }
 
-  /** 链接导入：由服务端抓取（协议白名单 / 逐跳重定向校验 / 2MB 上限 / 20s 超时） */
-  const importFromUrl = async () => {
-    const target = url.trim()
-    if (!target) return
+  const finishBatch = (data: SourceBatchResult, label: string) => {
+    setResult(data)
+    if (data.summary.imported > 0) onDone()
+    const detail = `成功 ${data.summary.imported} · 跳过 ${data.summary.skipped} · 失败 ${data.summary.failed}`
+    toast({
+      title: data.summary.failed > 0 ? `${label}导入完成（有失败项）` : `${label}导入完成`,
+      description: detail,
+      variant: data.summary.failed > 0 ? 'destructive' : 'success',
+    })
+  }
+
+  /** 批量链接导入：服务端逐条抓取（协议白名单 / 逐跳重定向校验 / 2MB 上限 / 20s 超时） */
+  const importLinks = async () => {
+    if (!uniqueUrls.length || busy) return
+    if (uniqueUrls.length > MAX_IMPORT_ITEMS) {
+      toast({ title: '链接太多了', description: `一次最多 ${MAX_IMPORT_ITEMS} 条，请分批导入`, variant: 'destructive' })
+      return
+    }
+    if (duplicateUrlCount > 0) {
+      toast({ title: `已自动忽略 ${duplicateUrlCount} 条重复链接`, description: '同一批次里相同的链接只导入一次' })
+    }
     setBusy(true)
+    setResult(null)
     try {
-      const res = await api.sources.importUrl(target, useProxy, allowUnsafeVM)
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}))
-        toast({
-          title: '音源已导入',
-          description: data?.metadata?.name || target,
-          variant: 'success',
-        })
-        reset()
-        onDone()
-      } else {
-        toast({ title: '导入失败', description: await readError(res, '链接抓取失败'), variant: 'destructive' })
+      const res = await api.sources.importBatch(uniqueUrls, useProxy, allowUnsafeVM)
+      const data = (await res.json().catch(() => null)) as SourceBatchResult | null
+      if (!res.ok || !data?.success) {
+        toast({ title: '批量导入失败', description: await readError(res, '链接导入失败'), variant: 'destructive' })
+        return
       }
+      finishBatch(data, '链接')
     } catch (e) {
-      toast({ title: '导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
+      toast({ title: '批量导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
     } finally {
       setBusy(false)
     }
   }
 
-  /** 验证脚本内容（粘贴或文件） */
+  /** 「+」多选文件：只在前端拦明显的类型/体积问题，脚本能否运行交给服务端验证 */
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const list = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (!list.length) return
+
+    const next = [...picked]
+    let rejected = 0
+    for (const file of list) {
+      if (!/\.(js|mjs|cjs|json)$/i.test(file.name)) {
+        rejected++
+        continue
+      }
+      if (file.size > MAX_SCRIPT_BYTES) {
+        rejected++
+        continue
+      }
+      const key = `${file.name}::${file.size}::${file.lastModified}`
+      if (next.some((item) => `${item.name}::${item.size}::${item.file.lastModified}` === key)) continue
+      next.push({ file, name: file.name, size: file.size })
+    }
+    if (next.length > MAX_IMPORT_ITEMS) {
+      toast({ title: '文件太多了', description: `一次最多 ${MAX_IMPORT_ITEMS} 个，已保留前 ${MAX_IMPORT_ITEMS} 个`, variant: 'destructive' })
+    }
+    setPicked(next.slice(0, MAX_IMPORT_ITEMS))
+    if (rejected > 0) {
+      toast({
+        title: `已忽略 ${rejected} 个文件`,
+        description: '只支持 .js / .mjs / .cjs / .json，且单文件不超过 2MB',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const importFiles = async () => {
+    if (!picked.length || busy) return
+    setBusy(true)
+    setResult(null)
+    try {
+      const files = await Promise.all(
+        picked.map(async (item) => ({ filename: item.name, content: await item.file.text() })),
+      )
+      const res = await api.sources.uploadBatch(files, allowUnsafeVM)
+      const data = (await res.json().catch(() => null)) as SourceBatchResult | null
+      if (!res.ok || !data?.success) {
+        toast({ title: '批量导入失败', description: await readError(res, '文件导入失败'), variant: 'destructive' })
+        return
+      }
+      finishBatch(data, '文件')
+    } catch (e) {
+      toast({ title: '读取文件失败', description: e instanceof Error ? e.message : '请确认选的是文本脚本文件', variant: 'destructive' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 验证粘贴的脚本内容 */
   const validate = async (content: string) => {
     if (!content.trim()) return
     setBusy(true)
@@ -157,51 +267,42 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
     }
   }
 
-  /** 文件 / 粘贴内容导入：走 upload（收的是脚本正文，不是 URL） */
+  /** 粘贴内容导入：也走批量接口，这样和链接/文件一样按内容哈希去重 */
   const importContent = async () => {
     setBusy(true)
+    setResult(null)
     try {
-      const res = await api.sources.upload(fileName || 'pasted-source.js', script, allowUnsafeVM)
-      if (res.ok) {
-        toast({ title: '音源已导入', description: fileName || undefined, variant: 'success' })
-        reset()
-        onDone()
-      } else {
+      const res = await api.sources.uploadBatch(
+        [{ filename: fileName || 'pasted-source.js', content: script }],
+        allowUnsafeVM,
+      )
+      const data = (await res.json().catch(() => null)) as SourceBatchResult | null
+      if (!res.ok || !data?.success) {
         toast({ title: '导入失败', description: await readError(res, '导入失败'), variant: 'destructive' })
+        return
       }
+      finishBatch(data, '脚本')
+    } catch (e) {
+      toast({ title: '导入失败', description: e instanceof Error ? e.message : '网络错误', variant: 'destructive' })
     } finally {
       setBusy(false)
     }
   }
 
-  /** 「+」选文件：读成文本后立刻验证，用户只需再点一次「确认导入」 */
-  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    // 清空 value：否则连续选同一个文件不会再触发 change
-    e.target.value = ''
-    if (!file) return
-    if (file.size > 2 * 1024 * 1024) {
-      toast({ title: '文件过大', description: '音源脚本不应超过 2 MB', variant: 'destructive' })
-      return
-    }
-    try {
-      const text = await file.text()
-      setScript(text)
-      setFileName(file.name)
-      setMetadata(null)
-      setStep('input')
-      void validate(text)
-    } catch {
-      toast({ title: '读取文件失败', description: '请确认选的是文本脚本文件', variant: 'destructive' })
-    }
-  }
-
   const reset = () => {
-    setUrl('')
+    setTab('links')
+    setUrlText('')
+    setPicked([])
     setScript('')
     setFileName('')
     setMetadata(null)
     setStep('input')
+    setResult(null)
+  }
+
+  const batchButtonLabel = (count: number, unit: string) => {
+    if (busy) return '导入中…'
+    return count > 0 ? `导入 ${count} 个${unit}` : `导入${unit}`
   }
 
   return (
@@ -211,71 +312,97 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
           <Plus className="size-4" /> 导入源
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>导入自定义音源</DialogTitle>
           <DialogDescription>
-            填音源脚本链接，或点「+」选本地脚本文件；也可以展开粘贴脚本内容。
+            粘贴多条音源链接（每行一个），或一次选择多个脚本文件；重复的源会自动跳过。
           </DialogDescription>
         </DialogHeader>
 
-        <div className="mt-2 space-y-3">
-          {/* 一行：链接 + 使用代理 + 选择文件 */}
-          <div className="flex items-center gap-2">
-            <Input
-              type="url"
-              inputMode="url"
-              autoComplete="off"
+        <Tabs value={tab} onValueChange={(v) => setTab(v as 'links' | 'files' | 'paste')} className="mt-2">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="links"><Link2 className="mr-1.5 size-3.5" /> 批量链接</TabsTrigger>
+            <TabsTrigger value="files"><FileText className="mr-1.5 size-3.5" /> 本地文件</TabsTrigger>
+            <TabsTrigger value="paste">粘贴脚本</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="links" className="space-y-3">
+            <textarea
+              className="h-40 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
+              placeholder={'https://example.com/source-a.js\nhttps://example.com/source-b.js\n\n（每行一个链接，空行自动忽略）'}
+              aria-label="音源脚本链接，每行一个"
               spellCheck={false}
-              className="h-10 min-w-0 flex-1 font-mono text-xs"
-              placeholder="https://example.com/source.js"
-              aria-label="音源脚本链接"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              value={urlText}
+              onChange={(e) => setUrlText(e.target.value)}
             />
-            <label
-              className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-xs text-dim"
-              title="勾选后由服务端经代理拉取；默认直连（NAS 上代理拉自定义源会 ECONNRESET）"
-            >
-              <input
-                type="checkbox"
-                className="size-4 accent-accent"
-                checked={useProxy}
-                onChange={(e) => setUseProxy(e.target.checked)}
-              />
-              使用代理
-            </label>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <p className="text-dim">
+                每行一个链接{urlLines.length > 0 && ` · 共 ${urlLines.length} 条`}
+                {duplicateUrlCount > 0 && <span className="text-faint">（其中 {duplicateUrlCount} 条重复将自动忽略）</span>}
+              </p>
+              <label
+                className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-dim"
+                title="勾选后由服务端经代理拉取；默认直连（NAS 上代理拉自定义源会 ECONNRESET）"
+              >
+                <input
+                  type="checkbox"
+                  className="size-4 accent-accent"
+                  checked={useProxy}
+                  onChange={(e) => setUseProxy(e.target.checked)}
+                />
+                使用代理
+              </label>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="files" className="space-y-3">
             <input
               ref={fileRef}
               type="file"
+              multiple
               accept=".js,.mjs,.cjs,.json,text/javascript,application/javascript"
               className="hidden"
-              onChange={onPickFile}
+              onChange={onPickFiles}
             />
-            <Button
+            <button
               type="button"
-              size="icon"
-              variant="outline"
-              aria-label="选择本地脚本文件"
-              title="选择本地脚本文件"
               onClick={() => fileRef.current?.click()}
+              className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-panel2/40 px-4 py-8 text-center transition-colors hover:border-accent/40 hover:bg-accent-soft/40"
             >
-              <Plus className="size-4" />
-            </Button>
-          </div>
+              <FileText className="size-6 text-accent" />
+              <span className="text-sm font-medium text-ink">选择脚本文件（可多选）</span>
+              <span className="text-xs text-faint">支持 .js / .mjs / .cjs / .json · 单文件 ≤ 2MB</span>
+            </button>
+            {picked.length > 0 && (
+              <div className="rounded-lg border border-line bg-panel2/40 p-2">
+                <p className="px-1 text-xs text-dim">已选 {picked.length} 个文件</p>
+                <ul className="mt-1 max-h-40 space-y-1 overflow-auto">
+                  {picked.map((item, index) => (
+                    <li key={`${item.name}-${item.size}-${item.file.lastModified}`} className="flex items-center gap-2 rounded-md bg-panel px-2 py-1.5">
+                      <FileText className="size-3.5 shrink-0 text-faint" />
+                      <span className="min-w-0 flex-1 truncate text-xs text-ink" title={item.name}>{item.name}</span>
+                      <span className="shrink-0 text-[11px] text-faint">{prettySize(item.size)}</span>
+                      <button
+                        type="button"
+                        aria-label={`移除 ${item.name}`}
+                        className="shrink-0 rounded p-0.5 text-faint hover:bg-danger/10 hover:text-danger"
+                        onClick={() => setPicked((prev) => prev.filter((_, i) => i !== index))}
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </TabsContent>
 
-          {fileName && (
-            <p className="text-xs text-dim">
-              已选择文件：<span className="text-ink">{fileName}</span>
-              {script && <span className="text-faint">（{(script.length / 1024).toFixed(1)} KB）</span>}
-            </p>
-          )}
-
-          <details className="rounded-lg border border-line bg-panel2/50 px-3 py-2">
-            <summary className="cursor-pointer select-none text-xs text-dim">或粘贴脚本内容</summary>
+          <TabsContent value="paste" className="space-y-3">
             <textarea
-              className="mt-2 h-40 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
+              className="h-48 w-full rounded-lg border border-line bg-panel p-3 font-mono text-xs text-ink focus-visible:border-accent focus-visible:outline-none"
               placeholder="// 粘贴音源脚本..."
+              aria-label="粘贴音源脚本内容"
               value={script}
               onChange={(e) => {
                 setScript(e.target.value)
@@ -283,48 +410,95 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
                 if (step === 'validated') setStep('input')
               }}
             />
-          </details>
-
-          <label className="flex items-center gap-2 text-xs text-dim">
-            <Switch checked={allowUnsafeVM} onCheckedChange={setAllowUnsafeVM} />
-            允许不安全 VM（仅可信源）
-          </label>
-
-          {step === 'validated' && metadata && (
-            <div className="rounded-lg border border-ok/30 bg-ok/5 p-3">
-              <div className="text-sm font-medium text-ink">
-                {metadata.name ?? '未知名称'}{' '}
-                {metadata.version && <span className="text-dim">v{metadata.version}</span>}
-              </div>
-              {metadata.platforms && metadata.platforms.length > 0 && (
-                <div className="mt-1 flex gap-1.5">
-                  {metadata.platforms.map((p) => (
-                    <Badge key={p}>{p}</Badge>
-                  ))}
+            {step === 'validated' && metadata && (
+              <div className="rounded-lg border border-ok/30 bg-ok/5 p-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-ink">
+                  <CheckCircle2 className="size-4 text-ok" />
+                  {metadata.name ?? '未知名称'}
+                  {metadata.version && <span className="text-dim">v{metadata.version}</span>}
                 </div>
-              )}
+                {metadata.platforms && metadata.platforms.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {metadata.platforms.map((p) => <Badge key={p}>{p}</Badge>)}
+                  </div>
+                )}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+
+        <label className="mt-4 flex items-center gap-2 text-xs text-dim">
+          <Switch checked={allowUnsafeVM} onCheckedChange={setAllowUnsafeVM} />
+          允许不安全 VM（仅可信源）
+        </label>
+
+        {result && (
+          <div className="mt-4 rounded-xl border border-line bg-panel2/40 p-3">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <span className="flex items-center gap-1 font-medium text-ok"><CheckCircle2 className="size-3.5" /> 成功 {result.summary.imported}</span>
+              <span className="text-dim">跳过 {result.summary.skipped}</span>
+              <span className={result.summary.failed > 0 ? 'flex items-center gap-1 font-medium text-danger' : 'text-dim'}>
+                {result.summary.failed > 0 && <AlertTriangle className="size-3.5" />} 失败 {result.summary.failed}
+              </span>
             </div>
-          )}
-        </div>
+            <ul className="mt-2 max-h-56 space-y-1 overflow-auto">
+              {result.results.map((item) => (
+                <li key={item.index} className="flex items-start gap-2 rounded-md bg-panel px-2 py-1.5 text-xs">
+                  <span
+                    className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      item.status === 'imported'
+                        ? 'bg-ok/10 text-ok'
+                        : item.status === 'skipped'
+                          ? 'bg-panel2 text-dim'
+                          : 'bg-danger/10 text-danger'
+                    }`}
+                  >
+                    {item.status === 'imported' ? '已导入' : item.status === 'skipped' ? '跳过' : '失败'}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-ink" title={item.input}>{item.name || item.input}</span>
+                    {item.name && item.name !== item.input && (
+                      <span className="block truncate text-[10px] text-faint" title={item.input}>{item.input}</span>
+                    )}
+                  </span>
+                  {item.reason && <span className="max-w-[50%] shrink-0 text-right text-[11px] leading-5 text-faint" title={item.reason}>{item.reason}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="ghost" type="button">取消</Button>
-          </DialogClose>
-          {step === 'validated' ? (
-            <Button onClick={importContent} disabled={busy}>
-              {busy ? '导入中…' : '确认导入'}
-            </Button>
+          {result ? (
+            <DialogClose asChild>
+              <Button>完成</Button>
+            </DialogClose>
           ) : (
             <>
-              {script.trim() && (
-                <Button variant="outline" onClick={() => void validate(script)} disabled={busy}>
-                  {busy ? '处理中…' : '验证脚本'}
+              <DialogClose asChild>
+                <Button variant="ghost" type="button">取消</Button>
+              </DialogClose>
+              {tab === 'links' && (
+                <Button onClick={() => void importLinks()} disabled={busy || uniqueUrls.length === 0}>
+                  {batchButtonLabel(uniqueUrls.length, '链接')}
                 </Button>
               )}
-              <Button onClick={importFromUrl} disabled={busy || !url.trim()}>
-                {busy ? '导入中…' : '从链接导入'}
-              </Button>
+              {tab === 'files' && (
+                <Button onClick={() => void importFiles()} disabled={busy || picked.length === 0}>
+                  {batchButtonLabel(picked.length, '文件')}
+                </Button>
+              )}
+              {tab === 'paste' && (
+                step === 'validated' ? (
+                  <Button onClick={() => void importContent()} disabled={busy}>
+                    {busy ? '导入中…' : '确认导入'}
+                  </Button>
+                ) : (
+                  <Button variant="outline" onClick={() => void validate(script)} disabled={busy || !script.trim()}>
+                    {busy ? '处理中…' : '验证脚本'}
+                  </Button>
+                )
+              )}
             </>
           )}
         </DialogFooter>

@@ -6923,6 +6923,16 @@ const handleStartServer = async (port = 9527, ip = '0.0.0.0') => await new Promi
         resetAllSourceBreakers()
         return customSourceHandlers.handleUpload(req, res)
       }
+      if (pathname === '/api/custom-source/import-batch' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
+        return customSourceHandlers.handleBatchImportUrls(req, res)
+      }
+      if (pathname === '/api/custom-source/upload-batch' && req.method === 'POST') {
+        clearStickyCache()
+        resetAllSourceBreakers()
+        return customSourceHandlers.handleBatchUploadFiles(req, res)
+      }
       if (pathname === '/api/custom-source/list' && req.method === 'GET') {
         const username = urlObj.searchParams.get('username') || 'default'
 
