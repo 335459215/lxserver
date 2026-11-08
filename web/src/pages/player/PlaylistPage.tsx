@@ -30,7 +30,10 @@ function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' |
   return (
     <Link
       to={`/playlist/${encodeURIComponent(playlist.id)}`}
-      className="group flex items-center gap-3 rounded-2xl border border-line bg-panel p-3 shadow-card transition-all hover:border-accent/40 hover:shadow-pop"
+      // 【v2.49.3 缩小】封面 14(56px)→10(40px)、内边距 p-3→p-2、圆角 2xl→xl、gap-3→gap-2.5，
+      // 标题从 text-sm 降到 text-[13px]。用户反馈「每个歌单也不要太大」：
+      // 歌单是列表条目，快照式大封面在这里只占竖向空间、扫读效率反而更低。
+      className="group flex items-center gap-2.5 rounded-xl border border-line bg-panel p-2 shadow-card transition-all hover:border-accent/40 hover:shadow-pop"
     >
       {shown ? (
         <img
@@ -38,16 +41,16 @@ function PlaylistCard({ playlist, icon }: { playlist: Playlist; icon?: 'heart' |
           alt=""
           loading="lazy"
           onError={() => setFailedSrc(shown)}
-          className="size-14 shrink-0 rounded-xl border border-line object-cover"
+          className="size-10 shrink-0 rounded-lg border border-line object-cover"
         />
       ) : (
-        <span className="flex size-14 shrink-0 items-center justify-center rounded-xl border border-line/80 bg-gradient-to-tr from-indigo-50 via-purple-50 to-pink-50 text-accent">
-          <Icon className="size-5" />
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-line/80 bg-gradient-to-tr from-indigo-50 via-purple-50 to-pink-50 text-accent">
+          <Icon className="size-4" />
         </span>
       )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-ink">{playlist.name}</span>
-        <span className="block truncate text-xs text-faint">{playlist.songs.length} 首</span>
+        <span className="block truncate text-[13px] font-medium text-ink">{playlist.name}</span>
+        <span className="block truncate text-[11px] text-faint">{playlist.songs.length} 首</span>
       </span>
     </Link>
   )

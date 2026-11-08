@@ -1,30 +1,26 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
-import { FileMusic, History, Home, ListMusic, MoreHorizontal, Search, Settings, Sparkles, Trophy } from 'lucide-react'
+import { Home, ListMusic, Search, Trophy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usePlayer } from '@/lib/player'
 import { coverUrl } from '@/lib/music'
 
-/** 底部 Tab 的主项（≤5 项：主流大厂共识，也是 Apple HIG / Material 的上限）。
+/** 底部 Tab 的主项。
  *  排序按「使用频率 × 拇指友好区」：最常用的搜索放最左（左手拇指最近处），
- *  首页紧邻；「更多」固定在最后一位收拢低频入口。
- *  「更多」刻意用 Sparkles 而不是 MoreHorizontal —— 后者是平台通用的「更多」语汇，
- *  但在这个光秃秃的浅色 Tab 栏里几乎不可识别；Sparkles 本项目的品牌图标（顶栏/登录页在用），
- *  在这里当「探索更多」讲得通，也让最低频的那个 Tab 在视觉上不至于是个占位符。 */
+ *  首页紧邻。
+ *
+ *  【v2.49.3：删掉「更多」】原来第 5 位是「更多」，点开是个抽屉，里面装
+ *  「全部歌单 / 我的收藏 / 播放历史 / 本地音乐 / 设置」。用户反馈「多余、没必要」，
+ *  也确实冗余：这些入口在**顶栏汉堡抽屉（App.tsx 的 NAV_DISCOVER/NAV_LIBRARY）里全都有一份**，
+ *  于是同一批入口有两套容器，手机上点哪个都能到，反而要多记一次。
+ *  删掉后 Tab 栏是 4 项（搜索/首页/歌单/排行榜），每项更宽、更好点；
+ *  低频入口统一走顶部汉堡抽屉，只保留一条路径。 */
 const TAB_NAV: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }> = [
   { to: '/search', label: '搜索', icon: Search },
   { to: '/', label: '首页', icon: Home, end: true },
   { to: '/playlist', label: '歌单', icon: ListMusic },
   { to: '/leaderboard', label: '排行榜', icon: Trophy },
-]
-
-/** 「更多」抽屉里的低频入口（含管理区）。 */
-const MORE_NAV: Array<{ to: string; label: string; icon: LucideIcon; hint: string }> = [
-  { to: '/favorites', label: '我的收藏', icon: Sparkles, hint: '喜欢过的歌' },
-  { to: '/history', label: '播放历史', icon: History, hint: '最近听过什么' },
-  { to: '/local', label: '本地音乐', icon: FileMusic, hint: '扫描本机曲库' },
-  { to: '/settings', label: '设置', icon: Settings, hint: '音质 / 音源 / 账号' },
 ]
 
 /** 迷你播放条：PlayerBar 在移动端的呈现。
@@ -124,8 +120,8 @@ function MiniPlayer() {
  *  「比原来更好」而不是「照抄」：
  *  1. 常驻的迷你播放条**嵌在 Tab 栏上方**（而不是像 Spotify 那样浮在 Tab 栏之上、遮挡它），
  *     于是 Tab 栏永远可点，且整条播放条可点击区域有 60px 高。
- *  2. 抽屉**没有删掉**——顶部汉堡按钮保留，抽屉里是全量导航（含管理区），
- *     等于「常驻快捷入口 + 深度导航」双通道，比只有其中一个都好用。
+ *  2. 低频入口统一走顶部汉堡抽屉（v2.49.3 起底部「更多」Tab 已删除，
+ *     避免与汉堡抽屉放同一批入口、手机上要记两条路径）。
  *  3. 不引入任何新颜色：选中态用既有 `--accent` / `--accent-soft`，与桌面端同一语言。
  *
  *  定位方式（关键，别改成 position:sticky）：Tab 栏与播放条都是 `position: fixed`
@@ -139,7 +135,6 @@ function MiniPlayer() {
 export default function MobileTabBar() {
   const { pathname } = useLocation()
   const isNowPlaying = pathname === '/now-playing'
-  const [more, setMore] = useState(false)
 
   useEffect(() => {
     const sync = () => document.getElementById('mobile-tabbar')?.scrollIntoView({ block: 'end' })
@@ -212,68 +207,9 @@ export default function MobileTabBar() {
                 )}
               </NavLink>
             ))}
-
-            <button
-              type="button"
-              onClick={() => setMore(true)}
-              aria-expanded={more}
-              aria-haspopup="dialog"
-              className="flex min-h-[3.25rem] flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 pb-[var(--safe-bottom)] text-faint transition-colors active:text-dim"
-            >
-              <MoreHorizontal className="size-5" />
-              <span className="text-[10px] leading-none">更多</span>
-            </button>
           </div>
         </div>
       </div>
-
-      {/* 「更多」抽屉：复用顶部汉堡抽屉那一套全屏遮罩 + 面板。
-          用 `<a>`+NavLink 而非按钮跳转，保住中键/新开标签的行为。 */}
-      {more && (
-        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-label="更多">
-          <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setMore(false)} />
-          <div
-            className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line bg-panel p-4 pb-[calc(1rem+var(--safe-bottom))] shadow-pop rise"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <span className="text-sm font-semibold text-ink">更多</span>
-              <button
-                type="button"
-                className="rounded-md p-1.5 text-faint hover:text-ink"
-                onClick={() => setMore(false)}
-                aria-label="关闭"
-              >
-                <MoreHorizontal className="size-4 rotate-90" />
-              </button>
-            </div>
-            <NavLink
-              to="/playlist"
-              onClick={() => setMore(false)}
-              className="flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-panel2"
-            >
-              <ListMusic className="size-5 text-accent" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium text-ink">全部歌单</span>
-                <span className="block truncate text-xs text-faint">自己建的、收藏的都在这里</span>
-              </span>
-            </NavLink>
-            {MORE_NAV.map((m) => (
-              <NavLink
-                key={m.to}
-                to={m.to}
-                onClick={() => setMore(false)}
-                className="flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-panel2"
-              >
-                <m.icon className={cn('size-5', pathname === m.to ? 'text-accent' : 'text-dim')} />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium text-ink">{m.label}</span>
-                  <span className="block truncate text-xs text-faint">{m.hint}</span>
-                </span>
-              </NavLink>
-            ))}
-          </div>
-        </div>
-      )}
     </>
   )
 }

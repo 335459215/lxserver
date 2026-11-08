@@ -164,7 +164,7 @@ export default function LeaderboardPage() {
 
           {songsRes.status === 'ready' && songs.length > 0 && (
             <>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2.5">
                 <p className="text-sm text-dim">
                   <span className="font-bold text-ink">{boardName}</span>
                   <span className="text-faint">
@@ -173,8 +173,15 @@ export default function LeaderboardPage() {
                     {totalSeconds > 0 ? ` · ${formatTotalDuration(totalSeconds)}` : ''}
                   </span>
                 </p>
-                <Button variant="outline" size="sm" onClick={playAll}>
-                  <Play className="size-3.5 fill-current" /> 播放全部
+                {/* 【v2.49.3 改样式】原来是 outline + size=sm 的方块按钮，
+                    和左侧文字行高不齐、也不像个「主操作」。改成**圆角胶囊 + 主色实心**：
+                    一行里唯一的动作，实心更容易被一眼找到，同时体积比原来更小。 */}
+                <Button
+                  size="sm"
+                  onClick={playAll}
+                  className="h-7 gap-1 rounded-full bg-accent px-2.5 text-[11px] font-semibold text-white shadow-sm shadow-accent/25 transition-all hover:bg-accent/90 active:scale-[0.97]"
+                >
+                  <Play className="size-3 fill-current" /> 播放全部
                 </Button>
               </div>
               <SongList songs={songs} />

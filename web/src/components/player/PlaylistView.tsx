@@ -46,14 +46,14 @@ function ListCover({ songs, size = 'lg' }: { songs: Playlist['songs']; size?: 's
   // 不需要 useEffect 里 setState（本项目 lint 把 set-state-in-effect 设为 error）。
   const [failedSrc, setFailedSrc] = React.useState<string | null>(null)
   const shown = cover && cover !== failedSrc ? cover : undefined
-  const cls = size === 'lg' ? 'size-32 md:size-44' : 'size-12'
+  const cls = size === 'lg' ? 'size-24 md:size-28' : 'size-12'
 
   return (
     <div className="relative shrink-0 group">
       {shown && size === 'lg' && (
         <div
           aria-hidden
-          className="pointer-events-none absolute -inset-3 rounded-3xl opacity-40 blur-xl saturate-200 transition-opacity"
+          className="pointer-events-none absolute -inset-2 rounded-2xl opacity-40 blur-lg saturate-200 transition-opacity"
           style={{
             backgroundImage: `url(${shown})`,
             backgroundSize: 'cover',
@@ -67,7 +67,7 @@ function ListCover({ songs, size = 'lg' }: { songs: Playlist['songs']; size?: 's
           alt=""
           // 上游 CDN 偶尔 404 或拒绝 https：退回占位，不留裂图
           onError={() => setFailedSrc(shown)}
-          className={`${cls} relative z-10 shrink-0 rounded-2xl md:rounded-3xl border border-white/80 object-cover shadow-lg transition-transform duration-300 group-hover:scale-102`}
+          className={`${cls} relative z-10 shrink-0 rounded-xl border border-white/80 object-cover shadow-md transition-transform duration-300 group-hover:scale-102`}
         />
       ) : (
         <div
@@ -239,8 +239,9 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
     )
   }
 
+  // 【v2.49.3 收紧】外层 gap-6→gap-4：用户反馈「距离上面按钮的间距也变小」。
   return (
-    <div className="w-full rise flex flex-col gap-6">
+    <div className="w-full rise flex flex-col gap-4">
       {/* 返回上一级 */}
       <div>
         <Link
@@ -259,27 +260,27 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
           文字里那句「官方歌单 · 自建珍藏」纯属装饰（所有自建歌单都长这样，
           不携带任何信息），已按要求删掉；按钮也挪到封面旁边，让封面下方只剩
           用户真正要看的三样东西。 */}
-      <header className="rounded-3xl border border-line/80 bg-panel p-6 md:p-8 shadow-card">
-        <div className="flex items-start gap-5">
+      <header className="rounded-2xl border border-line/80 bg-panel p-4 md:p-5 shadow-card">
+        <div className="flex items-start gap-4">
           <ListCover songs={playlist.songs} />
 
           {/* 三个按钮：竖向排列在封面右侧 */}
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <Button
-              size="lg"
+              size="sm"
               disabled={!playlist.songs.length}
               onClick={() => {
                 player.playQueue(playlist.songs, 0)
                 toast({ title: `开始播放「${playlist.name}」`, description: `共 ${playlist.songs.length} 首` })
               }}
-              className="w-full justify-center rounded-full px-5 font-semibold shadow-md shadow-accent/20 transition-all hover:scale-102 active:scale-95"
+              className="w-full justify-center rounded-md px-3 font-semibold shadow-sm shadow-accent/20 transition-all active:scale-[0.98]"
             >
               <Play className="size-4 fill-current mr-1.5" /> 播放全部
             </Button>
 
             <Button
               variant="outline"
-              size="lg"
+              size="sm"
               onClick={() => {
                 const shuffled = [...playlist.songs]
                 for (let i = shuffled.length - 1; i > 0; i--) {
@@ -289,18 +290,18 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
                 player.playQueue(shuffled, 0)
               }}
               disabled={playlist.songs.length < 2}
-              className="w-full justify-center rounded-full px-5 font-medium border-line hover:border-line-strong hover:bg-panel-2"
+              className="w-full justify-center rounded-md px-3 font-medium border-line hover:border-line-strong hover:bg-panel-2"
             >
               <RefreshCw className="size-4 mr-1.5" /> 随机播放
             </Button>
 
             <Button
               variant="outline"
-              size="lg"
+              size="sm"
               disabled={!playlist.songs.length || batchDownloading}
               onClick={handleDownloadAll}
               title={`下载本歌单全部 ${playlist.songs.length} 首歌`}
-              className="w-full justify-center rounded-full px-5 font-medium border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
+              className="w-full justify-center rounded-md px-3 font-medium border-line hover:border-accent/40 hover:bg-accent-soft hover:text-accent"
             >
               {batchDownloading ? (
                 <>
@@ -345,7 +346,7 @@ export default function PlaylistView({ listId, backTo = '/playlist' }: { listId:
         </div>
 
         {/* 封面下方：只留歌单名称 + 歌曲数量 + 总时长 */}
-        <div className="mt-4 min-w-0">
+        <div className="mt-3 min-w-0">
           {renaming ? (
             <div className="flex items-center gap-2">
               <Input

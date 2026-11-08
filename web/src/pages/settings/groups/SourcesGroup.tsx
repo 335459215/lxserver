@@ -10,6 +10,8 @@ import {
   Link2,
   Loader2,
   Plus,
+  Power,
+  PowerOff,
   Trash2,
   X,
   Zap,
@@ -28,7 +30,6 @@ import {
   DialogTrigger,
   Stack,
   Switch,
-  SwitchField,
   Tabs,
   TabsContent,
   TabsList,
@@ -365,8 +366,11 @@ function ImportSourceDialog({ onDone }: { onDone: () => void }) {
   return (
     <Dialog onOpenChange={(open) => !open && reset()}>
       <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus className="size-4" /> 导入源
+        {/* 【v2.49.3 缩小】与「全部检测/全部启用/全部关闭」保持同一档：
+            h-7 + text-[11px] + rounded-md + gap-1。原来 size="sm" 在这排里最显眼，
+            而它并不是本页最高频的动作。 */}
+        <Button size="sm" className="h-7 gap-1 rounded-md px-2 text-[11px]">
+          <Plus className="size-3.5" /> 导入源
         </Button>
       </DialogTrigger>
       {/* max-h 里减掉安全区：PWA 全屏时刘海/手势条会吃掉视口，90dvh 仍可能把
@@ -629,7 +633,13 @@ function DeleteSourceDialog({ source, onDone }: { source: SourceRow; onDone: () 
  *  【为什么从「系统」搬到这里】
  *  这个开关唯一的作用是「允不允许自定义音源脚本以 VM 模式运行」——
  *  它管的就是本页这些脚本，放在「系统」里用户根本联想不到。
- *  按归属归类：谁的对象，就放在谁的页面。 */
+ *  按归属归类：谁的对象，就放在谁的页面。
+ *
+ *  【v2.49.3：整块大卡片 → 一行开关】
+ *  原来是「标题 + 说明段落 + 开关 + 保存按钮」的一张 section 卡片，占了近半屏，
+ *  而它本质上只控制一个布尔值。现在压成**一行**：左边一句说明，右边一个开关。
+ *  并且**去掉保存按钮**：开关一动就地提交（见 handleToggle），
+ *  少一次「改完还要记得点保存」的心智负担 —— 用户明确要求「开了就保存，关了也保存」。 */
 function ScriptSafetySection() {
   const { toast } = useToast()
   const { draft, set, submit, busy, config, error } = useConfigForm(
@@ -637,37 +647,33 @@ function ScriptSafetySection() {
     { 'system.allowUnsafeVM': false },
   )
 
-  if (error) return <div className="text-sm text-danger">{error}</div>
-  if (!config) return <div className="text-sm text-dim">加载中…</div>
+  if (error) return <div className="text-xs text-danger">{error}</div>
+  if (!config) return <div className="text-xs text-dim">加载中…</div>
+
+  /** 开关一动立刻提交。失败则提示（draft 会保持新值，用户可以再点一次）。 */
+  const handleToggle = async (v: boolean) => {
+    set('system.allowUnsafeVM', v)
+    try {
+      await submit()
+      toast({ title: v ? '已开启不安全 VM 模式' : '已关闭不安全 VM 模式', variant: 'success' })
+    } catch (e: unknown) {
+      toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
+    }
+  }
 
   return (
-    <section className="rounded-2xl border border-line bg-panel p-5 shadow-card">
-      <h3 className="text-sm font-medium text-ink">脚本运行安全</h3>
-      <div className="mt-3">
-        <SwitchField
-          label="允许不安全 VM 模式"
-          description="部分音源脚本需要原生 VM 才能运行。开启等于让这些脚本在本机执行任意代码，仅对可信来源开启。"
-          checked={!!draft['system.allowUnsafeVM']}
-          onChange={(v) => set('system.allowUnsafeVM', v)}
-        />
+    <div className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-line bg-panel px-3 py-2">
+      <div className="min-w-0">
+        <span className="block text-[13px] font-medium text-ink">允许不安全 VM 模式</span>
+        <span className="block text-[11px] text-faint">
+          需原生 VM 的脚本才能运行；等于允许其在本机执行任意代码，仅对可信源开启
+        </span>
       </div>
-      <div className="mt-4 flex justify-end">
-        <Button
-          size="sm"
-          disabled={busy}
-          onClick={async () => {
-            try {
-              const n = await submit()
-              toast(n === 0 ? { title: '无变更' } : { title: '已保存', description: `${n} 项`, variant: 'success' })
-            } catch (e: unknown) {
-              toast({ title: '保存失败', description: e instanceof Error ? e.message : String(e), variant: 'destructive' })
-            }
-          }}
-        >
-          {busy ? '保存中…' : '保存'}
-        </Button>
-      </div>
-    </section>
+      <span className="flex shrink-0 items-center gap-2">
+        {busy && <span className="text-[11px] text-faint">保存中…</span>}
+        <Switch checked={!!draft['system.allowUnsafeVM']} onCheckedChange={(v) => void handleToggle(v)} />
+      </span>
+    </div>
   )
 }
 
@@ -779,6 +785,48 @@ export default function SourcesGroup() {
     }
   }
 
+  /** 全部启用 / 全部关闭（v2.49.3）。
+   *
+   *  【为什么复用逐条 toggle 而不是新加一个后端接口】
+   *  `toggle` 本身是幂等的布尔写入，服务端每个请求都会作废该源的粘滞缓存与熔断状态；
+   *  这里并发发 N 个请求，语义与用户手点 N 次完全一致，不会产生新的服务端分支。
+   *  代价是 N 次 HTTP —— 音源数量是个位数到十几个，完全可以接受；
+   *  换来的是不必为一个纯 UI 便利动作新增 API、鉴权与测试。
+   *
+   *  【为什么要 toggleAllBusy】并发 N 个请求期间，按钮必须禁用，
+   *  否则连点会把 enabled 写到互相矛盾的中间态。 */
+  const [toggleAllBusy, setToggleAllBusy] = useState(false)
+  const toggleAll = async (enabled: boolean) => {
+    if (!sources || toggleAllBusy) return
+    const targets = sources.filter((s) => s.enabled !== enabled)
+    if (targets.length === 0) {
+      toast({ title: enabled ? '全部音源已启用' : '全部音源已关闭' })
+      return
+    }
+    setToggleAllBusy(true)
+    // 乐观更新：整列一起变，避免 N 个请求回来时逐条跳变
+    setSources((prev) => prev?.map((s) => ({ ...s, enabled })) ?? null)
+    try {
+      const results = await Promise.allSettled(targets.map((s) => api.sources.toggle(s.id, enabled)))
+      const failed = results.filter((r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.ok)).length
+      if (failed > 0) {
+        toast({
+          title: `${failed} 个源切换失败`,
+          description: '已重新拉取列表，请稍后重试',
+          variant: 'destructive',
+        })
+        void load()
+      } else {
+        toast({
+          title: enabled ? `已启用 ${targets.length} 个源` : `已关闭 ${targets.length} 个源`,
+          variant: 'success',
+        })
+      }
+    } finally {
+      setToggleAllBusy(false)
+    }
+  }
+
   const reorder = async (index: number, direction: -1 | 1) => {
     if (!sources) return
     const newIndex = index + direction
@@ -801,15 +849,25 @@ export default function SourcesGroup() {
     <Stack gap={3}>
       <ScriptSafetySection />
 
-      <div className="flex items-center justify-between gap-2">
+      {/* 【v2.49.3 响应式修正】原来是「标题 + 说明」与四个按钮并排（justify-between）。
+          移动端 390px 下四个按钮合计约 320px，把左侧文字压到只剩 30px 宽 ——
+          实测那句「自定义音源 共 0 个源；增删改会作废解析器粘滞缓存…」
+          被挤成**竖排单字**，非常难看。
+          改成：<sm 时标题独占一行、按钮换行到下面并靠右；≥sm 才回到左右并排。 */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-ink">自定义音源</h3>
           <p className="mt-0.5 text-xs text-dim">共 {sources.length} 个源；增删改会作废解析器粘滞缓存与熔断状态。</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        {/* 【v2.49.3】这一排按钮整体降一档尺寸（h-7 / text-[11px] / 圆角 rounded-md）：
+            原来 size="sm"（h-8）+ 默认圆角，四个按钮并排在窄屏上会把标题挤到换行。
+            新增「全部启用 / 全部关闭」——逐个点开 5 个源的开关太费事，
+            而这两个动作没有副作用（只是 enabled 布尔），用一次批量请求即可。 */}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
           {/* 全部检测：串行跑，边跑边出结果；跑的时候按钮变成「停止」 */}
           <Button
             variant="outline" size="sm"
+            className="h-7 gap-1 rounded-md px-2 text-[11px]"
             onClick={() => {
               if (probeAll) {
                 stopAllRef.current = true
@@ -822,15 +880,35 @@ export default function SourcesGroup() {
           >
             {probeAll ? (
               <>
-                <Loader2 className="mr-1 size-3.5 animate-spin" />
+                <Loader2 className="size-3.5 animate-spin" />
                 停止（{probeAll.done}/{probeAll.total}）
               </>
             ) : (
               <>
-                <Activity className="mr-1 size-3.5" />
+                <Activity className="size-3.5" />
                 全部检测
               </>
             )}
+          </Button>
+          <Button
+            variant="outline" size="sm"
+            className="h-7 gap-1 rounded-md px-2 text-[11px]"
+            disabled={toggleAllBusy || sources.length === 0}
+            onClick={() => void toggleAll(true)}
+            title="启用全部音源"
+          >
+            <Power className="size-3.5" />
+            全部启用
+          </Button>
+          <Button
+            variant="outline" size="sm"
+            className="h-7 gap-1 rounded-md px-2 text-[11px]"
+            disabled={toggleAllBusy || sources.length === 0}
+            onClick={() => void toggleAll(false)}
+            title="关闭全部音源"
+          >
+            <PowerOff className="size-3.5" />
+            全部关闭
           </Button>
           <ImportSourceDialog onDone={load} />
         </div>

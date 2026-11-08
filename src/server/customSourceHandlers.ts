@@ -149,14 +149,22 @@ function readSourcesMeta(dir: string): any[] {
     }
 }
 
-/** 给现有源补上内容哈希，供批量导入按「同一份脚本」判重。 */
+/** 给现有源补上内容哈希与版本，供批量导入判重 / 判断是否该覆盖。 */
 function fingerprintExistingSources(dir: string, owner: string): SourceFingerprint[] {
     return readSourcesMeta(dir).map(source => {
         let contentHash = ''
+        // sources.json 里的 version 可能是数字（老数据），统一成字符串再比
+        let version: string | undefined = source.version != null ? String(source.version) : undefined
         try {
             const scriptPath = path.join(dir, String(source.id || ''))
             if (source.id && fs.existsSync(scriptPath)) {
-                contentHash = hashSourceContent(fs.readFileSync(scriptPath, 'utf-8'))
+                const text = fs.readFileSync(scriptPath, 'utf-8')
+                contentHash = hashSourceContent(text)
+                // 【为什么以脚本里的 @version 为准】sources.json 的 version 字段是
+                // 导入那一刻记下的快照；脚本被覆盖/手工替换过时它会过期。
+                // 去重要比的是「磁盘上这份脚本现在是几版」，所以优先读脚本头。
+                const meta = extractMetadata(text)
+                if (meta.version != null) version = String(meta.version)
             }
         } catch (e) {
             // 单个源读不到内容不影响其它源的判重
@@ -167,6 +175,7 @@ function fingerprintExistingSources(dir: string, owner: string): SourceFingerpri
             sourceUrl: source.sourceUrl,
             contentHash,
             owner,
+            version,
         }
     })
 }
@@ -395,13 +404,29 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
 
             const id = sourceIdFromName(metadata.name, filename)
             const contentHash = hashSourceContent(content)
-            const candidate = { id, name: displayName, sourceUrl, contentHash }
+            const candidate = {
+                id,
+                name: displayName,
+                sourceUrl,
+                contentHash,
+                // v2.49.3：把版本带进判重，同名时才能决定「覆盖」还是「跳过」
+                version: metadata.version != null ? String(metadata.version) : undefined,
+            }
             const hit = findDuplicateSource(candidate, existing)
-            if (hit) {
+
+            /* 【v2.49.3：同名新版本 → 覆盖】 */
+            if (hit && hit.action !== 'overwrite') {
                 skipped++
                 results.push({ index, input, name: displayName, id, status: 'skipped', reason: describeDuplicate(hit) })
                 continue
             }
+
+            // 覆盖分支：源 id 一定命中已有条目，就地替换文件 + 元数据，
+            // 并**保留用户的 enabled / 排序**等使用状态（换版本不该把源关掉）。
+            const overwriting = !!hit
+            const prevSource = overwriting
+                ? sources.find((s: any) => s.id === id)
+                : undefined
 
             fs.writeFileSync(path.join(sourcesDir, id), content, 'utf-8')
             const newSource = {
@@ -413,12 +438,38 @@ async function handleBatchImport(req: IncomingMessage, res: ServerResponse, kind
                 homepage: metadata.homepage || '',
                 size: Buffer.byteLength(content, 'utf-8'),
                 supportedSources,
-                enabled: false,
-                uploadTime: new Date().toISOString(),
+                // 覆盖时继承原有启用状态与上传时间：用户只是换版本，
+                // 不该被「换完变成关闭状态」或「上传时间被刷掉」打扰。
+                enabled: prevSource ? !!prevSource.enabled : false,
+                uploadTime: prevSource?.uploadTime || new Date().toISOString(),
                 sourceUrl,
                 allowUnsafeVM: !!requireUnsafe || !!payload.allowUnsafeVM,
                 requireUnsafe: !!requireUnsafe,
             }
+
+            if (overwriting) {
+                const at = sources.findIndex((s: any) => s.id === id)
+                if (at >= 0) sources[at] = { ...sources[at], ...newSource }
+                else sources.push(newSource)
+                // 指纹同步成新版本，避免同一批里后续条目又命中旧指纹
+                const fpAt = existing.findIndex((f) => f.id === id && f.owner === targetOwner)
+                const nextFp = { id, name: newSource.name, sourceUrl, contentHash, owner: targetOwner, version: metadata.version != null ? String(metadata.version) : undefined }
+                if (fpAt >= 0) existing[fpAt] = nextFp
+                else existing.push(nextFp)
+
+                imported++
+                results.push({
+                    index,
+                    input,
+                    name: newSource.name,
+                    id,
+                    status: 'imported',
+                    reason: describeDuplicate(hit as any),
+                    code: 'OVERWRITTEN',
+                })
+                continue
+            }
+
             sources.push(newSource)
             existing.push({ id, name: newSource.name, sourceUrl, contentHash, owner: targetOwner })
             imported++

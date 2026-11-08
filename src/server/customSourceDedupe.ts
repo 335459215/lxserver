@@ -25,6 +25,8 @@ export interface SourceFingerprint {
     contentHash?: string
     /** open / 用户名；仅用于把命中原因说清楚 */
     owner?: string
+    /** 脚本里 `@version` 声明的版本号（v2.49.3 起参与去重比较）*/
+    version?: string
 }
 
 export interface SourceCandidate {
@@ -32,13 +34,64 @@ export interface SourceCandidate {
     name?: string
     sourceUrl?: string
     contentHash: string
+    /** 待导入脚本的 `@version` */
+    version?: string
 }
+
+/** 去重命中的**动作**：
+ *  - `skip`：已存在且不比新的旧 → 跳过（原有行为）
+ *  - `overwrite`：同名但待导入的版本更新 → 覆盖旧的（v2.49.3 新增） */
+export type DuplicateAction = 'skip' | 'overwrite'
 
 export interface DuplicateHit {
     kind: 'id' | 'content' | 'url'
     existingId?: string
     existingName?: string
     existingOwner?: string
+    /** 命中后该怎么处理，默认按 skip 理解以兼容旧调用点 */
+    action?: DuplicateAction
+    /** overwrite 时带上新旧版本，用于文案与日志 */
+    existingVersion?: string
+    candidateVersion?: string
+}
+
+/**
+ * 版本号比较：a 是否**比** b **新**。
+ *
+ * 【为什么要自己写】音源脚本的 `@version` 并不都符合 semver：
+ * 实测有 `v9.3 93特供版 DeepSeek优化`、`2.2.0`、`1.7.17`、`20240115` 这些形态。
+ * 直接字符串比较会把 `v9.3` 判成比 `2.2.0` 新（因为 'v' > '2'），
+ * 引入 semver 库又会因为非法版本抛异常、直接丢掉整条导入。
+ *
+ * 规则（确定性、可单测）：
+ *  1. 去掉前导 `v/V` 与空白；
+ *  2. 取开头连续的数字段，按 `.` 切成数字数组（`9.3` → [9,3]；`93特供版` → [93]）；
+ *  3. 逐段数值比较，缺位补 0（`9.3` > `9`）；
+ *  4. 全部相等时判定**不更新**（返回 false）—— 同版本重导视为重复，保持原样；
+ *  5. 任一侧没有可解析的数字版本时返回 false（无法判断就不覆盖，保守优先）。
+ */
+export function isNewerVersion(candidate?: string, existing?: string): boolean {
+    const toParts = (v?: string): number[] | null => {
+        if (typeof v !== 'string') return null
+        const cleaned = v.trim().replace(/^[vV]/, '').trim()
+        const m = cleaned.match(/^\d+(?:\.\d+)*/)
+        if (!m) return null
+        return m[0].split('.').map((n) => Number.parseInt(n, 10))
+    }
+
+    const a = toParts(candidate)
+    const b = toParts(existing)
+    // 任一侧无法解析：不判定为更新（避免把带奇怪后缀的版本当成新版反复覆盖）
+    if (!a || !b) return false
+
+    const len = Math.max(a.length, b.length)
+    for (let i = 0; i < len; i++) {
+        const x = a[i] ?? 0
+        const y = b[i] ?? 0
+        if (x > y) return true
+        if (x < y) return false
+    }
+    return false
 }
 
 /**
@@ -98,22 +151,44 @@ export function normalizeSourceUrl(input: unknown): string {
     }
 }
 
-/** 在已有指纹里找同一条源。优先级：id > 内容哈希 > 链接。 */
+/** 在已有指纹里找同一条源。优先级：id > 内容哈希 > 链接。
+ *
+ *  【v2.49.3：同名不再一律跳过，先看版本】
+ *  用户反馈「同名源去重要看版本，以最新版本、最新导入的为主」。
+ *  原实现命中 id（同名）就 skip —— 于是作者发新版时，用户把新脚本导进来
+ *  只会得到「同名源已存在」，只能先手动删掉旧的再导，很别扭。
+ *
+ *  现在的判定：
+ *   - **同名 + 新版本更新** → `overwrite`，由 handler 覆盖旧文件与元数据；
+ *   - **同名 + 版本相同/更旧/无法比较** → `skip`（保持原行为，绝不降级）；
+ *   - **内容哈希相同** → 无论版本号怎么写，都是同一份脚本 → `skip`；
+ *   - **链接相同但同名不同版本** → 也按版本走（链接是同一地址、内容更新了）。
+ *
+ *  注意顺序：先判 id（拿到版本信息），再判内容，最后判 URL。
+ *  内容哈希检查必须在 id 之后 —— 否则「同名新版」会因为内容不同而漏掉覆盖机会；
+ *  而「同名且内容相同」在 id 那一步就会因版本不更新而 skip，不会误覆盖。
+ */
 export function findDuplicateSource(
     candidate: SourceCandidate,
     existing: SourceFingerprint[],
 ): DuplicateHit | null {
+    // 1) 同名（同 id）：按版本决定覆盖还是跳过
     for (const item of existing) {
         if (candidate.id && item.id === candidate.id) {
+            const newer = isNewerVersion(candidate.version, item.version)
             return {
                 kind: 'id',
                 existingId: item.id,
                 existingName: item.name,
                 existingOwner: item.owner,
+                action: newer ? 'overwrite' : 'skip',
+                existingVersion: item.version,
+                candidateVersion: candidate.version,
             }
         }
     }
 
+    // 2) 内容完全相同：就是同一份脚本，与版本号无关
     for (const item of existing) {
         if (item.contentHash && item.contentHash === candidate.contentHash) {
             return {
@@ -121,19 +196,25 @@ export function findDuplicateSource(
                 existingId: item.id,
                 existingName: item.name,
                 existingOwner: item.owner,
+                action: 'skip',
             }
         }
     }
 
+    // 3) 同链接：同一地址再导一次。若版本更新则照样覆盖
     const candidateUrl = normalizeSourceUrl(candidate.sourceUrl)
     if (candidateUrl) {
         for (const item of existing) {
             if (normalizeSourceUrl(item.sourceUrl) === candidateUrl) {
+                const newer = isNewerVersion(candidate.version, item.version)
                 return {
                     kind: 'url',
                     existingId: item.id,
                     existingName: item.name,
                     existingOwner: item.owner,
+                    action: newer ? 'overwrite' : 'skip',
+                    existingVersion: item.version,
+                    candidateVersion: candidate.version,
                 }
             }
         }
@@ -150,12 +231,18 @@ export function describeDuplicate(hit: DuplicateHit): string {
             ? `账号 ${hit.existingOwner} 的源`
             : '已有源'
     const name = hit.existingName || hit.existingId || '同名源'
+    const from = hit.existingVersion ? `v${hit.existingVersion.replace(/^[vV]/, '')}` : '旧版'
+    const to = hit.candidateVersion ? `v${hit.candidateVersion.replace(/^[vV]/, '')}` : '新版'
     switch (hit.kind) {
         case 'id':
-            return `同名源已存在（${who}：${name}）`
+            return hit.action === 'overwrite'
+                ? `已用新版本覆盖同名源（${who}：${name}，${from} → ${to}）`
+                : `同名源已存在（${who}：${name}${hit.existingVersion ? `，${from}` : ''}），版本不比它新，已跳过`
         case 'content':
             return `脚本内容与${who}「${name}」完全相同`
         case 'url':
-            return `该链接已导入过（${who}：${name}）`
+            return hit.action === 'overwrite'
+                ? `链接已导入过，已用新版本覆盖（${who}：${name}，${from} → ${to}）`
+                : `该链接已导入过（${who}：${name}）`
     }
 }
