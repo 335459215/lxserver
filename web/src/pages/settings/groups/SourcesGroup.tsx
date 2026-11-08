@@ -929,15 +929,15 @@ export default function SourcesGroup() {
                  * 而用户扫列表时先看的是「这是哪个源」，不是版本。
                  * 现在名字独占第一行（只让出速度标识那点宽度），
                  * 版本与平台一起放第二行，长了也只是换行、不影响识别。 */}
+                {/* 【v2.49.3】源名**独占第一行**，速度/检测徽章全部下移到第二行。
+                    原来名字和「190ms」「可用 · 186ms」两个徽章挤在同一行，
+                    390px 手机上名字只剩 40~50px 宽，被截成「独…」「墨…」——
+                    而用户扫列表第一眼要看的正是名字。徽章是补充信息，不该抢主位。 */}
                 <div className="flex items-center gap-2">
-                  {/* min-w-0 让 truncate 生效；速度标识 shrink-0 保证不被压变形 */}
                   <span className="min-w-0 truncate text-sm font-medium text-ink">{s.name}</span>
-                  <span className="shrink-0">
-                    <SpeedBadge ms={s.speedMs} />
-                  </span>
-                  {/* 检测结果：可用=绿、失败=红、未检测时不渲染（不占位）。
-                      和 SpeedBadge 的区别要说清楚：SpeedBadge 是「播放时顺带测到的耗时」，
-                      这个是「你刚点检测、它真的解析成功了/失败了」，两者含义不同，故并列。 */}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <SpeedBadge ms={s.speedMs} />
                   {probes[s.id] && (
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
@@ -957,8 +957,6 @@ export default function SourcesGroup() {
                             : `检测失败：${probes[s.id].error || '未知原因'}`
                       }
                     >
-                      {/* <10ms 就别报毫秒数了：实测「长青SVIP音源」连续两次都是 1ms，
-                          那是源内部缓存直接返回，写成「可用 · 1ms」会让人以为它最快。 */}
                       {probes[s.id].ok
                         ? probes[s.id].ms < 10
                           ? '可用 · 缓存'
@@ -968,8 +966,6 @@ export default function SourcesGroup() {
                           : '不可用'}
                     </span>
                   )}
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                   {s.version && <Badge>v{String(s.version).replace(/^[vV]/, '')}</Badge>}
                   {s.isPublic && <Badge>公开</Badge>}
                   {(s.supportedSources ?? s.platforms ?? []).map((p) => <Badge key={p}>{p}</Badge>)}
