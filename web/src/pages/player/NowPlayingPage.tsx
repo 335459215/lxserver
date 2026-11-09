@@ -307,7 +307,15 @@ export default function NowPlayingPage() {
         // 只有父级高度**确定**时，flex-grow 才会真正算出剩余值。
         // 之前试过改成 min-h（想让它必要时滚动），结果歌词内层退回按内容撑开，
         // 实测直接变成 3374px。所以：固定高度 + 上方 section 加 shrink-0。
-        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 lg:h-auto lg:grid lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:py-4"
+        // 【v2.49.7 桌面端溢出 55px 的根因】
+        // 原来 Tabs 自己算 `100dvh - 顶栏 - 播放栏 - 6rem`，但根容器里还有
+        // 返回条(30) + gap(40) + py-4(32)，这三块没被扣掉 → 合计比可用高度多 55px。
+        // 现在根容器自己给确定高度（扣掉顶栏/播放栏/main 的 p-8），
+        // 第二行交给 grid 的 stretch 填满，Tabs 不再自己算 —— 一个数只在一处出现。
+        // 扣掉的 main 上下内边距必须跟着断点变：
+        //   手机 p-4  → 上下合计 2rem
+        //   md:p-8    → 上下合计 4rem（这里之前只扣 2rem，平板因此溢出 33px）
+        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 md:h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-4rem)] lg:grid lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-4rem)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4"
       >
         {/* 返回：按钮 + 下拉手势两条路都给。
             图标用 ChevronDown 而不是箭头向左 —— 本页的返回语义就是「往下拉走」，
@@ -331,7 +339,7 @@ export default function NowPlayingPage() {
         </div>
 
       {/* 左：封面 + 唱片反光与声学动感 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
-      <section className="flex w-full min-w-0 shrink-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20">
+      <section className="flex w-full min-w-0 shrink-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20 lg:self-start">
         <div className="relative mx-auto flex items-center justify-center">
           {/* 氛围光：封面放大模糊铺底 */}
           {cover && (
@@ -564,7 +572,7 @@ export default function NowPlayingPage() {
         // 现在给歌词一个「视口占比」下限 min-h-[30dvh]，并让**封面主动让位**：
         // 封面尺寸来自 CSS 变量 --np-cover，在 index.css 里按视口高度分档
         // （矮屏 40vw/22vh、常规 52vw/26vh），这样两者不再互相挤。
-        className="flex min-h-[26dvh] flex-1 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem] lg:flex-none"
+        className="flex min-h-[26dvh] flex-1 flex-col lg:h-full lg:min-h-0 lg:flex-none"
       >
         <TabsList className="self-start">
           <TabsTrigger value="lyric">歌词</TabsTrigger>
