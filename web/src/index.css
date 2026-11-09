@@ -333,3 +333,27 @@ body:has([role='dialog']) [data-toast-viewport] {
   bottom: auto;
   top: calc(var(--safe-top) + 0.75rem);
 }
+
+/* 播放页封面尺寸（v2.49.6）
+ *
+ * 【为什么用 CSS 变量而不是 Tailwind 类】封面大小要同时受**宽度**和**高度**约束：
+ *  - 窄屏看宽度（52vw 以内，避免超过屏幕）
+ *  - 矮屏看高度（26vh 以内，否则封面吃掉歌词区的空间）
+ * Tailwind 的任意值能写 `w-[min(52vw,26vh,...)]`，但**没法按视口高度分档**，
+ * 而 iPhone SE(667) 与 15 Pro(844) 差了 177px，同一套系数必然有一边不合适。
+ * 这里用两组媒体查询解决：矮屏把高度系数压到 22vh，把空间让给歌词。
+ */
+:root {
+  --np-cover: min(52vw, 26vh, 13.5rem);
+}
+/* 矮屏（iPhone SE / 8 / 小屏安卓）：封面让位给歌词 */
+@media (max-height: 740px) {
+  :root {
+    --np-cover: min(44vw, 21vh, 11rem);
+  }
+}
+@media (min-width: 640px) {
+  :root {
+    --np-cover: 14rem; /* sm 起由 Tailwind 的 sm:w-56 接管，这里给个兜底 */
+  }
+}

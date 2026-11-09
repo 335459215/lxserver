@@ -302,7 +302,12 @@ export default function NowPlayingPage() {
         // 正确做法：根容器高度 = 内容区可用高度，交给 flex 分配：
         //   封面区 auto（内容多高就多高） + 歌词区 flex-1 min-h-0（吃掉剩下的）
         // 这样封面变大/变小、文案换行，都不需要再改任何魔数。
-        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 overflow-hidden py-0 sm:gap-4 lg:h-auto lg:grid lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:overflow-visible lg:py-4"
+        // 【v2.49.6 一层关键约束】移动端这里必须是**固定高度**：
+        // 歌词区（下方 Tabs）用 flex-1 吃剩余空间，而它内部的 Lyrics 是 h-full ——
+        // 只有父级高度**确定**时，flex-grow 才会真正算出剩余值。
+        // 之前试过改成 min-h（想让它必要时滚动），结果歌词内层退回按内容撑开，
+        // 实测直接变成 3374px。所以：固定高度 + 上方 section 加 shrink-0。
+        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 lg:h-auto lg:grid lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:py-4"
       >
         {/* 返回：按钮 + 下拉手势两条路都给。
             图标用 ChevronDown 而不是箭头向左 —— 本页的返回语义就是「往下拉走」，
@@ -326,7 +331,7 @@ export default function NowPlayingPage() {
         </div>
 
       {/* 左：封面 + 唱片反光与声学动感 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
-      <section className="flex min-h-0 w-full min-w-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20">
+      <section className="flex w-full min-w-0 shrink-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20">
         <div className="relative mx-auto flex items-center justify-center">
           {/* 氛围光：封面放大模糊铺底 */}
           {cover && (
@@ -367,7 +372,7 @@ export default function NowPlayingPage() {
               移动端封面按屏宽走：min(78vw, 17rem) —— 390px 屏约 292px，
               比原来的 224px 大得多，这才是「全屏播放器」该有的主角；
               桌面端维持 16rem（sm:w-64）。 */}
-          <div className="relative z-10 aspect-square w-[min(52vw,26vh,13.5rem)] shrink-0 sm:w-56 lg:w-64 rounded-2xl sm:rounded-3xl border border-white/80 bg-panel shadow-2xl overflow-hidden group">
+          <div className="relative z-10 aspect-square w-[var(--np-cover)] shrink-0 sm:w-56 lg:w-64 rounded-2xl sm:rounded-3xl border border-white/80 bg-panel shadow-2xl overflow-hidden group">
             {cover ? (
               <img
                 src={cover}
@@ -555,7 +560,11 @@ export default function NowPlayingPage() {
         //   → 844 高：844 - 61 - 124 - 0 - 32 - 473 = 154px（约 4 行，够用且不滚）
         //   → 667 高：667 - 61 - 124 - 0 - 32 - 473 = -23 → 由 min-h 兜住（页面在大屏以下）。
         // 用 calc 而不是 JS 量：CSS 变量改顶栏/播放栏时自动跟着对，不用回来改魔数。
-        className="flex min-h-[7rem] flex-1 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem] lg:flex-none"
+        // 【v2.49.6】矮屏（iPhone SE 667/640）原来歌词只剩 64px（2~3 行），太憋屈。
+        // 现在给歌词一个「视口占比」下限 min-h-[30dvh]，并让**封面主动让位**：
+        // 封面尺寸来自 CSS 变量 --np-cover，在 index.css 里按视口高度分档
+        // （矮屏 40vw/22vh、常规 52vw/26vh），这样两者不再互相挤。
+        className="flex min-h-[26dvh] flex-1 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem] lg:flex-none"
       >
         <TabsList className="self-start">
           <TabsTrigger value="lyric">歌词</TabsTrigger>
