@@ -17,8 +17,27 @@
 FROM alpine AS base
 
 # 阿里云 Alpine 镜像源（含 community 仓库，chromaprint 在 community）
-RUN sed -i 's|https\?://dl-cdn.alpinelinux.org|https://mirrors.aliyun.com|g' /etc/apk/repositories \
-    && echo "https://mirrors.aliyun.com/alpine/latest-stable/community" >> /etc/apk/repositories
+#
+# 【v2.49.5 修掉一个会随机炸构建的真 bug】
+# 原来第二行是硬编码追加 `.../alpine/latest-stable/community`。
+# 但基础镜像是 `FROM alpine`（跟的是固定大版本，实测 v3.24），
+# 于是 /etc/apk/repositories 里混着两套版本：
+#     https://mirrors.aliyun.com/alpine/v3.24/main        ← sed 替换后
+#     https://mirrors.aliyun.com/alpine/latest-stable/community  ← 硬编码追加
+# latest-stable 一旦滚动到 v3.25，两套索引的依赖关系就对不上，
+# 表现为「g++ / make / py3-pip 都 no such package」或
+# 「ffmpeg 缺 libX11.so.6」—— 报错看起来像网络抖动/依赖缺失，
+# 实际是**版本混用**。这也解释了为什么同一个 Dockerfile 时好时坏。
+#
+# 现在：直接读取基础镜像自己的 /etc/alpine-release，拼出**同版本**的 community 地址。
+# 版本永远跟随基础镜像，不会再错开。
+RUN set -eux; \
+    ver="$(cat /etc/alpine-release | cut -d. -f1,2)"; \
+    sed -i 's|https\?://dl-cdn.alpinelinux.org|https://mirrors.aliyun.com|g' /etc/apk/repositories; \
+    grep -q "/v${ver}/community" /etc/apk/repositories \
+      || echo "https://mirrors.aliyun.com/alpine/v${ver}/community" >> /etc/apk/repositories; \
+    cat /etc/apk/repositories; \
+    apk update
 
 FROM base AS builder
 
