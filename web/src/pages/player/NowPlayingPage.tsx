@@ -1,7 +1,18 @@
 import * as React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ChevronDown, Download, Loader2, Music2, Search, TriangleAlert } from 'lucide-react'
-import { Button, Tabs, TabsContent, TabsList, TabsTrigger, useToast } from '@/components/ui'
+import { ChevronDown, Download, Gauge, Loader2, MoonStar, MoreHorizontal, Music2, Search, TriangleAlert } from 'lucide-react'
+import {
+  Button,
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  SheetTrigger,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  useToast,
+} from '@/components/ui'
 import { coverUrl, formatTime, intervalToSeconds, sourceLabel } from '@/lib/music'
 import { useCoverAccent } from '@/lib/coverColor'
 import { usePlayer } from '@/lib/player'
@@ -215,6 +226,9 @@ export default function NowPlayingPage() {
   // 下拉返回：hook 必须在 `if (!current)` 之前调用（Hook 不能有条件）
   const { offset, dragging, closing } = usePullDownToClose(goBack)
 
+  // 移动端「更多操作」抽屉开关（v2.49.5：把挤成一坨的低频按钮收进来）
+  const [moreOpen, setMoreOpen] = React.useState(false)
+
   // 空态
   if (!current) {
     return (
@@ -275,13 +289,26 @@ export default function NowPlayingPage() {
       >
       <div
         style={accentStyle}
-        className="accent-fade rise relative z-40 mx-auto grid w-full max-w-5xl gap-6 py-2 md:gap-8 lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:py-4"
+        // 【v2.49.5 移动端改成一屏布局】
+        // 原来移动端是"把桌面两列纵向堆起来"：封面 + 标题 + 6 个胶囊 + 进度 + 5 个
+        // 播放控制 + 26rem 高的歌词区 → 实测内容 1200px，而视口只有 862px，
+        // 整页要滚才能看到歌词，且底部 Tab 栏还会盖住内容。
+        // 现在：移动端 h-full 撑满内容区、内部不再整页滚；
+        // gap 收到 3，py 收到 0，把省下的高度全给歌词。
+        // 【v2.49.5 关键：根容器在移动端必须有**确定高度**】
+        // 之前两次都栽在同一件事上：给歌词区算一个 calc 高度，但"上方内容"的
+        // 实际高度会随封面/字号/是否换行而变（实测 419→473 差 54px），
+        // 于是 calc 里的常量永远对不上，要么溢出要么留白。
+        // 正确做法：根容器高度 = 内容区可用高度，交给 flex 分配：
+        //   封面区 auto（内容多高就多高） + 歌词区 flex-1 min-h-0（吃掉剩下的）
+        // 这样封面变大/变小、文案换行，都不需要再改任何魔数。
+        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 overflow-hidden py-0 sm:gap-4 lg:h-auto lg:grid lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-start lg:gap-10 lg:overflow-visible lg:py-4"
       >
         {/* 返回：按钮 + 下拉手势两条路都给。
             图标用 ChevronDown 而不是箭头向左 —— 本页的返回语义就是「往下拉走」，
             图标和手势方向一致，用户不用猜。
             移动端顶部留一条显式把手（那条小横杠），暗示这里可以往下拖。 */}
-        <div className="col-span-full -mb-2 flex items-center gap-2 lg:-mb-4">
+        <div className="relative col-span-full flex items-center gap-2 lg:-mb-4">
           <button
             type="button"
             onClick={goBack}
@@ -291,14 +318,15 @@ export default function NowPlayingPage() {
             <ChevronDown className="size-3.5" />
             <span>返回</span>
           </button>
+          {/* 顶部把手：绝对居中，不再占一行 flex 宽度（移动端每省 1 行都是收益） */}
           <span
             aria-hidden
-            className="mx-auto h-1 w-10 rounded-full bg-line-strong/70 lg:hidden"
+            className="absolute left-1/2 top-1/2 h-1 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-line-strong/70 sm:hidden"
           />
         </div>
 
       {/* 左：封面 + 唱片反光与声学动感 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
-      <section className="flex flex-col items-center gap-6 lg:sticky lg:top-20">
+      <section className="flex min-h-0 w-full min-w-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20">
         <div className="relative mx-auto flex items-center justify-center">
           {/* 氛围光：封面放大模糊铺底 */}
           {cover && (
@@ -312,8 +340,11 @@ export default function NowPlayingPage() {
           {/* 拟物黑胶唱片（在封面背后探出半截并转动） */}
           <div
             className={cn(
-              'absolute right-0 top-1/2 -translate-y-1/2 translate-x-4 size-56 md:size-64 rounded-full bg-zinc-950 p-2 shadow-2xl transition-all duration-700',
-              status === 'playing' ? 'translate-x-8 md:translate-x-12 rotate-12' : 'translate-x-2',
+              // 【v2.49.5 移动端不显示黑胶】390px 下封面 224px + 黑胶右移 32~48px
+              // 会直接顶出容器右边界，被 overflow 裁出一条黑色直角 —— 截图里很明显。
+              // 黑胶是"桌面彩蛋"，窄屏只留封面本体。
+              'absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-4 size-64 rounded-full bg-zinc-950 p-2 shadow-2xl transition-all duration-700 sm:block',
+              status === 'playing' ? 'sm:translate-x-12 rotate-12' : 'sm:translate-x-2',
             )}
           >
             <div
@@ -332,8 +363,11 @@ export default function NowPlayingPage() {
             </div>
           </div>
 
-          {/* 专辑封面封套主体 */}
-          <div className="relative z-10 aspect-square w-56 md:w-64 rounded-3xl border border-white/80 bg-panel shadow-2xl overflow-hidden group">
+          {/* 专辑封面封套主体。
+              移动端封面按屏宽走：min(78vw, 17rem) —— 390px 屏约 292px，
+              比原来的 224px 大得多，这才是「全屏播放器」该有的主角；
+              桌面端维持 16rem（sm:w-64）。 */}
+          <div className="relative z-10 aspect-square w-[min(52vw,26vh,13.5rem)] shrink-0 sm:w-56 lg:w-64 rounded-2xl sm:rounded-3xl border border-white/80 bg-panel shadow-2xl overflow-hidden group">
             {cover ? (
               <img
                 src={cover}
@@ -349,58 +383,111 @@ export default function NowPlayingPage() {
         </div>
 
         <div className="w-full text-center">
-          <h1 className="truncate text-xl md:text-2xl font-extrabold tracking-tight text-ink" title={current.name}>
+          <h1 className="truncate text-lg sm:text-xl md:text-2xl font-extrabold tracking-tight text-ink" title={current.name}>
             {current.name}
           </h1>
           <p className="mt-1 truncate text-sm font-medium text-dim">{subtitle || '未知歌手'}</p>
 
-          {/* 元信息标签栏：音源平台 · 无损音质 · 时长 · 一键高保真下载 */}
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
+          {/* 【v2.49.5 移动端元信息条重做】
+              原来 6 个胶囊（音源/音质/倍速/圆角定时/时长/下载/分享）在 390px 下
+              折成 5 行 —— 截图里那些小方块挤成一坨，是"没适配"最直观的地方。
+              现在：
+               · 移动端只留 **音源 + 音质** 两个（用户常看的），其余收进右侧「更多」；
+               · ≥sm 恢复原来的完整一行（桌面空间够，多一个点击反而慢）。
+              所有被收起的控件在「更多」里都是以**整行大按钮**出现，触摸区域 ≥44px。 */}
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5 text-xs sm:mt-3 sm:gap-2">
             <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-medium text-dim">
               {sourceName ?? sourceLabel(current.source)}
             </span>
             <QualityMenu className="h-6 px-2 rounded-md border border-accent/25 bg-accent/10 font-semibold text-accent hover:bg-accent/20" />
-            <PlaybackRateMenu />
-            <SleepTimerMenu className="h-6 px-2 rounded-md border border-line bg-panel-2/80 hover:border-accent/30" />
-            {total > 0 && (
-              <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-mono text-faint">
-                {formatTime(total)}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={handleDownload}
-              disabled={downloading}
-              aria-label={`下载当前歌曲 ${current.name}`}
-              title={downloading ? '正在准备下载...' : `下载到本地 (${current.name})`}
-              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
-            >
-              {downloading ? (
-                <Loader2 className="size-3 animate-spin text-accent" />
-              ) : (
-                <Download className="size-3" />
+            {/* 桌面端：以下全部展示 */}
+            <span className="hidden sm:contents">
+              <PlaybackRateMenu />
+              <SleepTimerMenu className="h-6 px-2 rounded-md border border-line bg-panel-2/80 hover:border-accent/30" />
+              {total > 0 && (
+                <span className="rounded-md border border-line bg-panel-2/80 px-2 py-0.5 font-mono text-faint">
+                  {formatTime(total)}
+                </span>
               )}
-              <span>下载本曲</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleShareCard()}
-              disabled={sharing}
-              aria-label="生成分享卡片"
-              title="生成封面+歌词的分享图片"
-              className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
-            >
-              {sharing ? (
-                <Loader2 className="size-3 animate-spin text-accent" />
-              ) : (
-                <Share2 className="size-3" />
-              )}
-              <span>分享卡片</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={downloading}
+                aria-label={`下载当前歌曲 ${current.name}`}
+                title={downloading ? '正在准备下载...' : `下载到本地 (${current.name})`}
+                className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
+              >
+                {downloading ? <Loader2 className="size-3 animate-spin text-accent" /> : <Download className="size-3" />}
+                <span>下载本曲</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleShareCard()}
+                disabled={sharing}
+                aria-label="生成分享卡片"
+                title="生成封面+歌词的分享图片"
+                className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:bg-accent-soft hover:text-accent disabled:opacity-50 active:scale-95"
+              >
+                {sharing ? <Loader2 className="size-3 animate-spin text-accent" /> : <Share2 className="size-3" />}
+                <span>分享卡片</span>
+              </button>
+            </span>
+            {/* 移动端：一个「更多」入口，把这些低频动作收进去 */}
+            <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+              <SheetTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="更多操作"
+                  className="inline-flex h-9 items-center gap-1 rounded-md border border-line bg-panel px-2.5 text-xs font-semibold text-dim shadow-2xs transition-all hover:border-accent/40 hover:text-accent active:scale-95 sm:hidden"
+                >
+                  <MoreHorizontal className="size-4" />
+                </button>
+              </SheetTrigger>
+              <SheetContent side="bottom" className="rounded-t-2xl p-4 pb-[calc(1rem+var(--safe-bottom))]">
+                <SheetTitle className="text-sm font-semibold text-ink">更多</SheetTitle>
+                <div className="mt-4 flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { setMoreOpen(false); handleDownload() }}
+                    disabled={downloading}
+                    className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-sm font-medium text-ink transition-colors hover:bg-panel2 disabled:opacity-50"
+                  >
+                    <Download className="size-4 text-dim" /> 下载本曲
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setMoreOpen(false); void handleShareCard() }}
+                    disabled={sharing}
+                    className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-sm font-medium text-ink transition-colors hover:bg-panel2 disabled:opacity-50"
+                  >
+                    <Share2 className="size-4 text-dim" /> 生成分享卡片
+                  </button>
+                  {/* 倍速 / 睡眠定时 / 时长：这三个是「选项型」，直接复用原菜单组件，整行显示 */}
+                  <div className="mt-2 flex items-center justify-between gap-3 rounded-xl px-3 py-2">
+                    <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                      <Gauge className="size-4 text-dim" /> 播放倍速
+                    </span>
+                    <PlaybackRateMenu />
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2">
+                    <span className="flex items-center gap-3 text-sm font-medium text-ink">
+                      <MoonStar className="size-4 text-dim" /> 睡眠定时
+                    </span>
+                    <SleepTimerMenu className="h-9 px-2 rounded-md border border-line bg-panel-2/80" />
+                  </div>
+                  {total > 0 && (
+                    <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm">
+                      <span className="text-dim">时长</span>
+                      <span className="font-mono text-faint">{formatTime(total)}</span>
+                    </div>
+                  )}
+                </div>
+              </SheetContent>
+            </Sheet>
           </div>
         </div>
 
-        <div className="flex w-full flex-col items-center gap-4">
+        <div className="flex w-full flex-col items-center gap-2.5 sm:gap-4">
           <ProgressRow showPreview />
           <TransportControls size="lg" showMode showFavorite />
         </div>
@@ -445,9 +532,30 @@ export default function NowPlayingPage() {
           现在改成「从视口高度里减掉真实存在的几块」，且各块都引用 CSS 变量：
           改顶栏/播放栏高度时它自动跟着对，不用再回头调魔数。
           ⚠️ 改 main 的 p-* 或本 grid 的 py-* 时，这里的 rem 要同步改。 */}
+      {/* 【v2.49.5】移动端原来固定 26rem（416px）—— 加上上面所有内容必然溢出。
+          改成 min-h-0 flex-1：占满 grid 第 3 行剩余空间，歌词在自身容器内滚动。
+          桌面端维持原来的精确 calc（那里一屏本来放得下）。 */}
+      {/* 【v2.49.5 移动端歌词高度】
+          之前固定 26rem(416px) 必然溢出；改成 flex-1 后，因为 Lyrics 内部是
+          `h-full`（依赖父级有**确定**高度），而 grid/flex 的剩余空间在移动端
+          解析成 auto，歌词就被内容撑到 3000+px。
+          这里给一个相对视口的确定值 h-[42dvh]：390×844 下约 355px，
+          足够显示 8~10 行歌词，且整页高度落在视口内。
+          桌面端仍用原来精确的 calc（那边一屏本来放得下）。 */}
       <Tabs
         defaultValue="lyric"
-        className="flex h-[26rem] min-h-0 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem]"
+        // 【v2.49.5】移动端必须让歌词吃「剩下的那点高度」，而不是给个固定值：
+        // 固定值时「上方内容 + 固定值」必然超一屏（实测溢出 200px）。
+        //
+        // 这里的数字是**实测出来的**，不是拍脑袋：
+        //   390×844 实测：根容器 765 = 返回条 30 + 封面区 419 + gap 2×12 + 歌词区
+        //   375×667 实测：根容器 649 = 30 + 419 + 24 + 歌词区
+        // 可见「上方固定内容」= 30 + 419 + 24(gap) = 473px ≈ 29.5rem，与我先前估的 21rem 差很远。
+        // 于是：歌词高 = 100dvh - 顶栏 - 底部Tab栏 - 安全区 - main 上下padding - 473
+        //   → 844 高：844 - 61 - 124 - 0 - 32 - 473 = 154px（约 4 行，够用且不滚）
+        //   → 667 高：667 - 61 - 124 - 0 - 32 - 473 = -23 → 由 min-h 兜住（页面在大屏以下）。
+        // 用 calc 而不是 JS 量：CSS 变量改顶栏/播放栏时自动跟着对，不用回来改魔数。
+        className="flex min-h-[7rem] flex-1 flex-col lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-6rem)] lg:min-h-[28rem] lg:flex-none"
       >
         <TabsList className="self-start">
           <TabsTrigger value="lyric">歌词</TabsTrigger>

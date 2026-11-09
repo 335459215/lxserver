@@ -117,3 +117,4 @@ scripts/ui-audit/shots/
 # 构建临时目录（esbuild/vite 缓存，勿入库）
 .tmp/
 
+.tmp-*
