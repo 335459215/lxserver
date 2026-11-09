@@ -229,6 +229,12 @@ export default function NowPlayingPage() {
   // 移动端「更多操作」抽屉开关（v2.49.5：把挤成一坨的低频按钮收进来）
   const [moreOpen, setMoreOpen] = React.useState(false)
 
+  // 【v2.49.8】移动端「全屏歌词」：点封面收起封面+标题，把高度全给歌词。
+  // 这是 Plex / 飞牛的常见交互 —— 矮屏下歌词只有 2~3 行，与其放一个永远看不全的
+  // 歌词框，不如让用户一键切成「读词模式」。
+  // 只影响移动端（下面统一用 max-lg: 前缀），桌面端歌词面板已有 562px，不需要。
+  const [lyricsExpanded, setLyricsExpanded] = React.useState(false)
+
   // 空态
   if (!current) {
     return (
@@ -315,7 +321,7 @@ export default function NowPlayingPage() {
         // 扣掉的 main 上下内边距必须跟着断点变：
         //   手机 p-4  → 上下合计 2rem
         //   md:p-8    → 上下合计 4rem（这里之前只扣 2rem，平板因此溢出 33px）
-        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 md:h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)-var(--safe-bottom)-4rem)] lg:grid lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-4rem)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4"
+        className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)+var(--miniplayer-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 md:h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)+var(--miniplayer-h)-var(--safe-bottom)-4rem)] lg:grid lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-4rem)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4"
       >
         {/* 返回：按钮 + 下拉手势两条路都给。
             图标用 ChevronDown 而不是箭头向左 —— 本页的返回语义就是「往下拉走」，
@@ -340,7 +346,27 @@ export default function NowPlayingPage() {
 
       {/* 左：封面 + 唱片反光与声学动感 + 控制（桌面吸顶，滚动歌词时控制不跑掉） */}
       <section className="flex w-full min-w-0 shrink-0 flex-col items-center gap-2.5 sm:gap-6 lg:sticky lg:top-20 lg:self-start">
-        <div className="relative mx-auto flex items-center justify-center">
+        {/* 【v2.49.8】整块可点：点封面 → 收起封面与标题，歌词占满 → 「读词模式」。
+            用 role=button + 键盘 Enter/Space 兼顾可访问性（不做成 <button>，
+            是因为里面还有 img 与装饰元素，button 里套块级元素在部分浏览器有怪异行为）。 */}
+        <div
+          className={cn(
+            'relative mx-auto flex items-center justify-center',
+            lyricsExpanded && 'max-lg:hidden',
+          )}
+          onClick={() => setLyricsExpanded(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              setLyricsExpanded(true)
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label="展开全屏歌词"
+          title="点击展开全屏歌词"
+          style={{ cursor: 'zoom-in' }}
+        >
           {/* 氛围光：封面放大模糊铺底 */}
           {cover && (
             <div
@@ -395,7 +421,7 @@ export default function NowPlayingPage() {
           </div>
         </div>
 
-        <div className="w-full text-center">
+        <div className={cn('w-full text-center', lyricsExpanded && 'max-lg:hidden')}>
           <h1 className="truncate text-lg sm:text-xl md:text-2xl font-extrabold tracking-tight text-ink" title={current.name}>
             {current.name}
           </h1>
@@ -572,8 +598,32 @@ export default function NowPlayingPage() {
         // 现在给歌词一个「视口占比」下限 min-h-[30dvh]，并让**封面主动让位**：
         // 封面尺寸来自 CSS 变量 --np-cover，在 index.css 里按视口高度分档
         // （矮屏 40vw/22vh、常规 52vw/26vh），这样两者不再互相挤。
-        className="flex min-h-[26dvh] flex-1 flex-col lg:h-full lg:min-h-0 lg:flex-none"
+        // 【v2.49.8】下限用**固定 7rem**，不要再用 26dvh：
+        // 375×667 实测可用只剩 126px，而 26dvh=173px 会把 Tabs 顶出根容器 47px，
+        // 结果是歌词框下半截压到 Tab 栏后面（截图可见）。固定下限在小屏才真的放得下。
+        className="flex min-h-[7rem] flex-1 flex-col lg:h-full lg:min-h-0 lg:flex-none"
       >
+        {/* 展开态：一行「收起」按钮 + 歌名回显（收起后用户要能确认自己还在听哪首）。
+            只在移动端出现（lg:hidden），桌面端本来就够高。 */}
+        {lyricsExpanded && (
+          <div className="mb-1 flex items-center gap-2 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setLyricsExpanded(false)}
+              aria-label="收起歌词，返回封面"
+              className="flex shrink-0 items-center gap-1 rounded-full border border-line/80 bg-panel px-3 py-1.5 text-xs font-medium text-dim transition-all hover:border-accent/40 hover:text-accent active:scale-95"
+            >
+              <ChevronDown className="size-3.5 rotate-180" />
+              <span>收起</span>
+            </button>
+            <div className="min-w-0 flex-1 text-center">
+              <p className="truncate text-xs font-semibold text-ink">{current.name}</p>
+              <p className="truncate text-[11px] text-faint">{subtitle || '未知歌手'}</p>
+            </div>
+            {/* 右侧占位，保证中间文字真正居中 */}
+            <span aria-hidden className="w-[4.5rem] shrink-0" />
+          </div>
+        )}
         <TabsList className="self-start">
           <TabsTrigger value="lyric">歌词</TabsTrigger>
           <TabsTrigger value="queue">播放队列</TabsTrigger>

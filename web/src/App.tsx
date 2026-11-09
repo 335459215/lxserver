@@ -359,7 +359,11 @@ function Shell() {  const { auth, refresh } = useAuth()
           env() 在桌面恒为 0，这条 calc 在桌面上等于原值。 */}
       <div
         className={cn(
-          'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]',
+          // 全屏播放页不渲染迷你播放条（见 MobileTabBar），底部只需给 Tab 行让位，
+          // 否则歌词框与 Tab 栏之间会空出 --miniplayer-h 那么高的死白。
+          pathname.startsWith('/now-playing')
+            ? 'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)-var(--miniplayer-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]'
+            : 'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]',
           showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
         )}
       >

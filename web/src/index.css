@@ -74,6 +74,18 @@
   /* 底部 Tab 栏高度（含迷你播放条 2 层） */
   --mobile-tabbar-h: 7.75rem;
 
+  /* 迷你播放条单独的高度（= MobileTabBar 里 MiniPlayer 的 min-h-[3.75rem]）
+   *
+   * 【为什么单独抽出来】全屏播放页（/now-playing）**不渲染迷你播放条**
+   * （MobileTabBar 里 `{!isNowPlaying && <MiniPlayer />}`），但 Shell 的内容区
+   * 一直按 --mobile-tabbar-h(124px) 避让，于是那一页在歌词框和 Tab 栏之间
+   * 空出约 72px 的死白 —— 截图里非常明显。
+   * 抽成变量后，「有没有迷你条」这件事只在一处表达：
+   *   Shell 避让   = --mobile-tabbar-h - --miniplayer-h（在 now-playing 时）
+   *   页面高度计算 = 同一个表达式
+   * 改迷你条高度时两边自动一致，不用回来对魔数。 */
+  --miniplayer-h: 3.75rem;
+
   /* 顶栏高度 */
   --header-h: 3.75rem;
 
