@@ -14,6 +14,7 @@ import { reportHistory } from '@/lib/history'
 import { userAuthHeaders } from '@/lib/auth'
 import { applySleepAction, SLEEP_OFF, type SleepMode, type SleepTimerState } from '@/lib/sleepTimer'
 import { AudioCache, cacheKey, createBrowserAudioCache } from '@/lib/audioCache'
+import { hasEnoughTimeLeft, nextSongForPrefetch, PREFETCH_START_DELAY_MS, shouldPrefetch } from '@/lib/prefetch'
 import { secureAudioUrl } from '@/lib/audioUrl'
 
 /** 播放器状态机：idle → loading（解析中）→ playing/paused，失败落 error */
@@ -334,6 +335,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       clearStallWatchdog()
       setState((s) => (s.status === 'playing' ? s : { ...s, status: 'playing', error: null }))
       reportPlayback(stateRef.current.current)
+
+      // 播放预加载：等这首播稳（8s）再抓下一首，避免和当前曲抢首字节。
+      // 定时器随每次 onPlay 重置 —— 频繁切歌时只有最后稳定下来的那首才会触发。
+      if (prefetchTimerRef.current !== null) window.clearTimeout(prefetchTimerRef.current)
+      prefetchTimerRef.current = window.setTimeout(() => {
+        prefetchTimerRef.current = null
+        const st = stateRef.current
+        // 到点再确认一次：还在放同一首、确实还在播，才值得抓
+        if (st.status !== 'playing' || !st.current) return
+        if (!hasEnoughTimeLeft(st.duration || 0, st.position || 0, 20)) return
+        void prefetchNext()
+      }, PREFETCH_START_DELAY_MS)
     }
     const onPause = () =>
       setState((s) => (s.status === 'idle' || s.status === 'error' ? s : { ...s, status: 'paused' }))
@@ -517,6 +530,96 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  /* ===== 播放预加载（v2.49.4）=====
+   *
+   *  【解决的问题】用户反馈「播放时卡顿，不能一直靠实时网速，要做提前加载」。
+   *  原有播放缓存是播了 15 秒才后台下载 —— 对当前这首是事后诸葛，
+   *  而下一首直到切歌那一刻才开始解析。于是每次切歌都是「实时解析 + 边下边播」。
+   *
+   *  【做法】当前曲播放稳定后（8s），在后台把**下一首**的地址解析出来、
+   *  整曲抓进 IndexedDB 播放缓存。等真的切到它时，loadAndPlay 会命中缓存
+   *  直接 feed Blob → 零解析、零等待、不吃实时网速。
+   *
+   *  【刻意不做的事】
+   *   · 不在点播瞬间就开始抓：会和当前曲抢首字节，反而造成「一点就卡」。
+   *   · 随机播放/单曲循环不抓：预测不了下一首，白耗流量还会挤掉有用缓存。
+   *   · 3G/2G/省流模式不抓：带宽本来就紧，分走一半只会让当前曲更卡。
+   *   · 同一时刻只允许一个任务：并发两首会均分带宽，谁都下不完。
+   */
+  const prefetchAbortRef = React.useRef<AbortController | null>(null)
+  const prefetchTimerRef = React.useRef<number | null>(null)
+  const prefetchBusyRef = React.useRef(false)
+  const prefetchKeyRef = React.useRef('')
+
+  const prefetchNext = React.useCallback(async () => {
+    const st = stateRef.current
+    if (prefetchBusyRef.current) return
+    if (!st.current) return
+
+    const conn = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection
+    const nextSong = nextSongForPrefetch(st.queue, st.index, { shuffle: st.shuffle, repeat: st.repeat })
+    if (!nextSong) return
+
+    const okToGo = shouldPrefetch({
+      cacheEnabled: st.audioCacheOn,
+      saveData: conn?.saveData,
+      effectiveType: conn?.effectiveType,
+      queueLength: st.queue.length,
+      index: st.index,
+      shuffle: st.shuffle,
+      repeat: st.repeat,
+      busy: prefetchBusyRef.current,
+      online: typeof navigator.onLine === 'boolean' ? navigator.onLine : true,
+    })
+    if (!okToGo) return
+
+    const key = songKey(nextSong)
+    // 已经在缓存里就不用再抓（重播/来回切时不重复下载）
+    const cache = getAudioCache()
+    if (!cache) return
+    const tier = st.resolvedQuality ?? DEFAULT_QUALITY
+    const existing = await cache.get(cacheKey(key, tier))
+    if (existing) return
+    if (prefetchKeyRef.current === key) return
+
+    prefetchBusyRef.current = true
+    prefetchKeyRef.current = key
+    const ac = new AbortController()
+    prefetchAbortRef.current = ac
+    try {
+      const result = await resolveMusicUrl({
+        songInfo: nextSong,
+        quality: tier,
+        signal: ac.signal,
+      })
+      if (ac.signal.aborted) return
+      const resolvedKey = result.resolvedSong ? songKey(result.resolvedSong as unknown as Song) : key
+      // 与 scheduleCacheWrite 同一条护栏：替身（解析到别的歌）绝不写入本歌的键
+      if (resolvedKey !== key) return
+
+      const srcUrl = secureAudioUrl(result.url) ?? result.url
+      const res = await fetch(`/api/music/download?url=${encodeURIComponent(srcUrl)}&inline=1`, {
+        headers: userAuthHeaders(),
+        signal: ac.signal,
+      })
+      if (!res.ok || ac.signal.aborted) return
+      const blob = await res.blob()
+      if (ac.signal.aborted) return
+      await cache.put(cacheKey(key, tier), blob, {
+        tier,
+        name: nextSong.name,
+        singer: nextSong.singer,
+        resolvedKey: key,
+        resolvedSource: result.sourceName,
+      })
+    } catch {
+      /* 预取失败完全不影响播放，静默放弃 */
+    } finally {
+      prefetchBusyRef.current = false
+      prefetchAbortRef.current = null
+    }
+  }, [])
+
   const loadAndPlay = React.useCallback(
     async (song: Song, tierOverride?: string, autoBestOverride?: boolean) => {
       const el = audioRef.current
@@ -529,6 +632,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       abortRef.current = ac
       // 上一首的缓存下载（若有）立即中止：seq 守卫只拦「写入」，拦不住已发出的下载
       cacheFetchAbortRef.current?.abort()
+      // 预取任务同样要中止：切歌后它抓的是旧队列的下一首，白耗流量
+      prefetchAbortRef.current?.abort()
+      if (prefetchTimerRef.current !== null) {
+        window.clearTimeout(prefetchTimerRef.current)
+        prefetchTimerRef.current = null
+      }
 
       const key = songKey(song)
       const exclude = excludedRef.current.get(key) ?? []
@@ -1258,7 +1367,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       {/* 约束一：唯一的 <audio>，永远挂在树根，不随任何条件挂载/卸载。
           刻意不设 crossOrigin —— 设了会强制 CORS 请求，多数音源 CDN 不带
           CORS 头，反而直接播不了（后续要做 Web Audio 可视化时再单独评估）。 */}
-      <audio ref={audioRef} preload="metadata" />
+      {/* preload: metadata → auto（v2.49.4）
+              原来只预取元数据，浏览器对「接下来几秒」的缓冲非常保守，
+              网络稍有抖动就 waiting。改成 auto 后浏览器会主动多缓冲一段，
+              对小抖动有明显吸收作用；配合「下一首预取」才能覆盖切歌与弱网两种卡顿。
+              代价是流量略增（一首歌通常会多拉几十秒），但只在主动播放时发生。 */}
+        <audio ref={audioRef} preload="auto" />
     </PlayerContext.Provider>
   )
 }

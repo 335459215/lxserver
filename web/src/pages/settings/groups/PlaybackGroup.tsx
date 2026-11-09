@@ -159,7 +159,7 @@ function CacheSection() {
       <div className="mt-3">
         <SwitchField
           label="缓存听过的歌（推荐开启）"
-          description="联网播放稳定后自动缓存；重播同一首不再解析、不再下载，断网也能放。上限 2GB，超出自动淘汰最久没听的。"
+          description="联网播放稳定后自动缓存，并在播放当前歌曲时提前抓取下一首；重播与切歌都不再解析、不再下载，断网也能放。上限 2GB，超出自动淘汰最久没听的。"
           checked={audioCacheOn}
           onChange={(v) => {
             setAudioCacheOn(v)
