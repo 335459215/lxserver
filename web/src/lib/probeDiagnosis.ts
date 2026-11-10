@@ -19,6 +19,7 @@ export type ProbeFailKind =
   | 'http'         // 对方返回错误码
   | 'upstream'     // 上游限流 / 需鉴权
   | 'auth'         // 卡密 / 密钥失效
+  | 'discontinued' // 作者主动停服（不是网络/配置问题）
   | 'notLoaded'    // 源未加载（脚本本身有问题）
   | 'badUrl'       // 源逻辑跑通但没给出可播放链接
   | 'unknown'
@@ -86,6 +87,20 @@ const RULES: Array<{ test: RegExp; info: ProbeFailInfo }> = [
       label: '授权失效',
       reason: '该源需要卡密 / 密钥 / 会员授权，当前授权已失效。',
       action: '续费或更换授权，否则换源。',
+      retryable: false,
+    },
+  },
+  {
+    // 【实测补充】有的源作者直接在脚本里返回这句：
+    //   「当前版本已停止服务，请升级到最新版本后重试」（长青SVIP 二改版、屿溪-终章）
+    // 这句不属于网络/授权问题，是**作者主动停服**——用户唯一能做的是换新版本或换源，
+    // 标成「可重试」会让人反复点检测，纯浪费。
+    test: /已停止服务|停止服务|已停服|不再维护|已下线|停止运营|discontinued/i,
+    info: {
+      kind: 'discontinued',
+      label: '作者停服',
+      reason: '该源的作者已主动停止服务，不是网络或配置问题。',
+      action: '去作者处下载最新版本，或直接换用其它音源。',
       retryable: false,
     },
   },

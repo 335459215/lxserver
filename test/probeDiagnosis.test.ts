@@ -114,3 +114,33 @@ test('classifyProbeError：真实线上报错样本（2026-11-10 实测）', () 
     '聚合API接口 (CF)': 'badUrl',
   })
 })
+
+test('classifyProbeError：作者主动停服 → discontinued，且不建议重试', () => {
+  // 这两句也是**真的**从线上抓的
+  const raw = '当前版本已停止服务，请升级到最新版本后重试'
+  const f = classifyProbeError(raw)
+  assert.equal(f.kind, 'discontinued')
+  assert.equal(f.retryable, false)
+  assert.equal(f.label, '作者停服')
+})
+
+test('classifyProbeError：卡密过期（完整原句，带网址）→ auth，不被「停止服务」抢走', () => {
+  const raw = '卡密已过期，请下载最新正式版：http://103.79.184.97/'
+  const f = classifyProbeError(raw)
+  assert.equal(f.kind, 'auth')
+  assert.equal(f.retryable, false)
+})
+
+test('classifyProbeError：线上 5 条真实报错全部能归类到具体类型', () => {
+  const live = [
+    'getaddrinfo ENOTFOUND flower.tempmusics.tk',
+    'getaddrinfo ENOTFOUND grass.tempmusics.tk',
+    'get url failed',
+    '卡密已过期，请下载最新正式版：http://103.79.184.97/',
+    '当前版本已停止服务，请升级到最新版本后重试',
+  ]
+  const kinds = live.map((x) => classifyProbeError(x).kind)
+  assert.deepEqual(kinds, ['dns', 'dns', 'badUrl', 'auth', 'discontinued'])
+  // 关键：这 5 条里**不应该有 unknown** —— 那意味着用户又会看到裸的「不可用」
+  assert.ok(!kinds.includes('unknown'), `出现未归类: ${kinds.join(',')}`)
+})
