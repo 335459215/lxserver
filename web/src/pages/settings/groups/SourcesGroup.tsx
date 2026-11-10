@@ -17,6 +17,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { api, isAdmin, useAuth, type SourceBatchResult } from '@/lib/auth'
+import { classifyProbeError } from '@/lib/probeDiagnosis'
 import { useConfigForm } from '@/lib/useConfig'
 import {
   Button,
@@ -963,9 +964,24 @@ export default function SourcesGroup() {
                           : `可用 · ${probes[s.id].ms < 1000 ? `${probes[s.id].ms}ms` : `${(probes[s.id].ms / 1000).toFixed(1)}s`}`
                         : probes[s.id].unprobeable
                           ? '无法检测'
-                          : '不可用'}
+                          // 【v2.50.0】不再只写「不可用」——按原因分类给出短标签，
+                          // 让用户能分清「作者停服」和「我配错了」。
+                          : classifyProbeError(probes[s.id].error).label}
                     </span>
                   )}
+                  {/* 【v2.50.0】失败原因做成**可见文字**，不藏在 title 里。
+                      移动端没有 hover，title 等于不存在；而这段信息决定用户
+                      是「重试一下」还是「删掉换源」，必须一眼能看到。 */}
+                  {probes[s.id] && !probes[s.id].ok && !probes[s.id].unprobeable && (() => {
+                    const f = classifyProbeError(probes[s.id].error)
+                    return (
+                      <span className="w-full text-[11px] leading-snug text-danger/90">
+                        {f.reason}
+                        <span className="text-faint">　→ {f.action}</span>
+                        {f.retryable && <span className="text-faint">（可重试）</span>}
+                      </span>
+                    )
+                  })()}
                   {s.version && <Badge>v{String(s.version).replace(/^[vV]/, '')}</Badge>}
                   {s.isPublic && <Badge>公开</Badge>}
                   {(s.supportedSources ?? s.platforms ?? []).map((p) => <Badge key={p}>{p}</Badge>)}
