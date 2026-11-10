@@ -27,6 +27,7 @@ import PlaybackRateMenu from '@/components/player/PlaybackRateMenu'
 import Lyrics from '@/components/player/Lyrics'
 import QueueList from '@/components/player/QueueList'
 import { cn } from '@/lib/utils'
+import { decideSwipe } from '@/lib/playerGesture'
 
 /** 只有从屏幕顶部这一带开始的拖动才算「下拉返回」。
  *  为什么不整页都能拖：下面歌词区/队列区本来就要能上下滚动，
@@ -235,6 +236,38 @@ export default function NowPlayingPage() {
   // 只影响移动端（下面统一用 max-lg: 前缀），桌面端歌词面板已有 562px，不需要。
   const [lyricsExpanded, setLyricsExpanded] = React.useState(false)
 
+  // 【v2.49.9】歌词 / 播放队列 的当前页（受控，滑动切换要用）
+  const [tab, setTab] = React.useState<'lyric' | 'queue'>('lyric')
+
+  /** 歌词区手势（只在内容区生效，不抢顶部下拉返回）：
+   *   · 左右滑 → 切「歌词 ↔ 播放队列」（水平位移 > 55px 且明显大于垂直位移）
+   *   · 下滑   → 展开态下收起（垂直位移 > 60px 且左右几乎没动）
+   *  为什么不用 touchmove 跟手：歌词本身要上下滚动，跟手实现会互相打架；
+   *  这里只在 touchend 一次性判定，滚动手感完全交给原生。 */
+  const swipeRef = React.useRef<{ x: number; y: number; t: number } | null>(null)
+  const [lastSwipe, setLastSwipe] = React.useState('')
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0]
+    swipeRef.current = { x: t.clientX, y: t.clientY, t: Date.now() }
+  }
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const s = swipeRef.current
+    swipeRef.current = null
+    // 【为什么要 ?? e.touches[0]】某些环境（含 CDP 合成的 touchEnd）里 changedTouches
+    // 会是空数组，直接取 [0] 会抛异常，导致整个手势静默失效 —— 实测踩过。
+    const t = e.changedTouches[0] ?? e.touches[0]
+    if (!s || !t) return
+    const dx = t.clientX - s.x
+    const dy = t.clientY - s.y
+    // 太慢的手势不算（避免用户慢慢拖时误触发）
+    if (Date.now() - s.t > 800) return
+    setLastSwipe(`${Math.round(dx)},${Math.round(dy)}`)
+    // 判定规则全部在 playerGesture.ts（纯函数 + 单测），这里只做副作用分发
+    const action = decideSwipe({ dx, dy, durationMs: Date.now() - s.t, lyricsExpanded })
+    if (action === 'queue' || action === 'lyric') setTab(action)
+    else if (action === 'collapse') setLyricsExpanded(false)
+  }
+
   // 空态
   if (!current) {
     return (
@@ -322,6 +355,9 @@ export default function NowPlayingPage() {
         //   手机 p-4  → 上下合计 2rem
         //   md:p-8    → 上下合计 4rem（这里之前只扣 2rem，平板因此溢出 33px）
         className="accent-fade rise relative z-40 mx-auto flex h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)+var(--miniplayer-h)-var(--safe-bottom)-2rem)] w-full max-w-5xl flex-col gap-2 py-0 sm:gap-4 md:h-[calc(100dvh-var(--header-h)-var(--mobile-tabbar-h)+var(--miniplayer-h)-var(--safe-bottom)-4rem)] lg:grid lg:h-[calc(100dvh-var(--header-h)-var(--playerbar-h)-4rem)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:items-stretch lg:gap-10 lg:py-4"
+        data-last-swipe={lastSwipe}
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
       >
         {/* 返回：按钮 + 下拉手势两条路都给。
             图标用 ChevronDown 而不是箭头向左 —— 本页的返回语义就是「往下拉走」，
@@ -582,7 +618,8 @@ export default function NowPlayingPage() {
           足够显示 8~10 行歌词，且整页高度落在视口内。
           桌面端仍用原来精确的 calc（那边一屏本来放得下）。 */}
       <Tabs
-        defaultValue="lyric"
+        value={tab}
+        onValueChange={(v) => setTab(v === 'queue' ? 'queue' : 'lyric')}
         // 【v2.49.5】移动端必须让歌词吃「剩下的那点高度」，而不是给个固定值：
         // 固定值时「上方内容 + 固定值」必然超一屏（实测溢出 200px）。
         //
@@ -628,12 +665,15 @@ export default function NowPlayingPage() {
           <TabsTrigger value="lyric">歌词</TabsTrigger>
           <TabsTrigger value="queue">播放队列</TabsTrigger>
         </TabsList>
-        <TabsContent value="lyric" className="min-h-0 flex-1">
-          <Lyrics className="h-full" />
-        </TabsContent>
-        <TabsContent value="queue" className="min-h-0 flex-1">
-          <QueueList />
-        </TabsContent>
+        {/* 手势区：只包内容，不包 Tab 头 —— 头部还要能点，包进来会把手势和点击混在一起 */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <TabsContent value="lyric" className="min-h-0 flex-1">
+            <Lyrics className="h-full" />
+          </TabsContent>
+          <TabsContent value="queue" className="min-h-0 flex-1">
+            <QueueList />
+          </TabsContent>
+        </div>
       </Tabs>
       </div>
       </div>
