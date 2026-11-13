@@ -216,22 +216,52 @@ function Shell() {  const { auth, refresh } = useAuth()
   // 全屏播放页本身就是播放器，再挂右侧面板是重复，还会把内容挤窄
   const showPanel = panel && pathname !== '/now-playing'
 
+  // 【v2.50.2：换路由时把内层滚动容器归零】
+  //
+  // 旧版滚动发生在 document 上，换页时浏览器自己就把位置重置了，没人写过这行代码。
+  // 改成「内层 main 自己滚」之后这个行为就丢了 —— 从长列表点进详情会**停在上一次的
+  // 滚动位置**（实测从首页滚到 553px 再点「排行榜」，新页面直接从中间开始）。
+  // 这是切换滚动容器必然要补的一步，不是可选项。
+  //
+  // 依赖只写 pathname：同一页内的 query 变化（搜索词）不该把位置清掉，
+  // 那会打断「搜到一半接着往下翻」。
+  useEffect(() => {
+    const el = document.getElementById('app-scroll')
+    if (el) el.scrollTop = 0
+    // 桌面宽屏下浏览器可能仍把 window 当滚动容器（例如某些扩展注入），一并归零。
+    if (window.scrollY !== 0) window.scrollTo(0, 0)
+  }, [pathname])
+
   return (
-    // 【为什么是 min-h-dvh 而不是 min-h-screen】
-    // `min-h-screen` = `min-height: 100vh`，而 100vh **不减去**上面那个 sticky header 的高度
-    // （实测 57px）。于是「header + 至少 100vh 的内容」永远比视口高 57px ——
-    // 每一页都会出现一条多余的滚动条，全屏播放页尤其明显（沉浸式页面本该整屏不滚动）。
-    // 换成 `100dvh`（动态视口高度）同样不解决「要减掉 header」这件事，所以真正的修法是：
-    // 让内容区的最小高度 = 视口 − header 高度，两者相加恰好等于视口。
-    <div className="flex min-h-[calc(100dvh-var(--header-h))] flex-col">
+    // 【v2.50.2：滚动收进内层容器，html/body 不再参与滚动】
+    //
+    // 之前的写法是「整页滚动 + sticky 顶栏 + fixed 底栏」，在 Chrome 里没问题，
+    // 但在 iOS Safari（尤其 iOS 26 折叠地址栏）上不稳定：
+    //   - 页面滚到底、地址栏收缩时，浏览器会**整体位移视口**，
+    //     `position: fixed` / `sticky` 元素跟着一起位移；
+    //   - 表现为顶部导航消失、底部 Tab 栏浮到页面中部（用户截图就是这样），
+    //     也就是「导航栏没有固定，跟着上下活动一起走了」。
+    // 现在的结构是**不滚动的外壳 + 内层滚动区**：
+    //   html/body 高度锁 100%（index.css），外壳 h-[100dvh] overflow-hidden，
+    //   中间 #app-scroll 自己 overflow-y:auto。
+    // 根节点不再是滚动容器 → 浏览器没有「折叠地址栏把整页推走」的机会，
+    // 两条导航栏相对于一个静止的盒子定位，真机上就不会再漂。
+    // 注意：`overflow-hidden` 只加在外壳上，不能加到 html/body 上 ——
+    // 那会让 Safari 的地址栏不再收缩，且返回时丢失滚动位置。
+    <div className="flex h-[100dvh] flex-col overflow-hidden">
       {/* 全局快捷键（渲染 null）：必须在 ToastHost + PlayerProvider 之内 */}
       <KeyboardShortcuts />
       {/* 顶栏：流体毛玻璃质感与全局搜索 */}
       {/* 顶栏：流体毛玻璃质感与全局搜索。
           PWA standalone 下（viewport-fit=cover）页面会铺到状态栏底下，
-          顶部要加 safe-area-inset-top 避让刘海 —— 桌面/普通浏览器里 env() 为 0，零影响。 */}
+          顶部要加 safe-area-inset-top 避让刘海 —— 桌面/普通浏览器里 env() 为 0，零影响。
+
+          【v2.50.2：sticky → shrink-0（不参与滚动，自然不需要 sticky）】
+          外壳不再滚动，顶栏就是 flex 列的第一行，本来就恒在顶部；
+          保留 sticky 只会让它在内层滚动容器之外「看似 sticky」，
+          反而在 iOS 上叠一层没必要的位移计算风险。 */}
       <header
-        className="sticky top-0 z-40 border-b border-line/70 bg-panel/85 backdrop-blur-xl"
+        className="z-40 shrink-0 border-b border-line/70 bg-panel/85 backdrop-blur-xl"
         style={{ paddingTop: 'var(--safe-top)' }}
       >
         <div className="flex h-[var(--header-h)] items-center gap-4 px-4 md:px-8">
@@ -356,94 +386,112 @@ function Shell() {  const { auth, refresh } = useAuth()
           --mobile-tabbar-h 是「迷你播放条 + Tab 行」的固定高度，不含 iOS 手势条安全区；
           而 Tab 行自己用 pb-[var(--safe-bottom)] 把内容顶了上来 —— 也就是栏的实际高度
           会多出安全区那一截。内容区不多留这一截，滚到底时最后一行会压在通道上。
-          env() 在桌面恒为 0，这条 calc 在桌面上等于原值。 */}
-      <div
-        className={cn(
-          // 全屏播放页不渲染迷你播放条（见 MobileTabBar），底部只需给 Tab 行让位，
-          // 否则歌词框与 Tab 栏之间会空出 --miniplayer-h 那么高的死白。
-          pathname.startsWith('/now-playing')
-            ? 'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)-var(--miniplayer-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]'
-            : 'mx-auto flex w-full pb-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]',
-          showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
-        )}
-      >
-        {/* 桌面侧边栏 */}
-        {/* 【为什么高度要减 var(--header-h)+1px 而不是写死 3.5rem】
-            顶栏实际高度 = --header-h(3.75rem) + 1px 下边框 = 61px，而这里原来写的是
-            `100vh - 3.5rem`(56px) —— 少算 5px。侧栏在 flex 行里会把整个内容区撑高 5px，
-            于是**每一页**（尤其全屏播放页）都比视口多出一条 5px 的滚动条。
-            改用变量 + 1px 边框，顶栏高度以后调多少这里都跟着对；100dvh 则在移动浏览器
-            工具栏收缩时也不会多算高度。 */}
-        <aside className="sticky top-[calc(var(--header-h)+1px)] hidden h-[calc(100dvh-var(--header-h)-1px-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
-          <NavItems
-            onInstall={triggerInstall}
-            isInstalled={isInstalled}
-            canPromptNative={canPromptNative}
-          />
-        </aside>
+          env() 在桌面恒为 0，这条 calc 在桌面上等于原值。
 
-        {/* 移动抽屉 */}
-        {drawer && (
-          <div className="fixed inset-0 z-50 lg:hidden">
-            <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setDrawer(false)} />
-            {/* 抽屉要避开刘海与手势条：横向（横屏左缘）+ 顶部 + 底部。
-                padding-bottom 用 calc 叠加，横屏时左缘用 padding-left 避开刘海。 */}
-            <div
-              className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise"
-              style={{
-                paddingLeft: 'calc(1rem + var(--safe-left))',
-                paddingTop: 'calc(1rem + var(--safe-top))',
-                paddingBottom: 'calc(1rem + var(--safe-bottom))',
-              }}
-            >
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-semibold">导航</span>
-                <button
-                  className="rounded-md p-1.5 text-faint hover:text-ink"
-                  onClick={() => setDrawer(false)}
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-              <NavItems
-                onNavigate={() => setDrawer(false)}
-                onInstall={triggerInstall}
-                isInstalled={isInstalled}
-                canPromptNative={canPromptNative}
-              />
-            </div>
-          </div>
-        )}
+          【v2.50.2 结构：一条「不滚动」的 flex 行，只有 main 自己滚】
+            ├─ aside      桌面侧栏（不滚，固定一列）
+            ├─ main       内层滚动容器（overscroll-contain）
+            └─ aside      右侧正在播放面板（不滚，固定一列）
+          侧栏与右面板**不能**放进滚动容器里：那样一滚就跟着走（桌面回归里实测到）。
+          只有 main 滚，才是桌面端原本的手感，也顺带让两条栏的定位基准保持静止。
+          `overscroll-contain` 防止滚到边界后把滚动「传给」外层（iOS 上这会把地址栏
+          弹出来、连带位移视口，正是导航栏漂移的触发条件之一）。 */}
+      <div className="flex w-full flex-1 overflow-hidden">
+        {/* 内容列：居中限宽。外层 flex 行满宽（滚动条贴内容区右缘），内容按 max-w 居中。 */}
+        <div
+          className={cn(
+            'mx-auto flex w-full overflow-hidden',
+            showPanel ? 'max-w-[104rem]' : 'max-w-6xl',
+          )}
+        >
+          {/* 桌面侧边栏（高度 = 视口 − 顶栏 − 播放栏，自身可滚，位置不随内容移动） */}
+          <aside className="hidden h-[calc(100dvh-var(--header-h)-1px-var(--playerbar-h))] w-56 shrink-0 flex-col overflow-y-auto border-r border-line px-3 py-4 lg:flex">
+            <NavItems
+              onInstall={triggerInstall}
+              isInstalled={isInstalled}
+              canPromptNative={canPromptNative}
+            />
+          </aside>
 
-        <main className="min-w-0 flex-1 p-4 md:p-8">
-          {/* 页面级错误边界：key 绑 pathname，换路由自动重建（=崩溃后点别的导航即可恢复）。
-              放在 <main> 内部而不是整个 App 外面，是为了让崩溃时**顶栏/侧栏/底部 Tab 依然活着**，
-              用户还有路可走 —— 之前没有边界时整棵树被卸载，连导航都消失了。 */}
-          <ErrorBoundary key={pathname} label={routeLabel(pathname)}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/playlist" element={<PlaylistPage />} />
-              <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
-              <Route path="/leaderboard" element={<LeaderboardPage />} />
-              <Route path="/artist/:id" element={<ArtistPage />} />
-              <Route path="/artist-name/:name" element={<ArtistNamePage />} />
-              <Route path="/album/:id" element={<AlbumPage />} />
-              <Route path="/favorites" element={<FavoritesPage />} />
-              <Route path="/local" element={<LocalMusicPage />} />
-              <Route path="/history" element={<HistoryPage />} />
-              <Route path="/now-playing" element={<NowPlayingPage />} />
-              <Route path="/settings" element={<SettingsShell />} />
-              <Route path="/settings/:group" element={<SettingsShell />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </ErrorBoundary>
-        </main>
+          <main
+            id="app-scroll"
+            className={cn(
+              'min-w-0 flex-1 overflow-y-auto overscroll-contain p-4 md:p-8',
+              // 全屏播放页不渲染迷你播放条（见 MobileTabBar），底部只需给 Tab 行让位，
+              // 否则歌词框与 Tab 栏之间会空出 --miniplayer-h 那么高的死白。
+              pathname.startsWith('/now-playing')
+                ? 'pb-[calc(var(--mobile-tabbar-h)-var(--miniplayer-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]'
+                : 'pb-[calc(var(--mobile-tabbar-h)+var(--safe-bottom))] lg:pb-[var(--playerbar-h)]',
+            )}
+          >
 
-        {/* 右侧「正在播放」常驻面板（≥1280px；全屏播放页不重复挂） */}
-        {showPanel && <NowPlayingPanel onClose={() => setPanel(false)} />}
+            {/* 页面级错误边界：key 绑 pathname，换路由自动重建（=崩溃后点别的导航即可恢复）。
+                放在 <main> 内部而不是整个 App 外面，是为了让崩溃时**顶栏/侧栏/底部 Tab 依然活着**，
+                用户还有路可走 —— 之前没有边界时整棵树被卸载，连导航都消失了。 */}
+            <ErrorBoundary key={pathname} label={routeLabel(pathname)}>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/playlist" element={<PlaylistPage />} />
+                <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
+                <Route path="/leaderboard" element={<LeaderboardPage />} />
+                <Route path="/artist/:id" element={<ArtistPage />} />
+                <Route path="/artist-name/:name" element={<ArtistNamePage />} />
+                <Route path="/album/:id" element={<AlbumPage />} />
+                <Route path="/favorites" element={<FavoritesPage />} />
+                <Route path="/local" element={<LocalMusicPage />} />
+                <Route path="/history" element={<HistoryPage />} />
+                <Route path="/now-playing" element={<NowPlayingPage />} />
+                <Route path="/settings" element={<SettingsShell />} />
+                <Route path="/settings/:group" element={<SettingsShell />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </ErrorBoundary>
+          </main>
+
+          {/* 右侧「正在播放」常驻面板（≥1280px；全屏播放页不重复挂） */}
+          {showPanel && <NowPlayingPanel onClose={() => setPanel(false)} />}
+        </div>
       </div>
 
+      {/* 移动抽屉 */}
+      {/* 【v2.50.2：抽屉挂在 Shell 根下，与滚动容器平级】
+          fixed 在滚动容器**内部**时，部分 WebKit 版本会把它的包含块认成那个滚动容器，
+          于是抽屉的 inset-0 只盖住内容区而不是整屏，遮罩漏出顶栏与底栏。
+          放在这里（滚动区之外）后，它覆盖的才是整个视口。 */}
+      {drawer && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-zinc-950/25" onClick={() => setDrawer(false)} />
+          {/* 抽屉要避开刘海与手势条：横向（横屏左缘）+ 顶部 + 底部。
+              padding-bottom 用 calc 叠加，横屏时左缘用 padding-left 避开刘海。 */}
+          <div
+            className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-line bg-panel p-4 shadow-pop rise"
+            style={{
+              paddingLeft: 'calc(1rem + var(--safe-left))',
+              paddingTop: 'calc(1rem + var(--safe-top))',
+              paddingBottom: 'calc(1rem + var(--safe-bottom))',
+            }}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">导航</span>
+              <button
+                className="rounded-md p-1.5 text-faint hover:text-ink"
+                onClick={() => setDrawer(false)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <NavItems
+              onNavigate={() => setDrawer(false)}
+              onInstall={triggerInstall}
+              isInstalled={isInstalled}
+              canPromptNative={canPromptNative}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 底部两条栏都在滚动容器之外，所以它们只相对视口定位，不会随内容滚动。 */}
       <PlayerBar />
       <MobileTabBar />
     </div>

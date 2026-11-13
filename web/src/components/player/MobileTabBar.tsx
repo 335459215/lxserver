@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import { Home, ListMusic, Search, Trophy } from 'lucide-react'
@@ -124,28 +124,23 @@ function MiniPlayer() {
  *     避免与汉堡抽屉放同一批入口、手机上要记两条路径）。
  *  3. 不引入任何新颜色：选中态用既有 `--accent` / `--accent-soft`，与桌面端同一语言。
  *
- *  定位方式（关键，别改成 position:sticky）：Tab 栏与播放条都是 `position: fixed`
- *  对齐**文档底部**，由 Shell 的 `pb-[var(--mobile-tabbar-h)]` 给内容区让位。
- *  fixed 不参与布局，页面不会因为它的出现/消失而跳动（软键盘弹出、旋转、内容增长都不抖），
- *  也没有 `bottom: 0` 那种「父级一有 transform/filter/contain 就错位」的隐患。
- *  代价是页面滚动后这条固定在**文档底**的栏会沉到视口下方（Windows 触屏等滚动条覆盖
- *  内容的平台会短暂露出一条缝），由下面的 effect 用 `scrollIntoView` 推回视口底。
- *  实测浏览器**不会**对 fixed 元素滚动（`scrollIntoView` 对它是空操作），
- *  所以这个调用是零副作用的，不会引起任何页面跳动。 */
+ *  定位方式：`position: fixed` + `bottom: 0`，由 Shell 的 `pb-[var(--mobile-tabbar-h)]`
+ *  给内容区让位；fixed 不参与布局，所以栏的出现/消失不会让页面跳动。
+ *
+ *  【v2.50.2：删掉「滚动时 scrollIntoView 推回视口底」的 hack —— 那正是漂移的元凶】
+ *  旧代码在 `scroll` 事件里调 `document.getElementById('mobile-tabbar')
+ *  .scrollIntoView({ block: 'end' })`，注释里的前提是「浏览器不会滚动 fixed 元素，
+ *  这个调用是空操作」。实测这个前提不成立：只要 fixed 元素的包含块不再是视口
+ *  （祖先有 transform / filter / backdrop-filter / contain / will-change / perspective
+ *  任意一条——iOS Safari 上尤其常见），`scrollIntoView` 就会**真的滚动页面**把这个元素
+ *  送进视野。而它挂在 scroll 事件上，于是形成「用户滚 → 页面自己滚」的拉扯：
+ *  实测在祖先带 contain:paint 时，一次 scrollBy(300) 直接把页面拉到文档最底
+ *  （scrollY 300 → 2335），导航栏看起来就是「没固定、跟着内容走」。
+ *  结论：这条栏靠 CSS 贴底就够了，**不要**再用 JS 去「纠正」它的位置。
+ *  自查脚本：.playwright/_probe-scrollhack.py（对照 hack 开/关的滚动结果）。 */
 export default function MobileTabBar() {
   const { pathname } = useLocation()
   const isNowPlaying = pathname === '/now-playing'
-
-  useEffect(() => {
-    const sync = () => document.getElementById('mobile-tabbar')?.scrollIntoView({ block: 'end' })
-    sync()
-    window.addEventListener('scroll', sync, { passive: true })
-    window.addEventListener('resize', sync)
-    return () => {
-      window.removeEventListener('scroll', sync)
-      window.removeEventListener('resize', sync)
-    }
-  }, [])
 
   return (
     <>

@@ -48,7 +48,11 @@ export default function NowPlayingPanel({ onClose }: { onClose: () => void }) {
   return (
     <aside
       aria-label="正在播放"
-      className="sticky top-[var(--header-h)] hidden h-[calc(100vh-var(--header-h)-var(--playerbar-h))] w-84 shrink-0 flex-col border-l border-line/70 bg-panel/60 backdrop-blur-xl xl:flex"
+      // 【v2.50.2：sticky → shrink-0，高度改用 100%】
+      // 外壳改成「不滚动 + 内层滚动」后，这个 aside 与内容区同处一条 flex 行，
+      // 顶栏已经在滚动区之外，再减 --header-h 就会在面板顶部空出一条。
+      // 100% 等于「滚动区那一行的高度」= 视口 − 顶栏 − 播放栏，天然正确。
+      className="hidden h-full w-84 shrink-0 flex-col border-l border-line/70 bg-panel/60 backdrop-blur-xl xl:flex"
     >
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-4 border-b border-line/40">
         <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-ink">
